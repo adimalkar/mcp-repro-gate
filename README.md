@@ -1,0 +1,78 @@
+# ReproGate
+
+[![CI](https://github.com/adimalkar/mcp-repro-gate/actions/workflows/ci.yml/badge.svg)](https://github.com/adimalkar/mcp-repro-gate/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/adimalkar/mcp-repro-gate/actions/workflows/codeql.yml/badge.svg)](https://github.com/adimalkar/mcp-repro-gate/actions/workflows/codeql.yml)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+
+ReproGate is an action-contract layer for MCP tool execution. It binds a policy decision or human approval to the exact tool, schema, arguments, authority, policy, and observed workspace state, then makes that binding available to an execution receipt.
+
+The goal is narrower than “another MCP gateway”: make a tool action independently inspectable and make approval invalid as soon as the proposed action changes.
+
+## Current status: Phase 1
+
+This repository currently contains the action-contract kernel and a real, plan-only MCP server. It can:
+
+- discover tools through a small stable façade;
+- build deterministic, digest-bound action envelopes from an operator-controlled catalog;
+- return explainable `allow`, `approval_required`, or `deny` decisions;
+- issue and validate one-use capability tokens bound to an exact envelope;
+- create tamper-evident, hash-chained decision records.
+
+It intentionally **cannot execute downstream tools yet**. Phase 1 is not a sandbox, live security proxy, or production authorization boundary.
+
+## Try it
+
+Requirements: Node.js 22.13 or newer. CI tests the maintained Node.js 22 and 24 release lines on Linux, macOS, and Windows.
+
+```bash
+npm install
+npm run check
+npm run demo
+```
+
+Run the MCP server over stdio:
+
+```bash
+npm run build
+node dist/src/cli.js serve
+```
+
+The Phase 1 server exposes exactly three tools:
+
+- `catalog.search`
+- `action.plan`
+- `policy.explain`
+
+The included catalog is a deterministic demo fixture. A downstream MCP client/proxy and external configuration arrive in Phase 2.
+
+## Core invariant
+
+An approval is valid for one exact action, not for a server or tool name in general:
+
+```text
+tool identity + schema + arguments + policy + authority + workspace + expiry
+                                  │
+                                  ▼
+                       canonical action digest
+                                  │
+                     one-use approval capability
+                                  │
+                                  ▼
+                        execution receipt (next)
+```
+
+Arguments are hashed and not stored raw in decision evidence. Tool schemas and effects come from an operator-controlled catalog, not from model-provided metadata. Workspace identity is reserved for gateway-observed values; the agent cannot label its own context as observed.
+
+## Why this wedge
+
+MCP gateways, policy engines, audit proxies, replay tools, and provenance systems already exist. ReproGate is designed to integrate with those systems, not rebuild all of them. Its differentiator is the portable contract spanning pre-execution authority and post-execution verification.
+
+See [idea validation](docs/VALIDATION.md), the [phased roadmap](docs/ROADMAP.md), and the [threat model](docs/THREAT_MODEL.md).
+
+## Contributing and security
+
+Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request. Security vulnerabilities should be reported privately according to [SECURITY.md](SECURITY.md), never in a public issue.
+
+## License
+
+Apache-2.0.

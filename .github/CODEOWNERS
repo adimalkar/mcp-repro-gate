@@ -1,0 +1,11 @@
+* @adimalkar
+
+/src/canonical-json.ts @adimalkar
+/src/capability-token.ts @adimalkar
+/src/digest.ts @adimalkar
+/src/envelope.ts @adimalkar
+/src/evidence.ts @adimalkar
+/src/policy.ts @adimalkar
+/schemas/ @adimalkar
+/docs/THREAT_MODEL.md @adimalkar
+/.github/workflows/ @adimalkar

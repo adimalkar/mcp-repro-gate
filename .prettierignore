@@ -1,0 +1,5 @@
+.codebase-memory/
+dist/
+node_modules/
+deep-research-report*.md
+package-lock.json

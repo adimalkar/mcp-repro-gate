@@ -1,0 +1,68 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build and attest release
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Verify release version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: >-
+          node --input-type=module -e
+          "import pkg from './package.json' with { type: 'json' };
+          if ('v' + pkg.version !== process.env.RELEASE_TAG) {
+          throw new Error('package.json version does not match release tag'); }"
+
+      - name: Run release checks
+        run: npm run check
+
+      - name: Build package archive
+        run: npm pack
+
+      - name: Attest package provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-path: "mcp-repro-gate-*.tgz"
+
+      - name: Upload package archive
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: npm-package-${{ github.ref_name }}
+          path: "mcp-repro-gate-*.tgz"
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" mcp-repro-gate-*.tgz --verify-tag --generate-notes --title "$GITHUB_REF_NAME"

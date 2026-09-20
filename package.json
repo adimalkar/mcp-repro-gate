@@ -1,0 +1,64 @@
+{
+  "name": "mcp-repro-gate",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Action-bound authorization and evidence contracts for MCP tool execution",
+  "type": "module",
+  "author": "Aditya Malkar",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/adimalkar/mcp-repro-gate.git"
+  },
+  "bugs": {
+    "url": "https://github.com/adimalkar/mcp-repro-gate/issues"
+  },
+  "homepage": "https://github.com/adimalkar/mcp-repro-gate#readme",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "ai-agents",
+    "security",
+    "authorization",
+    "provenance"
+  ],
+  "bin": {
+    "reprogate": "./dist/src/cli.js"
+  },
+  "exports": {
+    ".": "./dist/src/index.js"
+  },
+  "files": [
+    "dist/src",
+    "schemas"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "npm run format:check && npm run lint && npm run typecheck && npm test",
+    "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
+    "demo": "npm run build --silent && node dist/src/cli.js demo",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "lint": "eslint . --max-warnings 0",
+    "pack:check": "npm pack --dry-run --json",
+    "start": "node dist/src/cli.js serve",
+    "test": "npm run build --silent && node --test \"dist/tests/*.test.js\"",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "2.0.0",
+    "zod": "4.5.4"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@modelcontextprotocol/client": "2.0.0",
+    "@types/node": "^22.19.0",
+    "eslint": "10.11.0",
+    "prettier": "3.9.8",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.70.0"
+  },
+  "license": "Apache-2.0"
+}

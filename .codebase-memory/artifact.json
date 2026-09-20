@@ -1,0 +1,11 @@
+{
+    "schema_version": 2,
+    "commit": "HEAD",
+    "indexed_at": "2026-09-20T20:27:10Z",
+    "project": "mnt-1TB_Drive-Data-MyFiles-Projects-MCP_Plan",
+    "nodes": 301,
+    "edges": 462,
+    "original_size": 2097152,
+    "compressed_size": 161984,
+    "compression_level": 3
+}

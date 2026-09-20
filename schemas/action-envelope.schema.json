@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://reprogate.dev/schemas/action-envelope-v1.json",
+  "title": "ReproGate Action Envelope v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "envelopeVersion",
+    "actionId",
+    "runId",
+    "principal",
+    "tool",
+    "input",
+    "authority",
+    "plannedAt",
+    "expiresAt"
+  ],
+  "properties": {
+    "envelopeVersion": { "const": 1 },
+    "actionId": { "$ref": "#/$defs/digest" },
+    "runId": { "type": "string", "minLength": 1 },
+    "principal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["host", "source"],
+      "properties": {
+        "host": { "type": "string", "minLength": 1 },
+        "clientVersion": { "type": "string" },
+        "subject": { "type": "string" },
+        "source": {
+          "enum": ["transport_verified", "client_asserted", "unknown"]
+        }
+      }
+    },
+    "tool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["serverRef", "toolName", "schemaDigest", "trustSource"],
+      "properties": {
+        "serverRef": { "type": "string", "minLength": 1 },
+        "toolName": { "type": "string", "minLength": 1 },
+        "schemaDigest": { "$ref": "#/$defs/digest" },
+        "artifactDigest": { "$ref": "#/$defs/digest" },
+        "trustSource": { "const": "operator_catalog" }
+      }
+    },
+    "input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["argumentsDigest", "sensitivityLabels"],
+      "properties": {
+        "argumentsDigest": { "$ref": "#/$defs/digest" },
+        "sensitivityLabels": {
+          "type": "array",
+          "items": { "type": "string" },
+          "uniqueItems": true
+        }
+      }
+    },
+    "authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "policyDigest",
+        "effects",
+        "scopes",
+        "filesystemRoots",
+        "networkDestinations",
+        "secretHandles"
+      ],
+      "properties": {
+        "policyDigest": { "$ref": "#/$defs/digest" },
+        "effects": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/effect" },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "scopes": {
+          "type": "array",
+          "items": { "type": "string" },
+          "uniqueItems": true
+        },
+        "filesystemRoots": {
+          "type": "array",
+          "items": { "type": "string" },
+          "uniqueItems": true
+        },
+        "networkDestinations": {
+          "type": "array",
+          "items": { "type": "string" },
+          "uniqueItems": true
+        },
+        "secretHandles": {
+          "type": "array",
+          "items": { "type": "string" },
+          "uniqueItems": true
+        }
+      }
+    },
+    "observedWorkspace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "rootDigest"],
+      "properties": {
+        "source": { "const": "gateway_observed" },
+        "rootDigest": { "$ref": "#/$defs/digest" },
+        "commit": { "type": "string" },
+        "treeDigest": { "$ref": "#/$defs/digest" },
+        "dirtyDiffDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "plannedAt": { "type": "string", "format": "date-time" },
+    "expiresAt": { "type": "string", "format": "date-time" }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "effect": {
+      "enum": [
+        "local_read",
+        "local_write",
+        "process_exec",
+        "network_read",
+        "network_write",
+        "credential_use",
+        "destructive"
+      ]
+    }
+  }
+}

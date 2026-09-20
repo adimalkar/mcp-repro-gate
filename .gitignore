@@ -1,0 +1,9 @@
+node_modules/
+dist/
+coverage/
+.reprogate/
+*.log
+.DS_Store
+
+# Local research source; the curated findings live in docs/VALIDATION.md.
+deep-research-report*.md
