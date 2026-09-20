@@ -15,6 +15,11 @@ updates:
       production-dependencies:
         dependency-type: production
         update-types: [minor, patch]
+    ignore:
+      - dependency-name: typescript
+        versions: [">=7.0.0"]
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: github-actions
     directory: /
