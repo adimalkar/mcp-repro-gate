@@ -15,3 +15,7 @@ All notable changes will be documented in this file. The project follows [Semant
 - Live schema pin checks, JSON Schema argument validation, and indeterminate crash recovery.
 - Signed Execution Receipt v1 schema, verification API, and CLI verification command.
 - Maintained product and engineering improvement backlog.
+- Strict Runtime Configuration v1 with explicit execution-enabled startup.
+- Pre-spawn downstream artifact digest verification.
+- Bounded, symlink-safe filesystem manifest observation.
+- Configuration-aware approval issuance and receipt verification.

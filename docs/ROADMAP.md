@@ -47,13 +47,14 @@ Implemented vertical slice:
 - signed Execution Receipt v1 with result and observer snapshot digests;
 - recovery of incomplete records as `indeterminate`;
 - out-of-band approval and receipt-verification CLI commands;
-- stdio integration, replay, schema-drift, receipt-tampering, and crash-recovery tests.
+- stdio integration, replay, schema-drift, receipt-tampering, and crash-recovery tests;
+- strict Runtime Configuration v1 and explicit execution-enabled CLI startup;
+- downstream artifact digest binding and pre-spawn verification;
+- bounded, symlink-safe filesystem manifest observation.
 
 Still required to complete Phase 2:
 
-- production configuration and explicit execution-enabled server startup;
-- downstream artifact digest verification;
-- a concrete observed-effect implementation rather than an injected interface;
+- Git-specific observed workspace identity and effect classification;
 - transcript recorder integration and deterministic replay;
 - cross-process race and hard-kill test fixtures.
 

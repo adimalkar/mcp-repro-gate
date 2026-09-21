@@ -22,6 +22,9 @@ This repository contains the action-contract kernel, a plan-only MCP server by d
 - re-check a live downstream MCP schema before one stdio call;
 - recover interrupted calls as `indeterminate`;
 - emit and independently verify signed Execution Receipt v1 records.
+- load a strict execution configuration with environment-referenced secrets;
+- bind and verify a downstream artifact before process spawn;
+- hash bounded filesystem manifests without retaining file contents.
 
 Execution is deliberately disabled in the default server and requires explicit executor wiring. The current slice is not a sandbox or a production authorization boundary: artifact verification, authenticated principals, concrete effect observation, and external enforcement are still pending.
 
@@ -53,13 +56,13 @@ Approval issuance is intentionally out of band and reads its secret from the env
 
 ```bash
 REPROGATE_CAPABILITY_SECRET='<at-least-32-byte-secret>' \
-  node dist/src/cli.js approve ./reprogate.sqlite '<action-id>'
+  node dist/src/cli.js approve --config /absolute/path/reprogate.json '<action-id>'
 
 REPROGATE_RECEIPT_SECRET='<at-least-32-byte-secret>' \
-  node dist/src/cli.js verify-receipt ./receipt.json
+  node dist/src/cli.js verify-receipt --config /absolute/path/reprogate.json ./receipt.json
 ```
 
-Do not treat these HMAC keys or the current injected effect observer as a production deployment design. See the threat model before enabling `action.execute`.
+Do not treat these HMAC keys or filesystem observation as OS-level enforcement. See the threat model before enabling `action.execute`.
 
 The default server exposes exactly three tools:
 
@@ -67,7 +70,7 @@ The default server exposes exactly three tools:
 - `action.plan`
 - `policy.explain`
 
-When an executor is explicitly supplied, the server also registers `action.execute`. The included catalog remains a deterministic demo fixture; production configuration is still pending.
+When an executor is explicitly supplied, the server also registers `action.execute`. The CLI does this only after `serve --config <absolute-path>` successfully validates Runtime Configuration v1. See the [configuration guide](docs/CONFIGURATION.md). The included default catalog remains a deterministic, plan-only demo fixture.
 
 ## Core invariant
 
@@ -82,7 +85,7 @@ tool identity + schema + arguments + policy + authority + workspace + expiry
                      one-use approval capability
                                   │
                                   ▼
-                        execution receipt (next)
+                        execution receipt
 ```
 
 Arguments are hashed and not stored raw in decision evidence. Tool schemas and effects come from an operator-controlled catalog, not from model-provided metadata. Workspace identity is reserved for gateway-observed values; the agent cannot label its own context as observed.

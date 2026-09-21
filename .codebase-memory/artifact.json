@@ -1,11 +1,11 @@
 {
     "schema_version": 2,
-    "commit": "eef1918ba2f780aa03befbcc15e920ede31392bf",
-    "indexed_at": "2026-09-21T00:22:28Z",
+    "commit": "f0a191f2ba2c542e112881c8742ffd002ddbf17c",
+    "indexed_at": "2026-09-21T07:16:18Z",
     "project": "mnt-1TB_Drive-Data-MyFiles-Projects-MCP_Plan",
-    "nodes": 427,
-    "edges": 778,
-    "original_size": 2359296,
-    "compressed_size": 239739,
+    "nodes": 562,
+    "edges": 1035,
+    "original_size": 2752512,
+    "compressed_size": 308047,
     "compression_level": 3
 }

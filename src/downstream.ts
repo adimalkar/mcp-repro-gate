@@ -1,6 +1,9 @@
 import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 
+import { sha256File } from "./file-digest.js";
+import type { Digest } from "./types.js";
+
 export interface DownstreamTool {
   name: string;
   inputSchema: unknown;
@@ -13,7 +16,10 @@ export interface DownstreamSession {
 }
 
 export interface DownstreamConnector {
-  connect(serverRef: string): Promise<DownstreamSession>;
+  connect(
+    serverRef: string,
+    expectedArtifactDigest?: Digest,
+  ): Promise<DownstreamSession>;
 }
 
 export interface StdioBackendConfig {
@@ -21,6 +27,10 @@ export interface StdioBackendConfig {
   args?: string[];
   cwd?: string;
   env?: Record<string, string>;
+  artifact?: {
+    path: string;
+    digest: Digest;
+  };
 }
 
 class McpDownstreamSession implements DownstreamSession {
@@ -53,10 +63,35 @@ export class StdioMcpConnector implements DownstreamConnector {
     this.#backends = new Map(Object.entries(backends));
   }
 
-  async connect(serverRef: string): Promise<DownstreamSession> {
+  async connect(
+    serverRef: string,
+    expectedArtifactDigest?: Digest,
+  ): Promise<DownstreamSession> {
     const config = this.#backends.get(serverRef);
     if (config === undefined) {
       throw new Error(`No stdio backend configured for ${serverRef}`);
+    }
+
+    if (config.artifact !== undefined || expectedArtifactDigest !== undefined) {
+      if (
+        config.artifact === undefined ||
+        expectedArtifactDigest === undefined
+      ) {
+        throw new Error(
+          `Artifact identity is not bound on both the plan and backend ${serverRef}`,
+        );
+      }
+      if (config.artifact.digest !== expectedArtifactDigest) {
+        throw new Error(
+          `Configured artifact digest does not match the action plan for ${serverRef}`,
+        );
+      }
+      const observedArtifactDigest = await sha256File(config.artifact.path);
+      if (observedArtifactDigest !== expectedArtifactDigest) {
+        throw new Error(
+          `Downstream artifact changed before execution: ${serverRef}`,
+        );
+      }
     }
 
     const client = new Client({

@@ -86,7 +86,10 @@ export class ReproGateExecutor {
       now,
     );
 
-    const session = await this.connector.connect(plan.envelope.tool.serverRef);
+    const session = await this.connector.connect(
+      plan.envelope.tool.serverRef,
+      plan.envelope.tool.artifactDigest,
+    );
     try {
       const liveTool = await session.getTool(plan.envelope.tool.toolName);
       if (liveTool === undefined) {
