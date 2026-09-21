@@ -8,16 +8,13 @@ import { SqliteExecutionStore } from "../src/execution-store.js";
 import { ReproGateKernel } from "../src/kernel.js";
 import { demoCatalog, demoPolicy } from "../src/demo-config.js";
 
-function temporaryDatabase(context: test.TestContext): string {
+function temporaryDatabase(): { directory: string; path: string } {
   const directory = mkdtempSync(join(tmpdir(), "reprogate-store-"));
-  context.after(() => {
-    rmSync(directory, { recursive: true, force: true });
-  });
-  return join(directory, "reprogate.sqlite");
+  return { directory, path: join(directory, "reprogate.sqlite") };
 }
 
 test("SQLite persists plans and atomically consumes a capability", (context) => {
-  const path = temporaryDatabase(context);
+  const { directory, path } = temporaryDatabase();
   const first = new SqliteExecutionStore(path);
   const plan = new ReproGateKernel(demoCatalog, demoPolicy, first).plan({
     toolRef: "demo.publish",
@@ -29,6 +26,7 @@ test("SQLite persists plans and atomically consumes a capability", (context) => 
   context.after(() => {
     second.close();
     first.close();
+    rmSync(directory, { recursive: true, force: true });
   });
 
   assert.equal(
@@ -56,7 +54,7 @@ test("SQLite persists plans and atomically consumes a capability", (context) => 
 });
 
 test("restart recovery marks write-ahead records indeterminate", (context) => {
-  const path = temporaryDatabase(context);
+  const { directory, path } = temporaryDatabase();
   const beforeCrash = new SqliteExecutionStore(path);
   const plan = new ReproGateKernel(demoCatalog, demoPolicy, beforeCrash).plan({
     toolRef: "demo.publish",
@@ -76,6 +74,7 @@ test("restart recovery marks write-ahead records indeterminate", (context) => {
   const afterRestart = new SqliteExecutionStore(path);
   context.after(() => {
     afterRestart.close();
+    rmSync(directory, { recursive: true, force: true });
   });
   assert.equal(afterRestart.recoverIncomplete("2026-09-20T00:02:00.000Z"), 1);
   assert.equal(
