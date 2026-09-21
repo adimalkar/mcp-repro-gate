@@ -1,4 +1,10 @@
-import { lstatSync, readFileSync } from "node:fs";
+import {
+  closeSync,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readFileSync,
+} from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
 
 import * as z from "zod/v4";
@@ -200,16 +206,23 @@ function requiredSecret(source: NodeJS.ProcessEnv, name: string): string {
 
 export function loadRuntimeConfig(path: string): RuntimeConfigV1 {
   assertAbsolute(path, "Runtime config path");
-  const metadata = lstatSync(path);
-  if (!metadata.isFile())
-    throw new Error("Runtime config must be a regular file");
-  if (metadata.size > 1024 * 1024) {
+  const descriptor = openSync(path, "r");
+  let contents: string;
+  try {
+    if (!fstatSync(descriptor).isFile()) {
+      throw new Error("Runtime config must be a regular file");
+    }
+    contents = readFileSync(descriptor, "utf8");
+  } finally {
+    closeSync(descriptor);
+  }
+  if (Buffer.byteLength(contents) > 1024 * 1024) {
     throw new Error("Runtime config exceeds the 1 MiB limit");
   }
 
   let parsed: unknown;
   try {
-    parsed = JSON.parse(readFileSync(path, "utf8"));
+    parsed = JSON.parse(contents);
   } catch (error) {
     throw new Error("Runtime config is not valid JSON", { cause: error });
   }
