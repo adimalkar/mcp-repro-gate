@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/server";
 import * as z from "zod/v4";
 
 import { demoCatalog, demoPolicy } from "./demo-config.js";
+import type { ReproGateExecutor } from "./executor.js";
 import { ReproGateKernel } from "./kernel.js";
 
 function result(value: unknown) {
@@ -15,7 +16,10 @@ export function createDemoKernel(): ReproGateKernel {
   return new ReproGateKernel(demoCatalog, demoPolicy);
 }
 
-export function createReproGateServer(kernel = createDemoKernel()): McpServer {
+export function createReproGateServer(
+  kernel = createDemoKernel(),
+  executor?: ReproGateExecutor,
+): McpServer {
   const server = new McpServer({ name: "mcp-repro-gate", version: "0.0.0" });
 
   server.registerTool(
@@ -81,6 +85,42 @@ export function createReproGateServer(kernel = createDemoKernel()): McpServer {
       return result({ actionId, policy: plan.policy });
     },
   );
+
+  if (executor !== undefined) {
+    server.registerTool(
+      "action.execute",
+      {
+        description:
+          "Execute one previously planned action using an exact, one-use out-of-band approval capability",
+        inputSchema: z.object({
+          actionId: z.string().min(1),
+          arguments: z.record(z.string(), z.unknown()),
+          capabilityToken: z.string().min(1),
+        }),
+      },
+      async ({ actionId, arguments: toolArguments, capabilityToken }) => {
+        try {
+          return result(
+            await executor.execute({
+              actionId,
+              arguments: toolArguments,
+              capabilityToken,
+            }),
+          );
+        } catch (error) {
+          return {
+            ...result({
+              error:
+                error instanceof Error
+                  ? error.message
+                  : "Unknown execution error",
+            }),
+            isError: true,
+          };
+        }
+      },
+    );
+  }
 
   return server;
 }

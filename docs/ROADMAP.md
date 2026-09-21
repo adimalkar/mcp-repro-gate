@@ -24,7 +24,7 @@ Exit criteria:
 - the MCP process starts without writing protocol data to stdout outside MCP framing;
 - no Phase 1 documentation implies that actions are safely executed.
 
-## Phase 2 — enforce one real downstream MCP call (2–3 weeks)
+## Phase 2 — enforce one real downstream MCP call (in progress, 2–3 weeks)
 
 **Goal:** prove the differentiator end to end with one stdio backend and one write-shaped demo tool.
 
@@ -37,6 +37,25 @@ Scope:
 - signed Execution Receipt v1 containing result and observed-effect digests;
 - deterministic transcript replay by integrating an existing recorder where practical;
 - crash/restart recovery and a malicious TOCTOU/schema-mutation test fixture.
+
+Implemented vertical slice:
+
+- real stdio downstream client session and schema discovery;
+- SQLite-persisted plans, atomic capability consumption, and write-ahead execution state;
+- exact argument digest checks plus JSON Schema validation;
+- fail-closed live schema re-verification before dispatch;
+- signed Execution Receipt v1 with result and observer snapshot digests;
+- recovery of incomplete records as `indeterminate`;
+- out-of-band approval and receipt-verification CLI commands;
+- stdio integration, replay, schema-drift, receipt-tampering, and crash-recovery tests.
+
+Still required to complete Phase 2:
+
+- production configuration and explicit execution-enabled server startup;
+- downstream artifact digest verification;
+- a concrete observed-effect implementation rather than an injected interface;
+- transcript recorder integration and deterministic replay;
+- cross-process race and hard-kill test fixtures.
 
 Exit criteria:
 

@@ -7,10 +7,10 @@ export const demoCatalog: CatalogTool[] = [
     toolName: "read_file",
     description: "Read a file inside the configured demo workspace",
     inputSchema: {
+      $schema: "https://json-schema.org/draft/2020-12/schema",
       type: "object",
       properties: { path: { type: "string" } },
       required: ["path"],
-      additionalProperties: false,
     },
     effects: ["local_read"],
     filesystemRoots: ["./demo-workspace"],
@@ -21,10 +21,10 @@ export const demoCatalog: CatalogTool[] = [
     toolName: "publish",
     description: "Publish content to the approved example endpoint",
     inputSchema: {
+      $schema: "https://json-schema.org/draft/2020-12/schema",
       type: "object",
       properties: { content: { type: "string" } },
       required: ["content"],
-      additionalProperties: false,
     },
     effects: ["network_write"],
     scopes: ["demo:publish"],

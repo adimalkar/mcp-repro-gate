@@ -49,6 +49,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/server": "2.0.0",
+    "ajv": "8.20.0",
     "zod": "4.6.5"
   },
   "devDependencies": {

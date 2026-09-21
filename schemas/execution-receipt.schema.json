@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/adimalkar/mcp-repro-gate/schemas/execution-receipt.schema.json",
+  "title": "ReproGate Execution Receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "receiptVersion",
+    "executionId",
+    "actionId",
+    "envelopeDigest",
+    "capabilityId",
+    "startedAt",
+    "completedAt",
+    "outcome",
+    "resultDigest",
+    "observedEffects",
+    "signingKeyId",
+    "receiptDigest",
+    "signature"
+  ],
+  "properties": {
+    "receiptVersion": { "const": 1 },
+    "executionId": { "type": "string", "minLength": 1 },
+    "actionId": { "$ref": "#/$defs/digest" },
+    "envelopeDigest": { "$ref": "#/$defs/digest" },
+    "capabilityId": { "type": "string", "minLength": 1 },
+    "startedAt": { "type": "string", "format": "date-time" },
+    "completedAt": { "type": "string", "format": "date-time" },
+    "outcome": { "enum": ["succeeded", "failed"] },
+    "resultDigest": { "$ref": "#/$defs/digest" },
+    "observedEffects": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["beforeDigest", "afterDigest"],
+      "properties": {
+        "beforeDigest": { "$ref": "#/$defs/digest" },
+        "afterDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "errorDigest": { "$ref": "#/$defs/digest" },
+    "signingKeyId": { "type": "string", "minLength": 1 },
+    "receiptDigest": { "$ref": "#/$defs/digest" },
+    "signature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "value"],
+      "properties": {
+        "algorithm": { "const": "hmac-sha256" },
+        "value": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  }
+}

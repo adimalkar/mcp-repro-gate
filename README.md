@@ -8,17 +8,21 @@ ReproGate is an action-contract layer for MCP tool execution. It binds a policy 
 
 The goal is narrower than “another MCP gateway”: make a tool action independently inspectable and make approval invalid as soon as the proposed action changes.
 
-## Current status: Phase 1
+## Current status: Phase 2 vertical slice
 
-This repository currently contains the action-contract kernel and a real, plan-only MCP server. It can:
+This repository contains the action-contract kernel, a plan-only MCP server by default, and the first opt-in Phase 2 execution boundary. It can:
 
 - discover tools through a small stable façade;
 - build deterministic, digest-bound action envelopes from an operator-controlled catalog;
 - return explainable `allow`, `approval_required`, or `deny` decisions;
 - issue and validate one-use capability tokens bound to an exact envelope;
 - create tamper-evident, hash-chained decision records.
+- persist plans and atomically consume approvals in SQLite;
+- re-check a live downstream MCP schema before one stdio call;
+- recover interrupted calls as `indeterminate`;
+- emit and independently verify signed Execution Receipt v1 records.
 
-It intentionally **cannot execute downstream tools yet**. Phase 1 is not a sandbox, live security proxy, or production authorization boundary.
+Execution is deliberately disabled in the default server and requires explicit executor wiring. The current slice is not a sandbox or a production authorization boundary: artifact verification, authenticated principals, concrete effect observation, and external enforcement are still pending.
 
 ## Try it
 
@@ -37,13 +41,32 @@ npm run build
 node dist/src/cli.js serve
 ```
 
-The Phase 1 server exposes exactly three tools:
+The Phase 2 APIs are exported for explicit application wiring:
+
+- `SqliteExecutionStore` for durable plans, one-use approvals, and execution state;
+- `StdioMcpConnector` for configured downstream processes;
+- `ReproGateExecutor` for the fail-closed execution sequence;
+- `signExecutionReceipt` and `verifyExecutionReceipt` for receipt handling.
+
+Approval issuance is intentionally out of band and reads its secret from the environment rather than command-line arguments:
+
+```bash
+REPROGATE_CAPABILITY_SECRET='<at-least-32-byte-secret>' \
+  node dist/src/cli.js approve ./reprogate.sqlite '<action-id>'
+
+REPROGATE_RECEIPT_SECRET='<at-least-32-byte-secret>' \
+  node dist/src/cli.js verify-receipt ./receipt.json
+```
+
+Do not treat these HMAC keys or the current injected effect observer as a production deployment design. See the threat model before enabling `action.execute`.
+
+The default server exposes exactly three tools:
 
 - `catalog.search`
 - `action.plan`
 - `policy.explain`
 
-The included catalog is a deterministic demo fixture. A downstream MCP client/proxy and external configuration arrive in Phase 2.
+When an executor is explicitly supplied, the server also registers `action.execute`. The included catalog remains a deterministic demo fixture; production configuration is still pending.
 
 ## Core invariant
 
@@ -67,7 +90,7 @@ Arguments are hashed and not stored raw in decision evidence. Tool schemas and e
 
 MCP gateways, policy engines, audit proxies, replay tools, and provenance systems already exist. ReproGate is designed to integrate with those systems, not rebuild all of them. Its differentiator is the portable contract spanning pre-execution authority and post-execution verification.
 
-See [idea validation](docs/VALIDATION.md), the [phased roadmap](docs/ROADMAP.md), and the [threat model](docs/THREAT_MODEL.md).
+See [idea validation](docs/VALIDATION.md), the [phased roadmap](docs/ROADMAP.md), the [improvement backlog](docs/IMPROVEMENTS.md), and the [threat model](docs/THREAT_MODEL.md).
 
 ## Contributing and security
 

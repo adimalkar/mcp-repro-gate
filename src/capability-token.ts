@@ -99,11 +99,10 @@ export function issueCapabilityToken(
   return `rg1.${payload}.${mac}`;
 }
 
-export function verifyAndConsumeCapabilityToken(
+export function verifyCapabilityToken(
   token: string,
   binding: CapabilityBinding,
   secret: string | Uint8Array,
-  useStore: TokenUseStore,
   now = new Date(),
 ): CapabilityClaimsV1 {
   const parts = token.split(".");
@@ -154,6 +153,17 @@ export function verifyAndConsumeCapabilityToken(
   if (binding.requiredScopes.some((scope) => !grantedScopes.has(scope))) {
     throw new Error("Capability token does not grant all required scopes");
   }
+  return claims;
+}
+
+export function verifyAndConsumeCapabilityToken(
+  token: string,
+  binding: CapabilityBinding,
+  secret: string | Uint8Array,
+  useStore: TokenUseStore,
+  now = new Date(),
+): CapabilityClaimsV1 {
+  const claims = verifyCapabilityToken(token, binding, secret, now);
   if (!useStore.consume(claims.jti)) {
     throw new Error("Capability token has already been consumed");
   }
