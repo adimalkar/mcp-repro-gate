@@ -26,17 +26,39 @@ export interface PlanInput {
   ttlMs?: number;
 }
 
+export interface PlanStore {
+  save(plan: PlannedAction): void;
+  get(actionId: string): PlannedAction | undefined;
+}
+
+export class InMemoryPlanStore implements PlanStore {
+  readonly #plans = new Map<string, PlannedAction>();
+
+  save(plan: PlannedAction): void {
+    this.#plans.set(plan.envelope.actionId, plan);
+  }
+
+  get(actionId: string): PlannedAction | undefined {
+    return this.#plans.get(actionId);
+  }
+}
+
 export class ReproGateKernel {
   readonly #catalog: Map<string, CatalogTool>;
   readonly #policy: PolicyV1;
-  readonly #plans = new Map<string, PlannedAction>();
+  readonly #plans: PlanStore;
 
-  constructor(tools: CatalogTool[], policy: PolicyV1) {
+  constructor(
+    tools: CatalogTool[],
+    policy: PolicyV1,
+    plans: PlanStore = new InMemoryPlanStore(),
+  ) {
     this.#catalog = new Map(tools.map((tool) => [tool.toolRef, tool]));
     if (this.#catalog.size !== tools.length) {
       throw new Error("Catalog contains duplicate toolRef values");
     }
     this.#policy = policy;
+    this.#plans = plans;
   }
 
   search(query: string, limit = 10): CatalogTool[] {
@@ -108,7 +130,7 @@ export class ReproGateKernel {
       expiresAt: new Date(now.getTime() + ttlMs).toISOString(),
     });
     const plan = { envelope, envelopeDigest: envelopeDigest(envelope), policy };
-    this.#plans.set(envelope.actionId, plan);
+    this.#plans.save(plan);
     return plan;
   }
 

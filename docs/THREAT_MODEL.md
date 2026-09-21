@@ -1,8 +1,8 @@
-# Phase 1 threat model
+# Phase 1 and early Phase 2 threat model
 
 ## Security statement
 
-Phase 1 is a semantics prototype. It plans and binds actions but never forwards or executes a downstream tool call. Its capability token implementation demonstrates exact-action binding; the in-memory replay store is not durable enough for production writes.
+Phase 1 remains a semantics prototype. The early Phase 2 library adds an opt-in, durable execution slice for one configured stdio backend. It is designed to test exact-action enforcement and recovery semantics, but it is not yet a sandbox or a production-safe write boundary.
 
 ## Assets
 
@@ -34,15 +34,23 @@ Phase 1 is a semantics prototype. It plans and binds actions but never forwards 
 - conflicting same-priority policies fail instead of selecting by accident;
 - raw action arguments are excluded from decision evidence.
 
-## Known gaps before execution is safe
+## Early Phase 2 controls
 
-- no durable/transactional token-use store across crashes or replicas;
-- no out-of-band human approval interface;
+- plans and execution state can be persisted in SQLite without retaining raw arguments;
+- capability consumption and the pre-dispatch execution record share one transaction;
+- the live downstream schema is re-hashed and arguments are validated before consumption;
+- definite downstream responses produce signed receipts with result/effect digests;
+- transport errors, observer failures, and restart recovery become `indeterminate`;
+- the default server does not expose `action.execute` unless an executor is supplied.
+
+## Known gaps before execution is production-safe
+
+- SQLite is durable locally but has no replica lease/ownership protocol;
+- the approval CLI proves out-of-band issuance but has no authenticated approver identity or review UI;
 - no transport-authenticated principal extraction;
-- no live downstream schema negotiation or artifact verification;
-- no JSON Schema validation of downstream arguments;
+- downstream schema negotiation exists, but artifact identity is not yet verified;
 - no process, filesystem, network, secret, or sandbox enforcement;
-- no gateway-observed repository state yet;
+- effect observation is an interface; no gateway-observed repository implementation exists yet;
 - HMAC proves possession of a shared secret, not third-party/non-repudiable authorship;
 - a hash chain detects mutation only when an independent checkpoint or signature is retained;
 - no protection from a compromised gateway process or signing key.
