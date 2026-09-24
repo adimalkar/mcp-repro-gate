@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/adimalkar/mcp-repro-gate/actions/workflows/ci.yml/badge.svg)](https://github.com/adimalkar/mcp-repro-gate/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/adimalkar/mcp-repro-gate/actions/workflows/codeql.yml/badge.svg)](https://github.com/adimalkar/mcp-repro-gate/actions/workflows/codeql.yml)
+[![M8ven Verified](https://m8ven.ai/badge/mcp/adimalkar/mcp-repro-gate?variant=verified)](https://m8ven.ai/mcp/adimalkar/mcp-repro-gate)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 ReproGate is an action-contract layer for MCP tool execution. It binds a policy decision or human approval to the exact tool, schema, arguments, authority, policy, and observed workspace state, then makes that binding available to an execution receipt.
