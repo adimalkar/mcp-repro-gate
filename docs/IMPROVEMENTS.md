@@ -11,14 +11,14 @@ This is the maintained improvement backlog for ReproGate. Items are ordered by t
 - [x] Mark interrupted or ambiguous calls `indeterminate` instead of inferring an outcome.
 - [x] Produce a signed Execution Receipt v1 and an independent verification function/CLI.
 - [x] Exercise a real downstream MCP stdio process in integration tests.
-- [ ] Add a production configuration format and start the execution-enabled MCP façade only when every backend, observer, database, and secret is explicitly configured.
-- [ ] Bind and verify the downstream server artifact digest, not only its advertised schema.
+- [x] Add a production configuration format and start the execution-enabled MCP façade only when every backend, observer, database, and secret is explicitly configured.
+- [x] Bind and verify the downstream server artifact digest, not only its advertised schema.
 - [ ] Replace shared-secret receipt signatures with an asymmetric signing provider and documented key rotation.
 - [ ] Add process ownership/lease metadata so recovery can distinguish a crashed worker from a still-running replica.
 
 ## P1 — make observed effects meaningful for developers
 
-- [ ] Implement a Git workspace observer for commit, tree, dirty diff, changed paths, and symlink-safe roots.
+- [ ] Extend the implemented symlink-safe filesystem manifest observer with Git commit, tree, dirty diff, and changed-path identity.
 - [ ] Compare approved filesystem/network authority with actual effects and emit `verified`, `failed`, `drifted`, or `indeterminate`.
 - [ ] Add verifier plug-ins for test commands, secret scanning, path boundaries, and user-defined checks.
 - [ ] Store content-addressed verifier outputs while redacting arguments, source, prompts, and secrets by default.

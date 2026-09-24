@@ -41,16 +41,19 @@ Phase 1 remains a semantics prototype. The early Phase 2 library adds an opt-in,
 - the live downstream schema is re-hashed and arguments are validated before consumption;
 - definite downstream responses produce signed receipts with result/effect digests;
 - transport errors, observer failures, and restart recovery become `indeterminate`;
-- the default server does not expose `action.execute` unless an executor is supplied.
+- the default server does not expose `action.execute` unless an executor is supplied;
+- configured CLI startup requires complete backend, observer, database, and environment-secret references;
+- configured backends bind a file artifact digest into the plan and verify it before process spawn;
+- the filesystem observer hashes bounded roots and records, but does not follow, internal symlinks.
 
 ## Known gaps before execution is production-safe
 
 - SQLite is durable locally but has no replica lease/ownership protocol;
 - the approval CLI proves out-of-band issuance but has no authenticated approver identity or review UI;
 - no transport-authenticated principal extraction;
-- downstream schema negotiation exists, but artifact identity is not yet verified;
-- no process, filesystem, network, secret, or sandbox enforcement;
-- effect observation is an interface; no gateway-observed repository implementation exists yet;
+- artifact identity covers one configured file but cannot eliminate a hostile same-host replacement race;
+- no OS-level process, filesystem, network, secret, or sandbox enforcement;
+- filesystem effects are content-addressed, but Git identity and network/process/credential observation are not implemented;
 - HMAC proves possession of a shared secret, not third-party/non-repudiable authorship;
 - a hash chain detects mutation only when an independent checkpoint or signature is retained;
 - no protection from a compromised gateway process or signing key.

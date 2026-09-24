@@ -1,0 +1,203 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/adimalkar/mcp-repro-gate/schemas/runtime-config.schema.json",
+  "title": "ReproGate Runtime Configuration v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "configVersion",
+    "databasePath",
+    "catalog",
+    "policy",
+    "backends",
+    "observer",
+    "secrets"
+  ],
+  "properties": {
+    "configVersion": { "const": 1 },
+    "databasePath": { "type": "string", "minLength": 1 },
+    "catalog": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/catalogTool" }
+    },
+    "policy": { "$ref": "#/$defs/policy" },
+    "backends": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": { "$ref": "#/$defs/backend" }
+    },
+    "observer": { "$ref": "#/$defs/observer" },
+    "secrets": { "$ref": "#/$defs/secrets" }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "effect": {
+      "enum": [
+        "local_read",
+        "local_write",
+        "process_exec",
+        "network_read",
+        "network_write",
+        "credential_use",
+        "destructive"
+      ]
+    },
+    "decision": { "enum": ["allow", "approval_required", "deny"] },
+    "stringArray": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "catalogTool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "toolRef",
+        "serverRef",
+        "toolName",
+        "description",
+        "inputSchema",
+        "effects",
+        "artifactDigest"
+      ],
+      "properties": {
+        "toolRef": { "type": "string", "minLength": 1 },
+        "serverRef": { "type": "string", "minLength": 1 },
+        "toolName": { "type": "string", "minLength": 1 },
+        "description": { "type": "string", "minLength": 1 },
+        "inputSchema": true,
+        "effects": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/effect" }
+        },
+        "scopes": { "$ref": "#/$defs/stringArray" },
+        "filesystemRoots": { "$ref": "#/$defs/stringArray" },
+        "networkDestinations": { "$ref": "#/$defs/stringArray" },
+        "secretHandles": { "$ref": "#/$defs/stringArray" },
+        "sensitivityLabels": { "$ref": "#/$defs/stringArray" },
+        "artifactDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "defaults", "rules"],
+      "properties": {
+        "version": { "const": 1 },
+        "defaults": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "local_read",
+            "local_write",
+            "process_exec",
+            "network_read",
+            "network_write",
+            "credential_use",
+            "destructive"
+          ],
+          "properties": {
+            "local_read": { "$ref": "#/$defs/decision" },
+            "local_write": { "$ref": "#/$defs/decision" },
+            "process_exec": { "$ref": "#/$defs/decision" },
+            "network_read": { "$ref": "#/$defs/decision" },
+            "network_write": { "$ref": "#/$defs/decision" },
+            "credential_use": { "$ref": "#/$defs/decision" },
+            "destructive": { "$ref": "#/$defs/decision" }
+          }
+        },
+        "rules": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "priority", "match", "decision", "reason"],
+            "properties": {
+              "id": { "type": "string", "minLength": 1 },
+              "priority": { "type": "integer" },
+              "match": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "toolRef": { "type": "string", "minLength": 1 },
+                  "effect": { "$ref": "#/$defs/effect" }
+                }
+              },
+              "decision": { "$ref": "#/$defs/decision" },
+              "reason": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
+      }
+    },
+    "backend": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["transport", "command", "args", "environment", "artifact"],
+      "properties": {
+        "transport": { "const": "stdio" },
+        "command": { "type": "string", "minLength": 1 },
+        "args": { "type": "array", "items": { "type": "string" } },
+        "cwd": { "type": "string", "minLength": 1 },
+        "environment": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["inherit", "from"],
+          "properties": {
+            "inherit": { "enum": ["safe", "none"] },
+            "from": {
+              "type": "object",
+              "propertyNames": { "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
+              "additionalProperties": {
+                "type": "string",
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+              }
+            }
+          }
+        },
+        "artifact": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path", "digest"],
+          "properties": {
+            "path": { "type": "string", "minLength": 1 },
+            "digest": { "$ref": "#/$defs/digest" }
+          }
+        }
+      }
+    },
+    "observer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "roots"],
+      "properties": {
+        "kind": { "const": "filesystem_manifest" },
+        "roots": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "maxEntries": { "type": "integer", "minimum": 1 },
+        "maxBytes": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "secrets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["capabilitySecretEnv", "receiptSecretEnv", "receiptKeyId"],
+      "properties": {
+        "capabilitySecretEnv": { "$ref": "#/$defs/environmentName" },
+        "receiptSecretEnv": { "$ref": "#/$defs/environmentName" },
+        "receiptKeyId": { "type": "string", "minLength": 1 }
+      }
+    },
+    "environmentName": {
+      "type": "string",
+      "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+    }
+  }
+}
