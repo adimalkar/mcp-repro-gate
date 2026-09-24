@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { realpathSync } from "node:fs";
+import { realpathSync, statSync } from "node:fs";
 
 import { digestCanonical, sha256 } from "./digest.js";
 import type { Digest } from "./types.js";
@@ -94,7 +94,17 @@ export function observeCleanGitWorkspace(
   const root = realpathSync(repositoryPath);
   validateRef(root, destinationRef);
   const gitRoot = realpathSync(gitLine(root, "rev-parse", "--show-toplevel"));
-  if (root !== gitRoot) {
+  // Path strings can differ for one directory (notably 8.3 aliases on Windows).
+  // Compare filesystem identity so a nested directory is still rejected.
+  const requestedStat = statSync(root, { bigint: true });
+  const gitStat = statSync(gitRoot, { bigint: true });
+  if (
+    !requestedStat.isDirectory() ||
+    !gitStat.isDirectory() ||
+    requestedStat.ino === 0n ||
+    requestedStat.dev !== gitStat.dev ||
+    requestedStat.ino !== gitStat.ino
+  ) {
     throw new Error("Repository path must be the Git worktree root");
   }
 
@@ -140,7 +150,7 @@ export function observeCleanGitWorkspace(
   }
   return {
     source: "git_observed",
-    rootDigest: sha256(root),
+    rootDigest: sha256(gitRoot),
     ...second,
     destinationRef,
     status: "clean",
