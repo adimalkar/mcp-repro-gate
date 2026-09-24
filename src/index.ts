@@ -8,6 +8,7 @@ export * from "./execution-store.js";
 export * from "./executor.js";
 export * from "./file-digest.js";
 export * from "./filesystem-observer.js";
+export * from "./git-change-proposal.js";
 export * from "./kernel.js";
 export * from "./policy.js";
 export * from "./receipt.js";
