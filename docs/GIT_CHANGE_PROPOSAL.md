@@ -1,6 +1,6 @@
 # Git change proposal v1
 
-This is the first **plan-only** Phase 3 slice. It binds a proposed patch's bytes to a read-only observation of a clean Git worktree and exact, operator-intended path list. It does not approve, stage, apply, commit, or promote the patch.
+The proposal contract binds a proposed patch's bytes to a read-only observation of a clean Git worktree and exact, operator-intended path list. The second Phase 3 slice can stage that patch in a disposable Git index and inspect its actual changed paths. Neither API approves, commits, or promotes the patch.
 
 The exported `createGitChangeProposal` function takes a repository path, destination branch ref, repository/action/policy identifiers, patch bytes, allowed file paths, and expiry. It returns a versioned proposal containing:
 
@@ -17,8 +17,9 @@ The structural format is in [`git-change-proposal.schema.json`](../schemas/git-c
 
 - The workspace fields are observed through local Git commands. `repositoryId`, `actionId`, `policyDigest`, path scope, and patch bytes are caller inputs until a later phase wires them to the operator catalog, durable plan, and approval store. The proposal does not authenticate those references.
 - `verifyGitChangeProposal` checks the proposal's digest, **not** a signature. Anyone who can rewrite a proposal can compute a new digest.
-- The patch is hashed, not parsed or checked against `allowedPaths`. A proposal containing a patch that touches an unapproved file can still be created. The staged executor must perform changed-path verification before any protected ref update.
+- The proposal alone hashes the patch without parsing it. `stageGitChangeProposal` checks the exact patch bytes, expiry, and worktree witness; clones into a temporary directory; applies the patch to that clone's index; then reads Git's NUL-delimited raw diff. It rejects an empty or malformed effect, a path outside `allowedPaths`, and symlink, submodule, or other non-regular file modes. A rename requires both old and new paths in scope.
+- The staged result records the candidate tree OID, exact changed paths, and digest of Git's staged diff. It is an ephemeral computation, **not** an approval, signature, durable receipt, or object installed in the protected repository. The temporary clone and its objects are deleted when the call returns.
 - Git's clean status excludes ignored files, and the observation does not cover process, network, credential, or other external effects. Root-path hashing binds this local worktree but is not a portable proof of repository ownership.
-- There is no atomic approval/revocation check or compare-and-swap ref update yet. Do not describe a proposal or passing drift check as an authorized code change or effect-confinement receipt.
+- The pre/post worktree checks do not eliminate a race or ABA change between observations. There is no atomic approval/revocation check or compare-and-swap ref update yet. Do not describe a proposal or staged result as an authorized code change or effect-confinement receipt.
 
-The next slice is a staged patch executor with a trusted changed-path manifest, fresh approval/workspace checks, and fail-closed promotion. See the [roadmap](ROADMAP.md).
+The next slice must bind a trusted approval to the exact proposal/effect and design a safe compare-and-swap promotion without writing a checked-out branch behind its worktree. See the [roadmap](ROADMAP.md).
