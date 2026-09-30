@@ -5,11 +5,11 @@
 [![M8ven Verified](https://m8ven.ai/badge/mcp/adimalkar/mcp-repro-gate?variant=verified)](https://m8ven.ai/mcp/adimalkar/mcp-repro-gate)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-ReproGate is an action-contract layer for MCP tool execution. It binds a policy decision or human approval to the exact tool, schema, arguments, authority, policy, and observed workspace state, then makes that binding available to an execution receipt.
+ReproGate is an action-contract layer for MCP tool execution. Its intended contract binds a policy decision or human approval to the exact tool, schema, arguments, authority, policy, and observed workspace state, then makes that binding available to an execution receipt. The current configured path does not yet enforce all of those fields at a durable write boundary.
 
 The goal is narrower than “another MCP gateway”: make a tool action independently inspectable and make approval invalid as soon as the proposed action changes.
 
-## Current status: Phase 2 vertical slice
+## Current status: Phase 2 reference path and Phase 3 proposal slice
 
 This repository contains the action-contract kernel, a plan-only MCP server by default, and the first opt-in Phase 2 execution boundary. It can:
 
@@ -25,8 +25,9 @@ This repository contains the action-contract kernel, a plan-only MCP server by d
 - load a strict execution configuration with environment-referenced secrets;
 - bind and verify a downstream artifact before process spawn;
 - hash bounded filesystem manifests without retaining file contents.
+- bind a proposed patch digest to a read-only, clean Git worktree witness and exact path list.
 
-Execution is deliberately disabled in the default server and requires explicit executor wiring. The current slice is not a sandbox or a production authorization boundary: artifact verification, authenticated principals, concrete effect observation, and external enforcement are still pending.
+Execution is deliberately disabled in the default server and requires explicit executor wiring. The configured path is not a sandbox or a production authorization boundary. The new Git proposal API is plan-only: it does not validate a patch against allowed paths, approve it, or promote a commit. See the [Git proposal contract and limits](docs/GIT_CHANGE_PROPOSAL.md).
 
 ## Try it
 

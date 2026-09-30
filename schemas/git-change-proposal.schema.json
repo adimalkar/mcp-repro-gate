@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://reprogate.dev/schemas/git-change-proposal-v1.json",
+  "title": "ReproGate Git Change Proposal v1",
+  "$comment": "Structural schema only. Git ref/path safety, clean-worktree observation, and proposalId integrity require the library checks.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "proposalVersion",
+    "proposalId",
+    "repositoryId",
+    "actionId",
+    "policyDigest",
+    "workspace",
+    "patchDigest",
+    "allowedPaths",
+    "createdAt",
+    "expiresAt"
+  ],
+  "properties": {
+    "proposalVersion": { "const": 1 },
+    "proposalId": { "$ref": "#/$defs/digest" },
+    "repositoryId": { "type": "string", "minLength": 1 },
+    "actionId": { "$ref": "#/$defs/digest" },
+    "policyDigest": { "$ref": "#/$defs/digest" },
+    "workspace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source",
+        "rootDigest",
+        "headCommit",
+        "headTree",
+        "destinationRef",
+        "destinationOid",
+        "status"
+      ],
+      "properties": {
+        "source": { "const": "git_observed" },
+        "rootDigest": { "$ref": "#/$defs/digest" },
+        "headCommit": { "$ref": "#/$defs/gitOid" },
+        "headTree": { "$ref": "#/$defs/gitOid" },
+        "destinationRef": {
+          "type": "string",
+          "pattern": "^refs/heads/"
+        },
+        "destinationOid": { "$ref": "#/$defs/gitOid" },
+        "status": { "const": "clean" }
+      }
+    },
+    "patchDigest": { "$ref": "#/$defs/digest" },
+    "allowedPaths": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 256,
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "expiresAt": { "type": "string", "format": "date-time" }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "gitOid": {
+      "type": "string",
+      "pattern": "^([0-9a-f]{40}|[0-9a-f]{64})$"
+    }
+  }
+}
