@@ -9,7 +9,7 @@ ReproGate is an action-contract layer for MCP tool execution. Its intended contr
 
 The goal is narrower than “another MCP gateway”: make a tool action independently inspectable and make approval invalid as soon as the proposed action changes.
 
-## Current status: Phase 2 reference path and Phase 3 proposal slice
+## Current status: Phase 2 reference path and Phase 3 proposal/staging slices
 
 This repository contains the action-contract kernel, a plan-only MCP server by default, and the first opt-in Phase 2 execution boundary. It can:
 
@@ -27,7 +27,7 @@ This repository contains the action-contract kernel, a plan-only MCP server by d
 - hash bounded filesystem manifests without retaining file contents.
 - bind a proposed patch digest to a read-only, clean Git worktree witness and exact path list.
 
-Execution is deliberately disabled in the default server and requires explicit executor wiring. The configured path is not a sandbox or a production authorization boundary. The new Git proposal API is plan-only: it does not validate a patch against allowed paths, approve it, or promote a commit. See the [Git proposal contract and limits](docs/GIT_CHANGE_PROPOSAL.md).
+Execution is deliberately disabled in the default server and requires explicit executor wiring. The configured path is not a sandbox or a production authorization boundary. The Git staging API validates the patch's actual changed paths in a disposable index, but neither approves it nor promotes a commit. See the [Git proposal and staging contract and limits](docs/GIT_CHANGE_PROPOSAL.md).
 
 ## Try it
 
