@@ -9,7 +9,7 @@ ReproGate is an action-contract layer for MCP tool execution. Its intended contr
 
 The goal is narrower than “another MCP gateway”: make a tool action independently inspectable and make approval invalid as soon as the proposed action changes.
 
-## Current status: Phase 2 reference path and Phase 3 plan-bound approval slices
+## Current status: Phase 2 reference path and Phase 3 authenticated-review slices
 
 This repository contains the action-contract kernel, a plan-only MCP server by default, and the first opt-in Phase 2 execution boundary. It can:
 
@@ -28,8 +28,9 @@ This repository contains the action-contract kernel, a plan-only MCP server by d
 - bind a proposed patch digest to a read-only, clean Git worktree witness and exact path list.
 - stage a Git patch in a disposable index and record a host-side, revocable approval of its reviewed effect.
 - bind that approval to a persisted exact-action Git intent, current catalog, policy, and repository configuration.
+- authenticate operator-key decisions about an exact staged Git effect and atomically record linked approval evidence or a durable denial.
 
-Execution is deliberately disabled in the default server and requires explicit executor wiring. The configured path is not a sandbox or a production authorization boundary. The Git staging API validates actual changed paths in a disposable index; a host-side ledger can bind a reviewed effect to a persisted plan, but operator authentication and ref promotion are not wired. See the [Git change contract and limits](docs/GIT_CHANGE_PROPOSAL.md).
+Execution is deliberately disabled in the default server and requires explicit executor wiring. The configured path is not a sandbox or a production authorization boundary. Git review authenticates a configured signing key and exact decision, not human presence or inspection. The host owns configuration, databases and key isolation; protected-ref promotion is not implemented. See the [Git change contract and limits](docs/GIT_CHANGE_PROPOSAL.md).
 
 ## Try it
 
@@ -66,6 +67,8 @@ REPROGATE_RECEIPT_SECRET='<at-least-32-byte-secret>' \
 ```
 
 Do not treat these HMAC keys or filesystem observation as OS-level enforcement. See the threat model before enabling `action.execute`.
+
+The separate host-only `git-review` CLI prepares an exact staged-effect request, signs an explicit operator-key decision, imports linked evidence, checks current authorization, and revokes ledger approval. Signing reads a protected key file only after staging and displays the full safely escaped diff; no default MCP approval tool is added. See the [operator review guide](docs/GIT_OPERATOR_REVIEW.md) for configuration, commands, limits and deployment separation.
 
 The default server exposes exactly three tools:
 
