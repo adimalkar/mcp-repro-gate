@@ -1459,42 +1459,55 @@ test("a failing SQLite trigger rolls back approval and evidence together", (cont
 });
 
 test("the decision table enforces coherent approval linkage", (context) => {
+  let assertDatabaseClosed: () => void = () => {
+    assert.fail("The constraint database was not opened");
+  };
+  // after hooks are FIFO: verify closure before the fixture removes SQLite files.
+  context.after(() => {
+    assertDatabaseClosed();
+  });
   const f = fixture(context);
   f.openStore();
-  const database = new DatabaseSync(f.approvalsPath);
-  context.after(() => {
-    database.close();
+  const database = new DatabaseSync(f.approvalsPath, {
+    enableForeignKeyConstraints: true,
   });
-  const insert = database.prepare(
-    `INSERT INTO git_operator_review_decisions
+  assertDatabaseClosed = () => {
+    assert.throws(() => database.prepare("SELECT 1"), /database is not open/u);
+  };
+  try {
+    const insert = database.prepare(
+      `INSERT INTO git_operator_review_decisions
      (proposal_id, review_digest, decision, review_json, approval_id, received_at)
      VALUES (?, ?, ?, '{}', ?, '2026-01-01T00:00:00.000Z')`,
-  );
-  assert.throws(
-    () => insert.run(sha256("a"), sha256("a"), "approve", null),
-    /CHECK constraint/u,
-  );
-  assert.throws(
-    () => insert.run(sha256("b"), sha256("b"), "deny", "approval"),
-    /CHECK constraint/u,
-  );
-  assert.throws(
-    () => insert.run(sha256("c"), sha256("c"), "approve", "missing"),
-    /FOREIGN KEY constraint/u,
-  );
-  assert.throws(
-    () => insert.run(sha256("d"), sha256("d"), "maybe", null),
-    /CHECK constraint/u,
-  );
-  insert.run(sha256("e"), sha256("e"), "deny", null);
-  assert.throws(
-    () => insert.run(sha256("e"), sha256("f"), "deny", null),
-    /UNIQUE constraint/u,
-  );
-  assert.throws(
-    () => insert.run(sha256("g"), sha256("e"), "deny", null),
-    /UNIQUE constraint/u,
-  );
+    );
+    assert.throws(
+      () => insert.run(sha256("a"), sha256("a"), "approve", null),
+      /CHECK constraint/u,
+    );
+    assert.throws(
+      () => insert.run(sha256("b"), sha256("b"), "deny", "approval"),
+      /CHECK constraint/u,
+    );
+    assert.throws(
+      () => insert.run(sha256("c"), sha256("c"), "approve", "missing"),
+      /FOREIGN KEY constraint/u,
+    );
+    assert.throws(
+      () => insert.run(sha256("d"), sha256("d"), "maybe", null),
+      /CHECK constraint/u,
+    );
+    insert.run(sha256("e"), sha256("e"), "deny", null);
+    assert.throws(
+      () => insert.run(sha256("e"), sha256("f"), "deny", null),
+      /UNIQUE constraint/u,
+    );
+    assert.throws(
+      () => insert.run(sha256("g"), sha256("e"), "deny", null),
+      /UNIQUE constraint/u,
+    );
+  } finally {
+    database.close();
+  }
 });
 
 interface WorkerResult {

@@ -1,20 +1,22 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import {
+  closeSync,
   existsSync,
+  fstatSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readFileSync,
   readdirSync,
   realpathSync,
-  statSync,
   renameSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 
 import {
@@ -29,8 +31,10 @@ function git(root: string, ...args: string[]): string {
   }).trim();
 }
 
-function fixture(context: TestContext) {
-  const scratch = mkdtempSync(join(tmpdir(), "reprogate-review-paths-"));
+function fixture(context: TestContext, temporaryParent = tmpdir()) {
+  const scratch = realpathSync.native(
+    mkdtempSync(join(temporaryParent, "reprogate-review-paths-")),
+  );
   context.after(() => {
     rmSync(scratch, { recursive: true, force: true });
   });
@@ -46,10 +50,10 @@ function fixture(context: TestContext) {
   git(main, "commit", "-q", "-m", "initial");
   const linked = join(scratch, "linked");
   git(main, "worktree", "add", "-q", "-b", "linked", linked);
-  const gitdir = realpathSync(
+  const gitdir = realpathSync.native(
     resolve(linked, git(linked, "rev-parse", "--git-dir")),
   );
-  const common = realpathSync(
+  const common = realpathSync.native(
     resolve(linked, git(linked, "rev-parse", "--git-common-dir")),
   );
   const config = (repositoryPath: string): GitReviewConfigV1 => ({
@@ -118,8 +122,17 @@ function rejectsMetadataState(
     );
   }
   const paths = resolveGitReviewStatePaths(config, options);
-  assert.equal(paths.planDatabasePath, config.planDatabasePath);
-  assert.equal(paths.approvalDatabasePath, config.approvalDatabasePath);
+  // The database need not exist; canonicalize its existing parent instead.
+  const physicalStatePath = (path: string) =>
+    join(realpathSync.native(dirname(path)), basename(path));
+  assert.equal(
+    paths.planDatabasePath,
+    physicalStatePath(config.planDatabasePath),
+  );
+  assert.equal(
+    paths.approvalDatabasePath,
+    physicalStatePath(config.approvalDatabasePath),
+  );
   for (const directory of [f.gitdir, f.common, f.state]) {
     for (const name of [
       "approval.sqlite",
@@ -133,20 +146,111 @@ function rejectsMetadataState(
   }
 }
 
+test("an aliased temporary parent resolves state paths to native physical paths", (context) => {
+  const temporaryRoot = mkdtempSync(join(tmpdir(), "reprogate-review-alias-"));
+  const physicalParent = join(temporaryRoot, "physical");
+  const alias = join(temporaryRoot, "alias");
+  mkdirSync(physicalParent);
+  symlinkSync(
+    physicalParent,
+    alias,
+    process.platform === "win32" ? "junction" : "dir",
+  );
+  const f = fixture(context, alias);
+  context.after(() => {
+    rmSync(temporaryRoot, { recursive: true, force: true });
+  });
+  assert.equal(f.scratch, realpathSync.native(f.scratch));
+  const linked = join(alias, basename(f.scratch), "linked");
+  const state = join(alias, basename(f.scratch), "state");
+  const aliasedFixture = {
+    ...f,
+    linked,
+    state,
+    config: (repositoryPath: string): GitReviewConfigV1 => ({
+      ...f.config(repositoryPath),
+      planDatabasePath: join(state, "plans.sqlite"),
+      approvalDatabasePath: join(state, "approvals.sqlite"),
+    }),
+  };
+  const before = protectedState(aliasedFixture);
+  rejectsMetadataState(aliasedFixture, linked);
+  const config = aliasedFixture.config(linked);
+  const paths = resolveGitReviewStatePaths(config, {
+    requirePlanDatabase: false,
+  });
+  assert.notEqual(paths.planDatabasePath, config.planDatabasePath);
+  assert.notEqual(paths.approvalDatabasePath, config.approvalDatabasePath);
+  const roots = gitReviewProtectedRoots(linked);
+  for (const root of [linked, f.gitdir, f.common]) {
+    assert.ok(roots.includes(realpathSync.native(root)));
+  }
+  assert.deepEqual(protectedState(aliasedFixture), before);
+});
+
 function protectedState(f: ReturnType<typeof fixture>) {
   return {
     head: git(f.linked, "rev-parse", "HEAD"),
     worktree: readFileSync(join(f.linked, "value.txt")),
     metadata: [f.gitdir, f.common].map((directory) =>
-      readdirSync(directory, { recursive: true, encoding: "utf8" })
-        .sort()
-        .map((name) => {
-          const path = join(directory, name);
-          return [name, statSync(path).isFile() ? readFileSync(path) : null];
+      readdirSync(directory, { recursive: true, withFileTypes: true })
+        .map((entry) => ({
+          entry,
+          name: relative(directory, join(entry.parentPath, entry.name)),
+        }))
+        .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+        .map(({ entry, name }) => {
+          // Windows cannot open directories for reading. Keep their names in
+          // the snapshot, then inspect/read files through one descriptor.
+          if (entry.isDirectory()) return [name, null];
+          const descriptor = openSync(join(directory, name), "r");
+          try {
+            return [
+              name,
+              fstatSync(descriptor).isFile() ? readFileSync(descriptor) : null,
+            ];
+          } finally {
+            closeSync(descriptor);
+          }
         }),
     ),
   };
 }
+
+test("protected metadata snapshots retain directory names and exact nested file bytes", (context) => {
+  const f = fixture(context);
+  const directoryName = "snapshot-directory";
+  const fileName = join(directoryName, "snapshot.bin");
+  const directory = join(f.gitdir, directoryName);
+  const file = join(f.gitdir, fileName);
+  const contents = Buffer.from([0, 10, 13, 128, 255]);
+  mkdirSync(directory);
+  writeFileSync(file, contents);
+  const before = protectedState(f);
+  const entries = before.metadata[0];
+  assert.ok(entries);
+  assert.deepEqual(
+    entries.find(([name]) => name === directoryName),
+    [directoryName, null],
+  );
+  assert.deepEqual(
+    entries.find(([name]) => name === fileName),
+    [fileName, contents],
+  );
+  writeFileSync(file, Buffer.from([255, 128, 13, 10, 0]));
+  assert.notDeepEqual(protectedState(f).metadata, before.metadata);
+  renameSync(file, join(directory, "renamed.bin"));
+  const after = protectedState(f).metadata[0];
+  assert.ok(after);
+  assert.equal(
+    after.some(([name]) => name === fileName),
+    false,
+  );
+  assert.deepEqual(
+    after.find(([name]) => name === join(directoryName, "renamed.bin")),
+    [join(directoryName, "renamed.bin"), Buffer.from([255, 128, 13, 10, 0])],
+  );
+});
 
 for (const form of ["directory", "directory symlink"] as const) {
   test(
@@ -163,17 +267,17 @@ for (const form of ["directory", "directory symlink"] as const) {
         renameSync(f.gitdir, dotGit);
         // Keep the common target valid after moving the linked gitdir.
         writeFileSync(join(dotGit, "commondir"), `${f.common}\n`);
-        f = { ...f, gitdir: realpathSync(dotGit) };
+        f = { ...f, gitdir: realpathSync.native(dotGit) };
       }
       assert.equal(git(f.linked, "rev-parse", "--is-inside-work-tree"), "true");
       assert.equal(
-        realpathSync(
+        realpathSync.native(
           resolve(f.linked, git(f.linked, "rev-parse", "--git-dir")),
         ),
         f.gitdir,
       );
       assert.equal(
-        realpathSync(
+        realpathSync.native(
           resolve(f.linked, git(f.linked, "rev-parse", "--git-common-dir")),
         ),
         f.common,
@@ -182,7 +286,7 @@ for (const form of ["directory", "directory symlink"] as const) {
       assert.equal(git(f.linked, "status", "--porcelain"), "");
       const before = protectedState(f);
       const roots = gitReviewProtectedRoots(f.linked);
-      assert.ok(roots.includes(realpathSync(f.linked)));
+      assert.ok(roots.includes(realpathSync.native(f.linked)));
       assert.ok(roots.includes(f.gitdir));
       assert.ok(
         roots.includes(f.common),
@@ -200,7 +304,7 @@ test("directory-form .git rejects malformed and unreadable existing commondir po
   const commonPath = join(f.main, ".git", "commondir");
   assert.ok(
     gitReviewProtectedRoots(f.main).includes(
-      realpathSync(join(f.main, ".git")),
+      realpathSync.native(join(f.main, ".git")),
     ),
   );
   for (const contents of ["", "unrecognized\nextra line\n", "x".repeat(4097)]) {
@@ -225,7 +329,7 @@ test("directory-form .git rejects malformed and unreadable existing commondir po
   }
   assert.ok(
     gitReviewProtectedRoots(f.main).includes(
-      realpathSync(join(f.main, ".git")),
+      realpathSync.native(join(f.main, ".git")),
     ),
   );
 });
@@ -233,7 +337,7 @@ test("directory-form .git rejects malformed and unreadable existing commondir po
 test("linked worktrees protect their actual Git directory and common directory", (context) => {
   const f = fixture(context);
   const roots = gitReviewProtectedRoots(f.linked);
-  assert.ok(roots.includes(realpathSync(f.linked)));
+  assert.ok(roots.includes(realpathSync.native(f.linked)));
   assert.ok(roots.includes(f.gitdir));
   assert.ok(roots.includes(f.common));
   rejectsMetadataState(f, f.linked);
@@ -251,11 +355,13 @@ test(
     renameSync(join(f.linked, ".git"), pointer);
     symlinkSync(pointer, join(f.linked, ".git"));
     assert.equal(
-      realpathSync(resolve(f.linked, git(f.linked, "rev-parse", "--git-dir"))),
+      realpathSync.native(
+        resolve(f.linked, git(f.linked, "rev-parse", "--git-dir")),
+      ),
       f.gitdir,
     );
     assert.equal(
-      realpathSync(
+      realpathSync.native(
         resolve(f.linked, git(f.linked, "rev-parse", "--git-common-dir")),
       ),
       f.common,
@@ -279,7 +385,9 @@ test(
     renameSync(join(f.main, ".git"), actual);
     symlinkSync(actual, join(f.main, ".git"), "dir");
     assert.equal(git(f.main, "rev-parse", "--is-inside-work-tree"), "true");
-    assert.ok(gitReviewProtectedRoots(f.main).includes(realpathSync(actual)));
+    assert.ok(
+      gitReviewProtectedRoots(f.main).includes(realpathSync.native(actual)),
+    );
     assert.throws(
       () =>
         resolveGitReviewStatePaths(
@@ -300,7 +408,9 @@ test("a separate Git directory without commondir is accepted but malformed commo
   const metadata = join(f.state, "separate-git");
   mkdirSync(separate);
   git(separate, "init", "-q", "--separate-git-dir", metadata);
-  assert.ok(gitReviewProtectedRoots(separate).includes(realpathSync(metadata)));
+  assert.ok(
+    gitReviewProtectedRoots(separate).includes(realpathSync.native(metadata)),
+  );
   const commonPath = join(f.gitdir, "commondir");
   const original = readFileSync(commonPath);
   try {
