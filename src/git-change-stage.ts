@@ -114,6 +114,23 @@ export function stageGitChangeProposal(
   repositoryPath: string,
   patch: Uint8Array,
 ): StagedGitChangeV1 {
+  return stageGitChange(proposal, repositoryPath, patch).staged;
+}
+
+/** Return the exact Git-generated staged binary diff from one isolated pass. */
+export function stageGitChangeForReview(
+  proposal: GitChangeProposalV1,
+  repositoryPath: string,
+  patch: Uint8Array,
+): { staged: StagedGitChangeV1; stagedPatch: Uint8Array } {
+  return stageGitChange(proposal, repositoryPath, patch);
+}
+
+function stageGitChange(
+  proposal: GitChangeProposalV1,
+  repositoryPath: string,
+  patch: Uint8Array,
+): { staged: StagedGitChangeV1; stagedPatch: Uint8Array } {
   if (!verifyGitChangeProposal(proposal)) {
     throw new Error("Git change proposal failed its integrity check");
   }
@@ -187,12 +204,15 @@ export function stageGitChangeProposal(
       throw new Error("Git workspace changed during staging");
     }
     return {
-      stageVersion: 1,
-      proposalId: proposal.proposalId,
-      baseCommit: proposal.workspace.headCommit,
-      candidateTreeOid,
-      changedPaths,
-      stagedPatchDigest: sha256(stagedPatch),
+      staged: {
+        stageVersion: 1,
+        proposalId: proposal.proposalId,
+        baseCommit: proposal.workspace.headCommit,
+        candidateTreeOid,
+        changedPaths,
+        stagedPatchDigest: sha256(stagedPatch),
+      },
+      stagedPatch,
     };
   } finally {
     rmSync(scratch, { recursive: true, force: true });

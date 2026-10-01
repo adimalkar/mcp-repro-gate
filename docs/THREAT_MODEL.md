@@ -1,4 +1,4 @@
-# Phase 1 and early Phase 2 threat model
+# Reference action contracts and Git review threat model
 
 ## Security statement
 
@@ -46,14 +46,28 @@ Phase 1 remains a semantics prototype. The early Phase 2 library adds an opt-in,
 - configured backends bind a file artifact digest into the plan and verify it before process spawn;
 - the filesystem observer hashes bounded roots and records, but does not follow, internal symlinks.
 
+## Git operator review identity boundary
+
+Git Operator Review v1 binds an explicit `approve` or `deny` decision to the proposal, derived plan authority, staged-effect digests, a host-owned audience, operator/key identity, and bounded UTC timestamps. Ed25519 signatures cover domain-separated canonical payload bytes. The host's public-key allowlist, not the proposal or client principal, determines enabled identities and exact repository/worktree-root/destination-ref permissions. Key IDs are public SPKI fingerprints, and private keys are not accepted as trust configuration.
+
+Decision-making consumers must use the detached, frozen snapshot returned by `authenticateGitOperatorReview`. The boolean `verifyGitOperatorReview` does not authenticate the identity of its original JavaScript input object. Reading that object again can observe changed values or accessor results that were not signed. An authenticated denial remains a denial; signature validity alone does not authorize a grant.
+
+A valid review proves possession of an authorized signing key and the exact signed decision binding. It does not prove human presence, actual inspection of the diff, repository ownership, or effect confinement. Signature verification alone is neither durable approval issuance nor one-use consumption; a grant workflow must also bind signed evidence to the approval ledger and fresh plan/workspace state.
+
+The authenticated import path snapshots untrusted inputs, validates the review before expensive staging, compares the actual staged effect, and rederives plan authority. It atomically records approval plus signed evidence or a denial tombstone in one SQLite transaction. First accepted decision wins per proposal/database, including across processes and restarts; existing legacy/revoked grants cannot acquire evidence retroactively. Denial is not revocation, and review matching is not a consumption or promotion reservation. Stored evidence includes operator identity, key fingerprint, decision and signature metadata, but no raw patch or private signing material.
+
+The host owns configuration, plan/approval storage, key isolation, and the clock. An agent sharing the operator's filesystem credentials may also be able to read its signing key: deployment must keep signing material and approval write authority outside that agent's access. A compromised host, database, configuration, or key is not repaired by a signature. Public-key removal, disabling, and permission narrowing must be checked again when an approval is matched.
+
+Review staging exposes the exact Git-generated diff for inspection while retaining only its digest and changed-path manifest in the staging contract. Diff content is untrusted source data, not instructions. Raw diff access is not a portable promotion receipt, and neither signing nor checking a review updates a protected Git ref.
+
 ## Known gaps before execution is production-safe
 
 - SQLite is durable locally but has no replica lease/ownership protocol;
-- the approval CLI proves out-of-band issuance but has no authenticated approver identity or review UI;
+- the Phase 2 `approve` CLI proves out-of-band HMAC issuance but does not authenticate an approver; it is distinct from the Git signed-review protocol;
 - no transport-authenticated principal extraction;
 - artifact identity covers one configured file but cannot eliminate a hostile same-host replacement race;
 - no OS-level process, filesystem, network, secret, or sandbox enforcement;
-- filesystem effects are content-addressed, but Git identity and network/process/credential observation are not implemented;
+- filesystem effects are content-addressed and Git proposals/staging have bounded witnesses, but atomic Git promotion and network/process/credential observation are not implemented;
 - HMAC proves possession of a shared secret, not third-party/non-repudiable authorship;
 - a hash chain detects mutation only when an independent checkpoint or signature is retained;
 - no protection from a compromised gateway process or signing key.

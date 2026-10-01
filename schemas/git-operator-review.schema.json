@@ -1,0 +1,143 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://reprogate.dev/schemas/git-operator-review-v1.json",
+  "title": "ReproGate Git Operator Review v1",
+  "$comment": "Structural validation only. Canonical real UTC dates, crypto/key fingerprints, unique host principals/keys/permissions, host authority, proposal integrity and chronology require library checks. Host trust is separate configuration, never part of the signed review. No human-presence or inspection guarantee.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["payload", "signature"],
+  "properties": {
+    "payload": { "$ref": "#/$defs/payload" },
+    "signature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "value"],
+      "properties": {
+        "algorithm": { "const": "ed25519" },
+        "value": {
+          "type": "string",
+          "minLength": 86,
+          "maxLength": 86,
+          "pattern": "^[A-Za-z0-9_-]{85}[AQgw]$(?![\\s\\S])"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "minLength": 71,
+      "maxLength": 71,
+      "pattern": "^sha256:[0-9a-f]{64}$(?![\\s\\S])"
+    },
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/@-]*$(?![\\s\\S])"
+    },
+    "destinationRef": {
+      "type": "string",
+      "minLength": 12,
+      "maxLength": 1024,
+      "pattern": "^refs/heads/(?!.*(?:\\.\\.|@\\{|//|/\\.|\\.lock(?:/|$)|\\.(?:/|$)))(?!.*/$)[A-Za-z0-9_+@-][A-Za-z0-9_./+@-]*$(?![\\s\\S])"
+    },
+    "timestamp": {
+      "type": "string",
+      "minLength": 24,
+      "maxLength": 27,
+      "pattern": "^(?:[0-9]{4}|[+-][0-9]{6})-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$(?![\\s\\S])"
+    },
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reviewVersion",
+        "audience",
+        "operatorId",
+        "keyId",
+        "decision",
+        "proposalId",
+        "authorityDigest",
+        "effectDigest",
+        "issuedAt",
+        "expiresAt"
+      ],
+      "properties": {
+        "reviewVersion": { "const": 1 },
+        "audience": { "$ref": "#/$defs/identifier" },
+        "operatorId": { "$ref": "#/$defs/identifier" },
+        "keyId": { "$ref": "#/$defs/digest" },
+        "decision": { "enum": ["approve", "deny"] },
+        "proposalId": { "$ref": "#/$defs/digest" },
+        "authorityDigest": { "$ref": "#/$defs/digest" },
+        "effectDigest": { "$ref": "#/$defs/digest" },
+        "issuedAt": { "$ref": "#/$defs/timestamp" },
+        "expiresAt": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "trust": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["audience", "maxReviewTtlMs", "operators"],
+      "properties": {
+        "audience": { "$ref": "#/$defs/identifier" },
+        "maxReviewTtlMs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "operators": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["operatorId", "enabled", "keys", "permissions"],
+            "properties": {
+              "operatorId": { "$ref": "#/$defs/identifier" },
+              "enabled": { "type": "boolean" },
+              "keys": {
+                "type": "array",
+                "maxItems": 64,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["keyId", "publicKeyPem", "enabled"],
+                  "properties": {
+                    "keyId": { "$ref": "#/$defs/digest" },
+                    "publicKeyPem": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4096,
+                      "pattern": "^-----BEGIN PUBLIC KEY-----\\r?\\n(?:[A-Za-z0-9+/=]+\\r?\\n)+-----END PUBLIC KEY-----(?:\\r?\\n)?$(?![\\s\\S])"
+                    },
+                    "enabled": { "type": "boolean" }
+                  }
+                }
+              },
+              "permissions": {
+                "type": "array",
+                "maxItems": 256,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "repositoryId",
+                    "workspaceRootDigest",
+                    "destinationRef"
+                  ],
+                  "properties": {
+                    "repositoryId": { "$ref": "#/$defs/identifier" },
+                    "workspaceRootDigest": { "$ref": "#/$defs/digest" },
+                    "destinationRef": { "$ref": "#/$defs/destinationRef" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

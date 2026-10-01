@@ -5,8 +5,10 @@ This is the maintained improvement backlog for ReproGate, aligned with the [phas
 ## P0 — deliver the staged authorized-change workflow (Phase 3)
 
 - [x] Add a plan-only Git proposal with a clean-worktree witness, patch digest, exact path syntax, structural schema, and read-only drift tests.
+- [x] Bind Git approval authority to a persisted exact-intent plan and current operator catalog, policy and repository configuration.
+- [x] Authenticate scoped operator-key decisions for an exact staged effect, atomically link signed evidence to approvals or denial tombstones, and reject replay/drift/revocation in fresh checks.
 - [ ] Specify and test the versioned change contract: repository/base-ref witness, dirty state, allowed paths, exact patch digest, policy/approval identity, expiry/revocation epoch, and destination ref.
-- [ ] Stage the agent's candidate patch away from the protected target; do not assign a pre-commit enforcement claim to a direct-write backend.
+- [x] Stage the agent's candidate patch away from the protected target; do not assign a pre-commit enforcement claim to a direct-write backend.
 - [ ] Observe renames, deletions, mode changes, symlinks, untracked files, and path escapes; compare the proposed patch and changed-path manifest with approved scope.
 - [ ] Revalidate approval, policy, and Git ref/workspace witness at the promotion boundary; serialize revocation with the check, fail closed on drift, and use a compare-and-swap ref update.
 - [ ] Export coverage-aware, content-addressed receipt bundles and an asymmetric-signature offline verifier that can recompute the changed-path claim from a Git object or supplied patch; make missing or unknown effect coverage explicit.
