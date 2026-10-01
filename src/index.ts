@@ -10,6 +10,7 @@ export * from "./file-digest.js";
 export * from "./filesystem-observer.js";
 export * from "./git-change-proposal.js";
 export * from "./git-change-stage.js";
+export * from "./git-approval-store.js";
 export * from "./kernel.js";
 export * from "./policy.js";
 export * from "./receipt.js";
