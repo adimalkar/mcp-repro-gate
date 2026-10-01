@@ -1,0 +1,230 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://reprogate.dev/schemas/git-review-config-v1.json",
+  "title": "ReproGate Git Review Host Configuration v1",
+  "$comment": "Structural validation only. Host trust reuses the operator review trust definition. Absolute paths, Git worktree root, database location outside the protected repository without symlink/hard-link aliases, public key fingerprints and uniqueness, canonical JSON input schema and unambiguous policy require library checks. Never contains private keys or secrets.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "configVersion",
+    "repositoryPath",
+    "repositoryId",
+    "destinationRef",
+    "planDatabasePath",
+    "approvalDatabasePath",
+    "catalogTool",
+    "currentPolicy",
+    "trust"
+  ],
+  "properties": {
+    "configVersion": {
+      "const": 1
+    },
+    "repositoryPath": {
+      "$ref": "#/$defs/path"
+    },
+    "repositoryId": {
+      "$ref": "https://reprogate.dev/schemas/git-operator-review-v1.json#/$defs/identifier"
+    },
+    "destinationRef": {
+      "$ref": "https://reprogate.dev/schemas/git-operator-review-v1.json#/$defs/destinationRef"
+    },
+    "planDatabasePath": {
+      "$ref": "#/$defs/path"
+    },
+    "approvalDatabasePath": {
+      "$ref": "#/$defs/path"
+    },
+    "catalogTool": {
+      "$ref": "#/$defs/catalogTool"
+    },
+    "currentPolicy": {
+      "$ref": "#/$defs/policy"
+    },
+    "trust": {
+      "$ref": "https://reprogate.dev/schemas/git-operator-review-v1.json#/$defs/trust"
+    }
+  },
+  "$defs": {
+    "path": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$(?![\\s\\S])"
+    },
+    "effect": {
+      "enum": [
+        "local_read",
+        "local_write",
+        "process_exec",
+        "network_read",
+        "network_write",
+        "credential_use",
+        "destructive"
+      ]
+    },
+    "decision": {
+      "enum": ["allow", "approval_required", "deny"]
+    },
+    "stringArray": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "catalogTool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "toolRef",
+        "serverRef",
+        "toolName",
+        "description",
+        "inputSchema",
+        "effects",
+        "scopes"
+      ],
+      "properties": {
+        "toolRef": {
+          "type": "string",
+          "minLength": 1
+        },
+        "serverRef": {
+          "type": "string",
+          "minLength": 1
+        },
+        "toolName": {
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "inputSchema": true,
+        "effects": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/effect"
+          },
+          "contains": {
+            "const": "local_write"
+          }
+        },
+        "scopes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "contains": {
+            "const": "git_change:promote"
+          }
+        },
+        "filesystemRoots": {
+          "$ref": "#/$defs/stringArray"
+        },
+        "networkDestinations": {
+          "$ref": "#/$defs/stringArray"
+        },
+        "secretHandles": {
+          "$ref": "#/$defs/stringArray"
+        },
+        "sensitivityLabels": {
+          "$ref": "#/$defs/stringArray"
+        },
+        "artifactDigest": {
+          "$ref": "#/$defs/digest"
+        }
+      }
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "defaults", "rules"],
+      "properties": {
+        "version": {
+          "const": 1
+        },
+        "defaults": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "local_read",
+            "local_write",
+            "process_exec",
+            "network_read",
+            "network_write",
+            "credential_use",
+            "destructive"
+          ],
+          "properties": {
+            "local_read": {
+              "$ref": "#/$defs/decision"
+            },
+            "local_write": {
+              "$ref": "#/$defs/decision"
+            },
+            "process_exec": {
+              "$ref": "#/$defs/decision"
+            },
+            "network_read": {
+              "$ref": "#/$defs/decision"
+            },
+            "network_write": {
+              "$ref": "#/$defs/decision"
+            },
+            "credential_use": {
+              "$ref": "#/$defs/decision"
+            },
+            "destructive": {
+              "$ref": "#/$defs/decision"
+            }
+          }
+        },
+        "rules": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "priority", "match", "decision", "reason"],
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "priority": {
+                "type": "integer"
+              },
+              "match": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "toolRef": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "effect": {
+                    "$ref": "#/$defs/effect"
+                  }
+                }
+              },
+              "decision": {
+                "$ref": "#/$defs/decision"
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
