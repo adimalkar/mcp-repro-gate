@@ -1,13 +1,23 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 
 import { digestCanonical, sha256 } from "../src/digest.js";
 import { createGitChangeProposal } from "../src/git-change-proposal.js";
-import { stageGitChangeProposal } from "../src/git-change-stage.js";
+import {
+  stageGitChangeForReview,
+  stageGitChangeProposal,
+} from "../src/git-change-stage.js";
 
 function git(root: string, ...args: string[]): string {
   return execFileSync("git", ["-C", root, ...args], { encoding: "utf8" });
@@ -59,6 +69,101 @@ test("stages an exact patch without changing the protected worktree or ref", (co
   assert.match(staged.stagedPatchDigest, /^sha256:[0-9a-f]{64}$/u);
   assert.equal(git(root, "rev-parse", "HEAD").trim(), head);
   assert.equal(git(root, "status", "--porcelain"), "");
+});
+
+test("review staging returns exact Git binary diff bytes with compatible metadata and no protected mutations", (context) => {
+  const root = repository(context);
+  writeFileSync(join(root, "src", "value.txt"), "after\n");
+  writeFileSync(join(root, "binary.dat"), Buffer.from([0, 255, 1, 0, 2]));
+  git(root, "add", "src/value.txt", "binary.dat");
+  const gitPatch = execFileSync("git", [
+    "-C",
+    root,
+    "diff",
+    "--cached",
+    "--binary",
+    "--no-ext-diff",
+    "--no-textconv",
+  ]);
+  // Hunk section text is accepted by Git but does not appear in its regenerated diff.
+  const patch = Buffer.from(
+    gitPatch
+      .toString("utf8")
+      .replace("@@ -1 +1 @@", "@@ -1 +1 @@ caller-only annotation"),
+  );
+  git(root, "reset", "-q", "--hard", "HEAD");
+  const proposal = createGitChangeProposal({
+    repositoryPath: root,
+    repositoryId: "example/repository",
+    destinationRef: "refs/heads/main",
+    actionId: sha256("planned action"),
+    policyDigest: sha256("policy v1"),
+    patch,
+    allowedPaths: ["src/value.txt", "binary.dat"],
+    expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+  });
+  const head = git(root, "rev-parse", "HEAD");
+  const index = readFileSync(join(root, ".git", "index"));
+  const file = readFileSync(join(root, "src", "value.txt"));
+  // Isolate clone-cleanup assertions from other test-file processes.
+  const scratch = mkdtempSync(join(tmpdir(), "reprogate-stage-scratch-"));
+  const tempVariables = ["TMPDIR", "TMP", "TEMP"];
+  const previous = tempVariables.map((name) => process.env[name]);
+  context.after(() => {
+    tempVariables.forEach((name, index) => {
+      const value = previous[index];
+      if (value === undefined) Reflect.deleteProperty(process.env, name);
+      else process.env[name] = value;
+    });
+    rmSync(scratch, { recursive: true, force: true });
+  });
+  tempVariables.forEach((name) => {
+    process.env[name] = scratch;
+  });
+  const reviewed = stageGitChangeForReview(proposal, root, patch);
+  assert.deepEqual(reviewed.stagedPatch, gitPatch);
+  assert.notEqual(sha256(reviewed.stagedPatch), proposal.patchDigest);
+  assert.match(
+    Buffer.from(reviewed.stagedPatch).toString("utf8"),
+    /GIT binary patch/u,
+  );
+  assert.equal(sha256(reviewed.stagedPatch), reviewed.staged.stagedPatchDigest);
+  const legacy = stageGitChangeProposal(proposal, root, patch);
+  assert.deepEqual(reviewed.staged, legacy);
+  assert.equal(digestCanonical(reviewed.staged), digestCanonical(legacy));
+  assert.deepEqual(
+    Object.keys(legacy).sort(),
+    [
+      "stageVersion",
+      "proposalId",
+      "baseCommit",
+      "candidateTreeOid",
+      "changedPaths",
+      "stagedPatchDigest",
+    ].sort(),
+  );
+  assert.equal(git(root, "rev-parse", "HEAD"), head);
+  assert.equal(git(root, "rev-parse", "refs/heads/main"), head);
+  assert.deepEqual(readFileSync(join(root, ".git", "index")), index);
+  assert.deepEqual(readFileSync(join(root, "src", "value.txt")), file);
+  assert.equal(git(root, "status", "--porcelain"), "");
+  assert.deepEqual(readdirSync(scratch), []);
+  const outside = createGitChangeProposal({
+    repositoryPath: root,
+    repositoryId: proposal.repositoryId,
+    destinationRef: proposal.workspace.destinationRef,
+    actionId: proposal.actionId,
+    policyDigest: proposal.policyDigest,
+    patch,
+    allowedPaths: ["src/value.txt"],
+    expiresAt: proposal.expiresAt,
+  });
+  assert.throws(
+    () => stageGitChangeForReview(outside, root, patch),
+    /outside the proposal scope/u,
+  );
+  assert.deepEqual(readdirSync(scratch), []);
+  assert.deepEqual(readFileSync(join(root, ".git", "index")), index);
 });
 
 test("rejects actual edits outside the proposal path list", (context) => {
