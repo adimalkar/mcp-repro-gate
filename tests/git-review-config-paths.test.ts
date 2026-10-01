@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   realpathSync,
+  statSync,
   renameSync,
   rmSync,
   symlinkSync,
@@ -114,11 +117,118 @@ function rejectsMetadataState(
       /outside the protected repository/u,
     );
   }
-  assert.equal(
-    resolveGitReviewStatePaths(config, options).approvalDatabasePath,
-    config.approvalDatabasePath,
+  const paths = resolveGitReviewStatePaths(config, options);
+  assert.equal(paths.planDatabasePath, config.planDatabasePath);
+  assert.equal(paths.approvalDatabasePath, config.approvalDatabasePath);
+  for (const directory of [f.gitdir, f.common, f.state]) {
+    for (const name of [
+      "approval.sqlite",
+      "approvals.sqlite",
+      "plans.sqlite",
+    ]) {
+      for (const suffix of ["", "-wal", "-shm", "-journal"]) {
+        assert.equal(existsSync(join(directory, name + suffix)), false);
+      }
+    }
+  }
+}
+
+function protectedState(f: ReturnType<typeof fixture>) {
+  return {
+    head: git(f.linked, "rev-parse", "HEAD"),
+    worktree: readFileSync(join(f.linked, "value.txt")),
+    metadata: [f.gitdir, f.common].map((directory) =>
+      readdirSync(directory, { recursive: true, encoding: "utf8" })
+        .sort()
+        .map((name) => {
+          const path = join(directory, name);
+          return [name, statSync(path).isFile() ? readFileSync(path) : null];
+        }),
+    ),
+  };
+}
+
+for (const form of ["directory", "directory symlink"] as const) {
+  test(
+    `a linked worktree with a .git ${form} protects its common directory`,
+    { skip: form === "directory symlink" && process.platform === "win32" },
+    (context) => {
+      let f = fixture(context);
+      const head = git(f.linked, "rev-parse", "HEAD");
+      const dotGit = join(f.linked, ".git");
+      rmSync(dotGit);
+      if (form === "directory symlink") {
+        symlinkSync(f.gitdir, dotGit, "dir");
+      } else {
+        renameSync(f.gitdir, dotGit);
+        // Keep the common target valid after moving the linked gitdir.
+        writeFileSync(join(dotGit, "commondir"), `${f.common}\n`);
+        f = { ...f, gitdir: realpathSync(dotGit) };
+      }
+      assert.equal(git(f.linked, "rev-parse", "--is-inside-work-tree"), "true");
+      assert.equal(
+        realpathSync(
+          resolve(f.linked, git(f.linked, "rev-parse", "--git-dir")),
+        ),
+        f.gitdir,
+      );
+      assert.equal(
+        realpathSync(
+          resolve(f.linked, git(f.linked, "rev-parse", "--git-common-dir")),
+        ),
+        f.common,
+      );
+      assert.equal(git(f.linked, "rev-parse", "HEAD"), head);
+      assert.equal(git(f.linked, "status", "--porcelain"), "");
+      const before = protectedState(f);
+      const roots = gitReviewProtectedRoots(f.linked);
+      assert.ok(roots.includes(realpathSync(f.linked)));
+      assert.ok(roots.includes(f.gitdir));
+      assert.ok(
+        roots.includes(f.common),
+        "common Git directory must be protected",
+      );
+      rejectsMetadataState(f, f.linked);
+      assert.deepEqual(protectedState(f), before);
+      assert.equal(git(f.linked, "status", "--porcelain"), "");
+    },
   );
 }
+
+test("directory-form .git rejects malformed and unreadable existing commondir pointers", (context) => {
+  const f = fixture(context);
+  const commonPath = join(f.main, ".git", "commondir");
+  assert.ok(
+    gitReviewProtectedRoots(f.main).includes(
+      realpathSync(join(f.main, ".git")),
+    ),
+  );
+  for (const contents of ["", "unrecognized\nextra line\n", "x".repeat(4097)]) {
+    writeFileSync(commonPath, contents);
+    assert.throws(() => gitReviewProtectedRoots(f.main), /commondir/u);
+    assert.throws(
+      () =>
+        resolveGitReviewStatePaths(f.config(f.main), {
+          requirePlanDatabase: false,
+        }),
+      /commondir/u,
+    );
+  }
+  rmSync(commonPath);
+  mkdirSync(commonPath);
+  assert.throws(() => gitReviewProtectedRoots(f.main), /commondir/u);
+  rmSync(commonPath, { recursive: true });
+  if (process.platform !== "win32") {
+    symlinkSync(join(f.state, "missing-common-pointer"), commonPath);
+    assert.throws(() => gitReviewProtectedRoots(f.main), /commondir/u);
+    rmSync(commonPath);
+  }
+  assert.ok(
+    gitReviewProtectedRoots(f.main).includes(
+      realpathSync(join(f.main, ".git")),
+    ),
+  );
+});
 
 test("linked worktrees protect their actual Git directory and common directory", (context) => {
   const f = fixture(context);

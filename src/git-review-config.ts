@@ -340,9 +340,11 @@ export function gitReviewProtectedRoots(repositoryPath: string): string[] {
   } catch {
     throw new Error("repositoryPath must be a Git worktree root with .git");
   }
-  const roots = [root, realpathOrSelf(dotGit)];
+  const physicalDotGit = realpathOrSelf(dotGit);
+  const roots = [root, physicalDotGit];
+  let gitDirectory = physicalDotGit;
   if (entry.isFile()) {
-    const gitDirectory = realpathOrSelf(
+    gitDirectory = realpathOrSelf(
       resolve(
         root,
         readGitPointer(
@@ -352,35 +354,37 @@ export function gitReviewProtectedRoots(repositoryPath: string): string[] {
         ),
       ),
     );
-    roots.push(gitDirectory);
-    const commonPath = join(gitDirectory, "commondir");
-    let hasCommonDirectory = false;
-    try {
-      lstatSync(commonPath);
-      hasCommonDirectory = true;
-    } catch (error) {
-      if (errorCode(error) !== "ENOENT") {
-        throw new Error("Repository commondir file could not be inspected", {
-          cause: error,
-        });
-      }
-    }
-    if (hasCommonDirectory) {
-      roots.push(
-        realpathOrSelf(
-          resolve(
-            gitDirectory,
-            readGitPointer(
-              commonPath,
-              /^([^\r\n]+)\r?\n?$(?![\s\S])/u,
-              "Repository commondir file",
-            ),
-          ),
-        ),
-      );
-    }
   } else if (!entry.isDirectory()) {
     throw new Error("repositoryPath must be a Git worktree root with .git");
+  }
+  roots.push(gitDirectory);
+  // Both .git forms can identify a linked gitdir with a separate common
+  // directory, including a directory symlink accepted by Git.
+  const commonPath = join(gitDirectory, "commondir");
+  let hasCommonDirectory = false;
+  try {
+    lstatSync(commonPath);
+    hasCommonDirectory = true;
+  } catch (error) {
+    if (errorCode(error) !== "ENOENT") {
+      throw new Error("Repository commondir file could not be inspected", {
+        cause: error,
+      });
+    }
+  }
+  if (hasCommonDirectory) {
+    roots.push(
+      realpathOrSelf(
+        resolve(
+          gitDirectory,
+          readGitPointer(
+            commonPath,
+            /^([^\r\n]+)\r?\n?$(?![\s\S])/u,
+            "Repository commondir file",
+          ),
+        ),
+      ),
+    );
   }
   return [...new Set(roots)];
 }
