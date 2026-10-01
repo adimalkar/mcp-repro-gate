@@ -45,6 +45,21 @@ export interface CreateGitChangeProposalInput {
   expiresAt: string;
 }
 
+/** Exact Git action arguments to persist in a trusted action plan. */
+export interface GitChangeIntentV1 {
+  intentVersion: 1;
+  repositoryId: string;
+  workspace: GitWorkspaceWitnessV1;
+  patchDigest: Digest;
+  allowedPaths: string[];
+  expiresAt: string;
+}
+
+export type CreateGitChangeIntentInput = Omit<
+  CreateGitChangeProposalInput,
+  "actionId" | "policyDigest"
+>;
+
 function git(repositoryPath: string, ...args: string[]): string {
   // Inherited GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE can redirect observations
   // away from the path we were asked to witness.
@@ -203,18 +218,12 @@ function normalizeAllowedPaths(paths: string[]): string[] {
   return normalized.sort();
 }
 
-/** Bind a proposed patch to observed Git state; does not approve or execute it. */
-export function createGitChangeProposal(
-  input: CreateGitChangeProposalInput,
-): GitChangeProposalV1 {
+/** Observe and validate the exact arguments before asking the kernel to plan. */
+export function createGitChangeIntent(
+  input: CreateGitChangeIntentInput,
+): GitChangeIntentV1 {
   if (input.repositoryId.trim() === "") {
     throw new Error("Repository identity is required");
-  }
-  if (
-    !DIGEST_PATTERN.test(input.actionId) ||
-    !DIGEST_PATTERN.test(input.policyDigest)
-  ) {
-    throw new Error("Action and policy digests must be SHA-256 digests");
   }
   if (
     input.patch.byteLength === 0 ||
@@ -222,25 +231,65 @@ export function createGitChangeProposal(
   ) {
     throw new Error("Proposed patch must contain 1 byte to 4 MiB");
   }
-  const allowedPaths = normalizeAllowedPaths(input.allowedPaths);
-  const createdAt = new Date().toISOString();
   const expiry = Date.parse(input.expiresAt);
-  if (!Number.isFinite(expiry) || expiry <= Date.parse(createdAt)) {
+  if (!Number.isFinite(expiry) || expiry <= Date.now()) {
     throw new Error("Proposal expiry must be a future date-time");
   }
-  const unsigned = {
-    proposalVersion: 1 as const,
+  return {
+    intentVersion: 1,
     repositoryId: input.repositoryId,
-    actionId: input.actionId,
-    policyDigest: input.policyDigest,
     workspace: observeCleanGitWorkspace(
       input.repositoryPath,
       input.destinationRef,
     ),
     patchDigest: sha256(input.patch),
-    allowedPaths,
-    createdAt,
+    allowedPaths: normalizeAllowedPaths(input.allowedPaths),
     expiresAt: new Date(expiry).toISOString(),
+  };
+}
+
+/** Recover the exact plan arguments from a proposal for provenance checks. */
+export function gitChangeIntentFromProposal(
+  proposal: GitChangeProposalV1,
+): GitChangeIntentV1 {
+  if (!verifyGitChangeProposal(proposal)) {
+    throw new Error("Git change proposal failed its integrity check");
+  }
+  return {
+    intentVersion: 1,
+    repositoryId: proposal.repositoryId,
+    workspace: proposal.workspace,
+    patchDigest: proposal.patchDigest,
+    allowedPaths: proposal.allowedPaths,
+    expiresAt: proposal.expiresAt,
+  };
+}
+
+/** Bind a proposed patch to observed Git state; does not approve or execute it. */
+export function createGitChangeProposal(
+  input: CreateGitChangeProposalInput,
+): GitChangeProposalV1 {
+  if (
+    !DIGEST_PATTERN.test(input.actionId) ||
+    !DIGEST_PATTERN.test(input.policyDigest)
+  ) {
+    throw new Error("Action and policy digests must be SHA-256 digests");
+  }
+  const intent = createGitChangeIntent(input);
+  const createdAt = new Date().toISOString();
+  if (Date.parse(intent.expiresAt) <= Date.parse(createdAt)) {
+    throw new Error("Proposal expiry must be a future date-time");
+  }
+  const unsigned = {
+    proposalVersion: 1 as const,
+    repositoryId: intent.repositoryId,
+    actionId: input.actionId,
+    policyDigest: input.policyDigest,
+    workspace: intent.workspace,
+    patchDigest: intent.patchDigest,
+    allowedPaths: intent.allowedPaths,
+    createdAt,
+    expiresAt: intent.expiresAt,
   };
   return { ...unsigned, proposalId: digestCanonical(unsigned) };
 }
