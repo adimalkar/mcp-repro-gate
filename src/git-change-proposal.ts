@@ -1,4 +1,3 @@
-import { execFileSync } from "node:child_process";
 import { realpathSync, statSync } from "node:fs";
 
 import { digestCanonical, sha256 } from "./digest.js";
@@ -6,12 +5,12 @@ import {
   ownGitChangeProposal,
   parseGitWorktreeList,
 } from "./git-change-contract.js";
+import { runGit } from "./git-runner.js";
 import type { Digest } from "./types.js";
 
 const MAX_PATCH_BYTES = 4 * 1024 * 1024;
 const MAX_ALLOWED_PATHS = 256;
 const MAX_GIT_OUTPUT_BYTES = 1024 * 1024;
-const GIT_TIMEOUT_MS = 5_000;
 const DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/u;
 const OID_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u;
 
@@ -110,27 +109,10 @@ export type CreateGitChangeIntentInput = Omit<
 >;
 
 function gitBytes(repositoryPath: string, ...args: string[]): Buffer {
-  // Inherited GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE can redirect observations
-  // away from the path we were asked to witness.
-  const environment = Object.fromEntries(
-    Object.entries(process.env).filter(([name]) => !name.startsWith("GIT_")),
-  );
-  return execFileSync(
-    "git",
-    [
-      "--no-optional-locks",
-      "-c",
-      "core.fsmonitor=false",
-      "-C",
-      repositoryPath,
-      ...args,
-    ],
-    {
-      timeout: GIT_TIMEOUT_MS,
-      maxBuffer: MAX_GIT_OUTPUT_BYTES,
-      stdio: ["ignore", "pipe", "pipe"],
-      env: environment,
-    },
+  return runGit(
+    ["-C", repositoryPath, ...args],
+    undefined,
+    MAX_GIT_OUTPUT_BYTES,
   );
 }
 
