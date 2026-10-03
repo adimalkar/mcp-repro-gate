@@ -2,6 +2,10 @@ import { execFileSync } from "node:child_process";
 import { realpathSync, statSync } from "node:fs";
 
 import { digestCanonical, sha256 } from "./digest.js";
+import {
+  ownGitChangeProposal,
+  parseGitWorktreeList,
+} from "./git-change-contract.js";
 import type { Digest } from "./types.js";
 
 const MAX_PATCH_BYTES = 4 * 1024 * 1024;
@@ -34,6 +38,40 @@ export interface GitChangeProposalV1 {
   expiresAt: string;
 }
 
+/**
+ * Witness for a destination branch that no worktree has checked out. The source
+ * checkout is a different symbolic branch (`headRef`) at the same commit.
+ */
+export interface GitWorkspaceWitnessV2 {
+  workspaceVersion: 2;
+  source: "git_observed";
+  destinationMode: "uncheckout_destination";
+  rootDigest: Digest;
+  commonDirDigest: Digest;
+  headRef: string;
+  headCommit: string;
+  headTree: string;
+  destinationRef: string;
+  destinationOid: string;
+  status: "clean";
+}
+
+export interface GitChangeProposalV2 {
+  proposalVersion: 2;
+  proposalId: Digest;
+  repositoryId: string;
+  actionId: Digest;
+  policyDigest: Digest;
+  workspace: GitWorkspaceWitnessV2;
+  patchDigest: Digest;
+  allowedPaths: string[];
+  createdAt: string;
+  expiresAt: string;
+}
+
+export type GitWorkspaceWitness = GitWorkspaceWitnessV1 | GitWorkspaceWitnessV2;
+export type GitChangeProposal = GitChangeProposalV1 | GitChangeProposalV2;
+
 export interface CreateGitChangeProposalInput {
   repositoryPath: string;
   repositoryId: string;
@@ -55,12 +93,23 @@ export interface GitChangeIntentV1 {
   expiresAt: string;
 }
 
+export interface GitChangeIntentV2 {
+  intentVersion: 2;
+  repositoryId: string;
+  workspace: GitWorkspaceWitnessV2;
+  patchDigest: Digest;
+  allowedPaths: string[];
+  expiresAt: string;
+}
+
+export type GitChangeIntent = GitChangeIntentV1 | GitChangeIntentV2;
+
 export type CreateGitChangeIntentInput = Omit<
   CreateGitChangeProposalInput,
   "actionId" | "policyDigest"
 >;
 
-function git(repositoryPath: string, ...args: string[]): string {
+function gitBytes(repositoryPath: string, ...args: string[]): Buffer {
   // Inherited GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE can redirect observations
   // away from the path we were asked to witness.
   const environment = Object.fromEntries(
@@ -77,12 +126,17 @@ function git(repositoryPath: string, ...args: string[]): string {
       ...args,
     ],
     {
-      encoding: "utf8",
       timeout: GIT_TIMEOUT_MS,
       maxBuffer: MAX_GIT_OUTPUT_BYTES,
       stdio: ["ignore", "pipe", "pipe"],
       env: environment,
     },
+  );
+}
+
+function git(repositoryPath: string, ...args: string[]): string {
+  return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
+    gitBytes(repositoryPath, ...args),
   );
 }
 
@@ -172,6 +226,165 @@ export function observeCleanGitWorkspace(
   };
 }
 
+/**
+ * Read-only witness for a clean source worktree whose symbolic branch differs
+ * from a direct, unchecked-out destination branch at the same commit. Not an
+ * atomic gate: a later promotion must recheck.
+ */
+export function observeGitPromotionWorkspace(
+  repositoryPath: string,
+  destinationRef: string,
+): GitWorkspaceWitnessV2 {
+  const root = realpathSync.native(repositoryPath);
+  validateRef(root, destinationRef);
+
+  const capture = (): GitWorkspaceWitnessV2 => {
+    const gitRoot = realpathSync.native(
+      gitLine(root, "rev-parse", "--show-toplevel"),
+    );
+    // Compare filesystem identity, not path strings, so nested roots are rejected.
+    const requestedStat = statSync(root, { bigint: true });
+    const gitStat = statSync(gitRoot, { bigint: true });
+    if (
+      !requestedStat.isDirectory() ||
+      !gitStat.isDirectory() ||
+      requestedStat.ino === 0n ||
+      requestedStat.dev !== gitStat.dev ||
+      requestedStat.ino !== gitStat.ino ||
+      gitLine(root, "rev-parse", "--is-bare-repository") !== "false"
+    ) {
+      throw new Error("Repository path must be the Git worktree root");
+    }
+    const commonDir = realpathSync.native(
+      gitLine(root, "rev-parse", "--path-format=absolute", "--git-common-dir"),
+    );
+    if (!statSync(commonDir).isDirectory()) {
+      throw new Error("Git common directory is not a directory");
+    }
+
+    let headRef: string;
+    try {
+      headRef = gitLine(root, "symbolic-ref", "--quiet", "HEAD");
+    } catch {
+      throw new Error("Source HEAD must be a symbolic local branch");
+    }
+    validateRef(root, headRef);
+    if (headRef === destinationRef) {
+      throw new Error(
+        "Destination ref must differ from the source's checked-out branch",
+      );
+    }
+
+    // for-each-ref reports a symbolic ref's target; rev-parse would follow it.
+    const destination = git(
+      root,
+      "for-each-ref",
+      "--format=%(refname)%09%(objectname)%09%(objecttype)%09%(symref)",
+      destinationRef,
+    )
+      .split("\n")
+      .filter((line) => line.startsWith(`${destinationRef}\t`));
+    const [refname, listedOid, objectType, symref] =
+      destination[0]?.split("\t") ?? [];
+    if (
+      destination.length !== 1 ||
+      refname !== destinationRef ||
+      objectType !== "commit" ||
+      symref !== "" ||
+      listedOid === undefined
+    ) {
+      throw new Error("Destination must be an existing direct local branch");
+    }
+
+    const headCommit = gitLine(root, "rev-parse", "--verify", "HEAD^{commit}");
+    const headTree = gitLine(root, "rev-parse", "--verify", "HEAD^{tree}");
+    const destinationOid = gitLine(
+      root,
+      "rev-parse",
+      "--verify",
+      `${destinationRef}^{commit}`,
+    );
+    if (
+      !OID_PATTERN.test(headCommit) ||
+      !OID_PATTERN.test(headTree) ||
+      destinationOid !== headCommit ||
+      listedOid !== destinationOid ||
+      gitLine(root, "rev-parse", "--verify", `${headRef}^{commit}`) !==
+        headCommit
+    ) {
+      throw new Error("Git HEAD, tree, or destination ref is inconsistent");
+    }
+
+    const worktrees = parseGitWorktreeList(
+      gitBytes(root, "worktree", "list", "--porcelain", "-z"),
+    );
+    if (worktrees.some((worktree) => worktree.branch === destinationRef)) {
+      throw new Error("Destination branch is checked out in a worktree");
+    }
+    const sources = worktrees.filter((worktree) => {
+      try {
+        const stat = statSync(worktree.path, { bigint: true });
+        return stat.dev === requestedStat.dev && stat.ino === requestedStat.ino;
+      } catch {
+        return false;
+      }
+    });
+    if (sources.length !== 1 || sources[0]?.branch !== headRef) {
+      throw new Error("Source worktree is not registered on its branch");
+    }
+
+    if (
+      git(
+        root,
+        "status",
+        "--porcelain=v1",
+        "-z",
+        "--untracked-files=all",
+        "--ignore-submodules=none",
+      ) !== ""
+    ) {
+      throw new Error("Git worktree must be clean, including untracked files");
+    }
+    return {
+      workspaceVersion: 2,
+      source: "git_observed",
+      destinationMode: "uncheckout_destination",
+      rootDigest: sha256(gitRoot),
+      commonDirDigest: sha256(commonDir),
+      headRef,
+      headCommit,
+      headTree,
+      destinationRef,
+      destinationOid,
+      status: "clean",
+    };
+  };
+
+  const first = capture();
+  const second = capture();
+  if (digestCanonical(first) !== digestCanonical(second)) {
+    throw new Error("Git workspace changed during observation");
+  }
+  return second;
+}
+
+/** Observe the current workspace with the observer for the proposal's version. */
+export function observeGitWorkspaceForProposal(
+  input: GitChangeProposal,
+  repositoryPath: string,
+): GitWorkspaceWitness {
+  const proposal = ownGitChangeProposal(input);
+  return proposal.proposalVersion === 1
+    ? observeCleanGitWorkspace(
+        repositoryPath,
+        proposal.workspace.destinationRef,
+      )
+    : observeGitPromotionWorkspace(
+        repositoryPath,
+        proposal.workspace.destinationRef,
+      );
+}
+
 function normalizeAllowedPaths(paths: string[]): string[] {
   if (paths.length === 0 || paths.length > MAX_ALLOWED_PATHS) {
     throw new Error("Allowed paths must contain 1 to 256 exact file paths");
@@ -218,10 +431,7 @@ function normalizeAllowedPaths(paths: string[]): string[] {
   return normalized.sort();
 }
 
-/** Observe and validate the exact arguments before asking the kernel to plan. */
-export function createGitChangeIntent(
-  input: CreateGitChangeIntentInput,
-): GitChangeIntentV1 {
+function validateIntentInput(input: CreateGitChangeIntentInput): number {
   if (input.repositoryId.trim() === "") {
     throw new Error("Repository identity is required");
   }
@@ -235,6 +445,14 @@ export function createGitChangeIntent(
   if (!Number.isFinite(expiry) || expiry <= Date.now()) {
     throw new Error("Proposal expiry must be a future date-time");
   }
+  return expiry;
+}
+
+/** Observe and validate the exact arguments before asking the kernel to plan. */
+export function createGitChangeIntent(
+  input: CreateGitChangeIntentInput,
+): GitChangeIntentV1 {
+  const expiry = validateIntentInput(input);
   return {
     intentVersion: 1,
     repositoryId: input.repositoryId,
@@ -248,38 +466,75 @@ export function createGitChangeIntent(
   };
 }
 
+/** Like createGitChangeIntent, for an unchecked-out destination (V2 witness). */
+export function createGitChangeIntentV2(
+  input: CreateGitChangeIntentInput,
+): GitChangeIntentV2 {
+  const expiry = validateIntentInput(input);
+  return {
+    intentVersion: 2,
+    repositoryId: input.repositoryId,
+    workspace: observeGitPromotionWorkspace(
+      input.repositoryPath,
+      input.destinationRef,
+    ),
+    patchDigest: sha256(input.patch),
+    allowedPaths: normalizeAllowedPaths(input.allowedPaths),
+    expiresAt: new Date(expiry).toISOString(),
+  };
+}
+
 /** Recover the exact plan arguments from a proposal for provenance checks. */
 export function gitChangeIntentFromProposal(
   proposal: GitChangeProposalV1,
-): GitChangeIntentV1 {
+): GitChangeIntentV1;
+export function gitChangeIntentFromProposal(
+  proposal: GitChangeProposalV2,
+): GitChangeIntentV2;
+export function gitChangeIntentFromProposal(
+  proposal: GitChangeProposal,
+): GitChangeIntent;
+export function gitChangeIntentFromProposal(
+  input: GitChangeProposal,
+): GitChangeIntent {
+  const proposal = ownGitChangeProposal(input);
   if (!verifyGitChangeProposal(proposal)) {
     throw new Error("Git change proposal failed its integrity check");
   }
-  return {
-    intentVersion: 1,
+  const common = {
     repositoryId: proposal.repositoryId,
-    workspace: proposal.workspace,
     patchDigest: proposal.patchDigest,
     allowedPaths: proposal.allowedPaths,
     expiresAt: proposal.expiresAt,
   };
+  return proposal.proposalVersion === 1
+    ? { intentVersion: 1, workspace: proposal.workspace, ...common }
+    : { intentVersion: 2, workspace: proposal.workspace, ...common };
 }
 
-/** Bind a proposed patch to observed Git state; does not approve or execute it. */
-export function createGitChangeProposal(
-  input: CreateGitChangeProposalInput,
-): GitChangeProposalV1 {
+function assertPlanDigests(input: CreateGitChangeProposalInput): void {
   if (
     !DIGEST_PATTERN.test(input.actionId) ||
     !DIGEST_PATTERN.test(input.policyDigest)
   ) {
     throw new Error("Action and policy digests must be SHA-256 digests");
   }
-  const intent = createGitChangeIntent(input);
-  const createdAt = new Date().toISOString();
-  if (Date.parse(intent.expiresAt) <= Date.parse(createdAt)) {
+}
+
+function assertFutureExpiry(expiresAt: string, createdAt: string): void {
+  if (Date.parse(expiresAt) <= Date.parse(createdAt)) {
     throw new Error("Proposal expiry must be a future date-time");
   }
+}
+
+/** Bind a proposed patch to observed Git state; does not approve or execute it. */
+export function createGitChangeProposal(
+  input: CreateGitChangeProposalInput,
+): GitChangeProposalV1 {
+  assertPlanDigests(input);
+  const intent = createGitChangeIntent(input);
+  const createdAt = new Date().toISOString();
+  assertFutureExpiry(intent.expiresAt, createdAt);
   const unsigned = {
     proposalVersion: 1 as const,
     repositoryId: intent.repositoryId,
@@ -294,10 +549,30 @@ export function createGitChangeProposal(
   return { ...unsigned, proposalId: digestCanonical(unsigned) };
 }
 
+/** Bind a proposed patch to an unchecked-out destination; does not execute it. */
+export function createGitChangeProposalV2(
+  input: CreateGitChangeProposalInput,
+): GitChangeProposalV2 {
+  assertPlanDigests(input);
+  const intent = createGitChangeIntentV2(input);
+  const createdAt = new Date().toISOString();
+  assertFutureExpiry(intent.expiresAt, createdAt);
+  const unsigned = {
+    proposalVersion: 2 as const,
+    repositoryId: intent.repositoryId,
+    actionId: input.actionId,
+    policyDigest: input.policyDigest,
+    workspace: intent.workspace,
+    patchDigest: intent.patchDigest,
+    allowedPaths: intent.allowedPaths,
+    createdAt,
+    expiresAt: intent.expiresAt,
+  };
+  return { ...unsigned, proposalId: digestCanonical(unsigned) };
+}
+
 /** Checks integrity only; authenticity and effect enforcement require later phases. */
-export function verifyGitChangeProposal(
-  proposal: GitChangeProposalV1,
-): boolean {
+export function verifyGitChangeProposal(proposal: GitChangeProposal): boolean {
   try {
     const { proposalId, ...unsigned } = proposal;
     return proposalId === digestCanonical(unsigned);
@@ -308,10 +583,16 @@ export function verifyGitChangeProposal(
 
 /** Read-only drift check; a later promotion gate must recheck atomically. */
 export function matchesCurrentGitWorkspace(
-  proposal: GitChangeProposalV1,
+  input: GitChangeProposal,
   repositoryPath: string,
   patch: Uint8Array,
 ): boolean {
+  let proposal: GitChangeProposal;
+  try {
+    proposal = ownGitChangeProposal(input);
+  } catch {
+    return false;
+  }
   if (
     !verifyGitChangeProposal(proposal) ||
     sha256(patch) !== proposal.patchDigest
@@ -321,10 +602,7 @@ export function matchesCurrentGitWorkspace(
   try {
     return (
       digestCanonical(
-        observeCleanGitWorkspace(
-          repositoryPath,
-          proposal.workspace.destinationRef,
-        ),
+        observeGitWorkspaceForProposal(proposal, repositoryPath),
       ) === digestCanonical(proposal.workspace)
     );
   } catch {

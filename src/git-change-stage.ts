@@ -4,10 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { sha256 } from "./digest.js";
+import { ownGitChangeProposal } from "./git-change-contract.js";
 import {
   matchesCurrentGitWorkspace,
   verifyGitChangeProposal,
-  type GitChangeProposalV1,
+  type GitChangeProposal,
 } from "./git-change-proposal.js";
 import type { Digest } from "./types.js";
 
@@ -110,7 +111,7 @@ function changedPathsFromRawDiff(
 
 /** Validate a patch in an isolated index. Does not write to the protected repository. */
 export function stageGitChangeProposal(
-  proposal: GitChangeProposalV1,
+  proposal: GitChangeProposal,
   repositoryPath: string,
   patch: Uint8Array,
 ): StagedGitChangeV1 {
@@ -119,7 +120,7 @@ export function stageGitChangeProposal(
 
 /** Return the exact Git-generated staged binary diff from one isolated pass. */
 export function stageGitChangeForReview(
-  proposal: GitChangeProposalV1,
+  proposal: GitChangeProposal,
   repositoryPath: string,
   patch: Uint8Array,
 ): { staged: StagedGitChangeV1; stagedPatch: Uint8Array } {
@@ -127,10 +128,11 @@ export function stageGitChangeForReview(
 }
 
 function stageGitChange(
-  proposal: GitChangeProposalV1,
+  input: GitChangeProposal,
   repositoryPath: string,
   patch: Uint8Array,
 ): { staged: StagedGitChangeV1; stagedPatch: Uint8Array } {
+  const proposal = ownGitChangeProposal(input);
   if (!verifyGitChangeProposal(proposal)) {
     throw new Error("Git change proposal failed its integrity check");
   }

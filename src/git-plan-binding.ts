@@ -5,10 +5,11 @@ import {
   type GitChangeApprovalV1,
   SqliteGitApprovalStore,
 } from "./git-approval-store.js";
+import { ownGitChangeProposal } from "./git-change-contract.js";
 import {
   gitChangeIntentFromProposal,
-  observeCleanGitWorkspace,
-  type GitChangeProposalV1,
+  observeGitWorkspaceForProposal,
+  type GitChangeProposal,
 } from "./git-change-proposal.js";
 import type { PlanStore } from "./kernel.js";
 import { evaluatePolicy } from "./policy.js";
@@ -31,9 +32,10 @@ function sortedUnique(values: string[]): string[] {
 
 /** Derive authority from operator configuration and a persisted exact-action plan. */
 export function deriveGitApprovalAuthorityFromPlan(
-  proposal: GitChangeProposalV1,
+  input: GitChangeProposal,
   context: GitPlanBindingContext,
 ): GitApprovalAuthority {
+  const proposal = ownGitChangeProposal(input);
   const intent = gitChangeIntentFromProposal(proposal);
   if (
     proposal.repositoryId !== context.repositoryId ||
@@ -43,9 +45,10 @@ export function deriveGitApprovalAuthorityFromPlan(
       "Proposal does not match configured repository or destination",
     );
   }
-  const currentWorkspace = observeCleanGitWorkspace(
+  // Reconstruct the exact witness version the proposal commits to.
+  const currentWorkspace = observeGitWorkspaceForProposal(
+    proposal,
     context.repositoryPath,
-    context.destinationRef,
   );
   if (
     digestCanonical(currentWorkspace) !== digestCanonical(proposal.workspace)
@@ -129,19 +132,17 @@ export function deriveGitApprovalAuthorityFromPlan(
 export function grantGitChangeFromPlan(
   store: SqliteGitApprovalStore,
   input: {
-    proposal: GitChangeProposalV1;
+    proposal: GitChangeProposal;
     patch: Uint8Array;
     reviewedEffectDigest: GitChangeApprovalV1["effectDigest"];
     expiresAt: string;
     context: GitPlanBindingContext;
   },
 ): GitChangeApprovalV1 {
-  const authority = deriveGitApprovalAuthorityFromPlan(
-    input.proposal,
-    input.context,
-  );
+  const proposal = ownGitChangeProposal(input.proposal);
+  const authority = deriveGitApprovalAuthorityFromPlan(proposal, input.context);
   return store.grant({
-    proposal: input.proposal,
+    proposal,
     repositoryPath: input.context.repositoryPath,
     patch: input.patch,
     authority,
@@ -155,19 +156,20 @@ export function matchesGitApprovalFromPlan(
   store: SqliteGitApprovalStore,
   input: {
     approvalId: string;
-    proposal: GitChangeProposalV1;
+    proposal: GitChangeProposal;
     patch: Uint8Array;
     context: GitPlanBindingContext;
   },
 ): boolean {
   try {
+    const proposal = ownGitChangeProposal(input.proposal);
     const authority = deriveGitApprovalAuthorityFromPlan(
-      input.proposal,
+      proposal,
       input.context,
     );
     return store.matchesActiveApproval({
       approvalId: input.approvalId,
-      proposal: input.proposal,
+      proposal,
       repositoryPath: input.context.repositoryPath,
       patch: input.patch,
       authority,

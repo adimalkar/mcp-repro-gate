@@ -1,13 +1,18 @@
 import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 
-import { z } from "zod/v4";
-
 import { canonicalJson } from "./canonical-json.js";
 import { digestCanonical } from "./digest.js";
 import {
+  ownGitChangeProposal,
+  parseGitChangeProposalStructure,
+  type GitChangeProposalVersions,
+} from "./git-change-contract.js";
+import {
   verifyGitChangeProposal,
+  type GitChangeProposal,
   type GitChangeProposalV1,
+  type GitChangeProposalV2,
 } from "./git-change-proposal.js";
 import { stageGitChangeProposal } from "./git-change-stage.js";
 import {
@@ -55,7 +60,7 @@ export type RecordedGitOperatorReviewDecision =
  * current authority from host state after staging; it is not a generic hook.
  */
 export interface RecordGitOperatorReviewInput {
-  proposal: GitChangeProposalV1;
+  proposal: GitChangeProposal;
   repositoryPath: string;
   patch: Uint8Array;
   authority: GitApprovalAuthority;
@@ -66,7 +71,7 @@ export interface RecordGitOperatorReviewInput {
 
 export interface MatchOperatorReviewedApprovalInput {
   approvalId: string;
-  proposal: GitChangeProposalV1;
+  proposal: GitChangeProposal;
   repositoryPath: string;
   patch: Uint8Array;
   authority: GitApprovalAuthority;
@@ -74,40 +79,28 @@ export interface MatchOperatorReviewedApprovalInput {
   revalidateAuthority: () => GitApprovalAuthority;
 }
 
-const DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$(?![\s\S])/u;
-const OID_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$(?![\s\S])/u;
-const digestSchema = z
-  .string()
-  .regex(DIGEST_PATTERN)
-  .transform((value) => value as Digest);
-const oidSchema = z.string().regex(OID_PATTERN);
-const proposalSchema = z.strictObject({
-  proposalVersion: z.literal(1),
-  proposalId: digestSchema,
-  repositoryId: z.string().min(1).max(256),
-  actionId: digestSchema,
-  policyDigest: digestSchema,
-  workspace: z.strictObject({
-    source: z.literal("git_observed"),
-    rootDigest: digestSchema,
-    headCommit: oidSchema,
-    headTree: oidSchema,
-    destinationRef: z.string().min(1).max(1024),
-    destinationOid: oidSchema,
-    status: z.literal("clean"),
-  }),
-  patchDigest: digestSchema,
-  allowedPaths: z.array(z.string().min(1).max(4096)).min(1).max(256),
-  createdAt: z.string().min(1).max(64),
-  expiresAt: z.string().min(1).max(64),
-});
-
 /**
  * Read an untrusted proposal exactly once into an owned, strictly shaped copy
- * and check its integrity. This does not establish authority.
+ * and check its integrity. This does not establish authority. The default is
+ * the legacy version 1 shape; pass 2 or "any" to accept version 2 proposals.
  */
-export function snapshotGitChangeProposal(value: unknown): GitChangeProposalV1 {
-  const proposal = proposalSchema.parse(value);
+export function snapshotGitChangeProposal(
+  value: unknown,
+  versions?: 1,
+): GitChangeProposalV1;
+export function snapshotGitChangeProposal(
+  value: unknown,
+  versions: 2,
+): GitChangeProposalV2;
+export function snapshotGitChangeProposal(
+  value: unknown,
+  versions: GitChangeProposalVersions,
+): GitChangeProposal;
+export function snapshotGitChangeProposal(
+  value: unknown,
+  versions: GitChangeProposalVersions = 1,
+): GitChangeProposal {
+  const proposal = parseGitChangeProposalStructure(value, "snapshot", versions);
   if (!verifyGitChangeProposal(proposal)) {
     throw new Error("Git change proposal failed its integrity check");
   }
@@ -127,7 +120,7 @@ function ownedAuthority(authority: GitApprovalAuthority): GitApprovalAuthority {
 }
 
 function matchesAuthority(
-  proposal: GitChangeProposalV1,
+  proposal: GitChangeProposal,
   authority: GitApprovalAuthority,
 ): boolean {
   const authorityExpiry = Date.parse(authority.maxExpiresAt);
@@ -212,14 +205,18 @@ export class SqliteGitApprovalStore {
    * Re-stage before recording an explicit host-side grant. Never updates Git.
    * Refuses a proposal that already has a recorded signed decision.
    */
-  grant(input: {
-    proposal: GitChangeProposalV1;
+  grant(request: {
+    proposal: GitChangeProposal;
     repositoryPath: string;
     patch: Uint8Array;
     authority: GitApprovalAuthority;
     reviewedEffectDigest: Digest;
     expiresAt: string;
   }): GitChangeApprovalV1 {
+    const input = {
+      ...request,
+      proposal: ownGitChangeProposal(request.proposal),
+    };
     const now = new Date();
     const expiresAt = Date.parse(input.expiresAt);
     if (
@@ -282,7 +279,7 @@ export class SqliteGitApprovalStore {
   ): RecordedGitOperatorReviewDecision {
     // Read every caller-owned value once. Decisions below consume only these
     // owned snapshots, never the original inputs.
-    const proposal = snapshotGitChangeProposal(input.proposal);
+    const proposal = snapshotGitChangeProposal(input.proposal, "any");
     const patch = ownedPatch(input.patch);
     const repositoryPath = input.repositoryPath;
     const authority = ownedAuthority(input.authority);
@@ -379,14 +376,18 @@ export class SqliteGitApprovalStore {
   }
 
   /** A fresh read-only check, not a reservation or atomic promotion gate. */
-  matchesActiveApproval(input: {
+  matchesActiveApproval(request: {
     approvalId: string;
-    proposal: GitChangeProposalV1;
+    proposal: GitChangeProposal;
     repositoryPath: string;
     patch: Uint8Array;
     authority: GitApprovalAuthority;
   }): boolean {
     try {
+      const input = {
+        ...request,
+        proposal: ownGitChangeProposal(request.proposal),
+      };
       if (!matchesAuthority(input.proposal, input.authority)) return false;
       const before = this.#activeApproval(input.approvalId);
       if (
@@ -423,7 +424,7 @@ export class SqliteGitApprovalStore {
   ): boolean {
     try {
       const approvalId = input.approvalId;
-      const proposal = snapshotGitChangeProposal(input.proposal);
+      const proposal = snapshotGitChangeProposal(input.proposal, "any");
       const patch = ownedPatch(input.patch);
       const repositoryPath = input.repositoryPath;
       const authority = ownedAuthority(input.authority);
@@ -524,7 +525,7 @@ export class SqliteGitApprovalStore {
 
   #authenticates(
     record: ReviewedApproval,
-    proposal: GitChangeProposalV1,
+    proposal: GitChangeProposal,
     authority: GitApprovalAuthority,
     trust: unknown,
   ): boolean {
