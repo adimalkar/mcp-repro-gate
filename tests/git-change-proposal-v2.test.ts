@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { generateKeyPairSync } from "node:crypto";
 import {
   cpSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -1013,20 +1014,31 @@ test("regression: UTF-8 destination checkout is detected without changing path b
   );
   const linked = join(fixture.scratch, "linked é 工作树");
   git(fixture.root, "worktree", "add", "-q", linked, "tárget");
-  const records = parseGitWorktreeList(
-    execFileSync("git", [
-      "-C",
-      fixture.root,
-      "worktree",
-      "list",
-      "--porcelain",
-      "-z",
-    ]),
-  );
+  const raw = execFileSync("git", [
+    "-C",
+    fixture.root,
+    "worktree",
+    "list",
+    "--porcelain",
+    "-z",
+  ]);
+  const records = parseGitWorktreeList(raw);
+  const registered = records.find((entry) => entry.branch === destination);
+  assert.ok(registered);
+  // Preserve Git's exact payload spelling, then independently compare physical
+  // identity. Git uses '/' on Windows while native paths may use '\\' or aliases.
   assert.ok(
-    records.some((entry) =>
-      entry.path.equals(Buffer.from(realpathSync.native(linked), "utf8")),
+    raw.includes(
+      Buffer.concat([
+        Buffer.from("worktree "),
+        registered.path,
+        Buffer.from("\0"),
+      ]),
     ),
+  );
+  assert.deepEqual(
+    realpathSync.native(registered.path, { encoding: "buffer" }),
+    realpathSync.native(linked, { encoding: "buffer" }),
   );
   assert.throws(
     () => observeGitPromotionWorkspace(fixture.root, destination),
@@ -1797,4 +1809,25 @@ test("the porcelain worktree parser accepts real records and fails closed otherw
   for (const raw of malformed) {
     assert.throws(() => parseGitWorktreeList(Buffer.from(raw, "utf8")));
   }
+});
+
+test("V1 frozen schema bytes survive an actual autocrlf checkout", (context) => {
+  const root = mkdtempSync(join(tmpdir(), "reprogate-schema-checkout-"));
+  context.after(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+  git(root, "init", "-q", "-b", "main");
+  git(root, "config", "user.name", "Schema checkout fixture");
+  git(root, "config", "user.email", "schema@example.invalid");
+  git(root, "config", "core.autocrlf", "true");
+  mkdirSync(join(root, "schemas"));
+  const path = join(root, "schemas", "git-change-proposal.schema.json");
+  cpSync("schemas/git-change-proposal.schema.json", path);
+  if (existsSync(".gitattributes"))
+    cpSync(".gitattributes", join(root, ".gitattributes"));
+  git(root, "add", ".");
+  git(root, "commit", "-qm", "frozen V1 schema");
+  rmSync(path);
+  git(root, "checkout", "--", "schemas/git-change-proposal.schema.json");
+  assert.equal(sha256(readFileSync(path)), V1_SCHEMA_SHA256);
 });

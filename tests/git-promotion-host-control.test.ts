@@ -36,31 +36,196 @@ import { fileURLToPath } from "node:url";
 
 import { sep } from "node:path";
 
-function probeInvalidBytePaths(): boolean {
+function probeInvalidBytePaths(platform = process.platform): boolean {
   const probeScratch = mkdtempSync(join(tmpdir(), "reprogate-probe-"));
   let fd: number | undefined;
   try {
+    // ENOENT for a raw Windows path is a capability result only after a real
+    // valid-name file can be created in this same owned directory.
+    const controlName = Buffer.from("valid-name");
+    const control = Buffer.concat([
+      Buffer.from(probeScratch),
+      Buffer.from(sep),
+      controlName,
+    ]);
+    fd = openSync(control, "wx");
+    const controlIdentity = fstatSync(fd, { bigint: true });
+    const parentIdentity = lstatSync(probeScratch, { bigint: true });
+    closeSync(fd);
+    fd = undefined;
+    const verifyControl = () => {
+      const parent = lstatSync(probeScratch, { bigint: true });
+      const current = lstatSync(control, { bigint: true });
+      assert.ok(parent.isDirectory() && current.isFile());
+      assert.deepEqual(
+        [parent.dev, parent.ino],
+        [parentIdentity.dev, parentIdentity.ino],
+        "capability probe parent changed",
+      );
+      assert.deepEqual(
+        [current.dev, current.ino],
+        [controlIdentity.dev, controlIdentity.ino],
+        "capability probe control changed",
+      );
+      assert.ok(
+        readdirSync(probeScratch, { encoding: "buffer" }).some((entry) =>
+          entry.equals(controlName),
+        ),
+        "valid Buffer name must roundtrip byte-for-byte",
+      );
+    };
+    verifyControl();
     const probeFile = Buffer.concat([
       Buffer.from(probeScratch),
       Buffer.from(sep),
       Buffer.from([0xff]),
     ]);
-    fd = openSync(probeFile, "wx");
+    try {
+      fd = openSync(probeFile, "wx");
+    } catch (error: unknown) {
+      const err = error as NodeJS.ErrnoException;
+      if (
+        err.code === "EILSEQ" ||
+        err.code === "EINVAL" ||
+        (platform === "win32" && err.code === "ENOENT")
+      ) {
+        verifyControl();
+        return false;
+      }
+      throw error;
+    }
     // Some Unicode-only filesystems accept Buffer input after replacement
     // decoding. Creation alone is not proof that the original byte survived.
     return readdirSync(probeScratch, { encoding: "buffer" }).some((entry) =>
       entry.equals(Buffer.from([0xff])),
     );
-  } catch (error: unknown) {
-    const err = error as NodeJS.ErrnoException;
-    if (err.code === "EILSEQ" || err.code === "EINVAL") return false;
-    throw error;
   } finally {
     if (fd !== undefined) closeSync(fd);
     rmSync(probeScratch, { recursive: true, force: true });
   }
 }
 const supportsInvalidBytePaths = probeInvalidBytePaths();
+
+for (const [platform, code, unsupported] of [
+  ["win32", "ENOENT", true],
+  ["linux", "ENOENT", false],
+  ["win32", "EACCES", false],
+] as const) {
+  test(`raw path capability ${platform}/${code} requires a successful valid-name control`, (t) => {
+    const original = fs.openSync;
+    let control: string | undefined;
+    let controlFd: number | undefined;
+    let invalidAttempts = 0;
+    const opening = t.mock.method(
+      fs,
+      "openSync",
+      (...args: Parameters<typeof fs.openSync>) => {
+        if (Buffer.isBuffer(args[0]) && args[0].at(-1) === 0xff) {
+          invalidAttempts++;
+          assert.ok(
+            control,
+            "probe must establish a real valid-name control first",
+          );
+          assert.ok(existsSync(control));
+          throw Object.assign(new Error("modeled invalid-byte probe failure"), {
+            code,
+          });
+        }
+        assert.ok(
+          Buffer.isBuffer(args[0]),
+          "valid control must exercise Buffer path handling",
+        );
+        const fd = original(...args);
+        control = String(args[0]);
+        controlFd = fd;
+        return fd;
+      },
+    );
+    syncBuiltinESMExports();
+    try {
+      if (unsupported) assert.equal(probeInvalidBytePaths(platform), false);
+      else assert.throws(() => probeInvalidBytePaths(platform), { code });
+    } finally {
+      opening.mock.restore();
+      syncBuiltinESMExports();
+    }
+    assert.equal(invalidAttempts, 1);
+    assert.ok(control);
+    assert.equal(
+      existsSync(dirname(control)),
+      false,
+      "probe scratch is removed",
+    );
+    assert.ok(controlFd !== undefined);
+    const descriptor = controlFd;
+    assert.throws(() => fstatSync(descriptor), { code: "EBADF" });
+  });
+}
+
+test("raw path capability never hides a Windows ENOENT for its valid-name control", (t) => {
+  const opening = t.mock.method(fs, "openSync", () => {
+    throw Object.assign(new Error("modeled valid-name control failure"), {
+      code: "ENOENT",
+    });
+  });
+  syncBuiltinESMExports();
+  try {
+    assert.throws(() => probeInvalidBytePaths("win32"), { code: "ENOENT" });
+  } finally {
+    opening.mock.restore();
+    syncBuiltinESMExports();
+  }
+  assert.equal(opening.mock.callCount(), 1);
+});
+
+for (const drift of ["remove-control", "replace-parent"] as const) {
+  test(`raw path capability does not hide Windows ENOENT after real ${drift}`, (t) => {
+    const original = fs.openSync;
+    let control: string | undefined;
+    let moved: string | undefined;
+    let invalidAttempts = 0;
+    const opening = t.mock.method(
+      fs,
+      "openSync",
+      (...args: Parameters<typeof fs.openSync>) => {
+        if (Buffer.isBuffer(args[0]) && args[0].at(-1) === 0xff) {
+          invalidAttempts++;
+          assert.ok(control);
+          if (drift === "remove-control") rmSync(control);
+          else {
+            const parent = dirname(control);
+            moved = `${parent}-moved`;
+            renameSync(parent, moved);
+            mkdirSync(parent);
+            writeFileSync(control, "");
+          }
+          throw Object.assign(
+            new Error("modeled Windows invalid-path ENOENT"),
+            { code: "ENOENT" },
+          );
+        }
+        control = String(args[0]);
+        return original(...args);
+      },
+    );
+    syncBuiltinESMExports();
+    try {
+      assert.throws(
+        () => probeInvalidBytePaths("win32"),
+        drift === "remove-control"
+          ? { code: "ENOENT" }
+          : /probe parent changed/u,
+      );
+    } finally {
+      opening.mock.restore();
+      syncBuiltinESMExports();
+      if (moved) rmSync(moved, { recursive: true, force: true });
+    }
+    assert.equal(invalidAttempts, 1);
+    assert.ok(control);
+    assert.equal(existsSync(dirname(control)), false);
+  });
+}
 
 // Dynamic import deliberately allows a real-fixture RED run before production exists.
 async function controlModule(): Promise<

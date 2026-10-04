@@ -47,7 +47,9 @@ jobs:
   test:
     name: Test (${{ matrix.os }}, Node ${{ matrix.node }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    # Windows reached the former 15-minute budget with most Git fixtures unfinished.
+    # Keep every test and the per-command/worker deadlines while bounding the job.
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 30 || 15 }}
     strategy:
       fail-fast: false
       matrix:
