@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
-import { execFileSync, fork, type ChildProcess } from "node:child_process";
+import childProcess, {
+  execFileSync,
+  fork,
+  type ChildProcess,
+} from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs, {
   fchmodSync,
@@ -265,16 +269,11 @@ function fixture(t: TestContext) {
   t.after(async () => {
     const failures: unknown[] = [];
     for (const worker of workers) {
-      if (
-        worker.pid !== undefined &&
-        worker.exitCode === null &&
-        worker.signalCode === null
-      ) {
-        try {
-          await workerExit(worker, 10_000, true);
-        } catch (error) {
-          failures.push(error);
-        }
+      try {
+        // Exit alone does not prove that stdio has closed or files can be removed.
+        await workerExit(worker, 10_000, worker.pid !== undefined);
+      } catch (error) {
+        failures.push(error);
       }
     }
     if (failures.length > 0)
@@ -323,6 +322,14 @@ function snapshotFile(path: string): Buffer {
     closeSync(descriptor);
   }
 }
+const ownedWorkerLifecycles = new WeakMap<
+  ChildProcess,
+  {
+    closed: boolean;
+    exitEvidence: boolean;
+    successfulKill: boolean;
+  }
+>();
 function worker(
   f: ReturnType<typeof fixture>,
   mode = "acquire",
@@ -339,6 +346,17 @@ function worker(
     [JSON.stringify(f.config), mode],
     { stdio: ["ignore", "ignore", "pipe", "ipc"], execPath },
   );
+  const lifecycle = {
+    closed: false,
+    exitEvidence: false,
+    successfulKill: false,
+  };
+  ownedWorkerLifecycles.set(child, lifecycle);
+  child.once("close", (code, signal) => {
+    lifecycle.closed = true;
+    lifecycle.exitEvidence =
+      code !== null || signal !== null || child.pid === undefined;
+  });
   f.workers.push(child);
   return {
     child,
@@ -355,18 +373,17 @@ function boundedWorkerWait(
   timeoutMs: number,
   stopOwned = false,
 ): Promise<unknown> {
-  if (
-    !stopOwned &&
-    event === "exit" &&
-    (child.exitCode !== null || child.signalCode !== null)
-  )
+  const lifecycle = ownedWorkerLifecycles.get(child);
+  if (event === "exit" && lifecycle?.closed && lifecycle.exitEvidence)
     return Promise.resolve();
   return new Promise((resolve, reject) => {
+    let failedKill = false;
     const cleanup = () => {
       clearTimeout(timer);
       child.off("message", onMessage);
       child.off("error", onError);
       child.off("exit", onExit);
+      child.off("close", onClose);
     };
     const onMessage = (message: unknown) => {
       cleanup();
@@ -377,48 +394,53 @@ function boundedWorkerWait(
       reject(error);
     };
     const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
-      cleanup();
-      if (event === "exit") resolve(undefined);
-      else
-        reject(
+      if (event === "message")
+        onError(
           new Error(
             `Worker exited before message: ${String(code)}/${String(signal)}`,
           ),
         );
+      // Reaping must also wait for close, which follows exit and closes stdio.
+    };
+    const onClose = (code: number | null, signal: NodeJS.Signals | null) => {
+      if (code === null && signal === null && child.pid !== undefined) {
+        onError(new Error("Owned fixture worker closed without exit evidence"));
+        return;
+      }
+      cleanup();
+      resolve(undefined);
     };
     const timer = setTimeout(() => {
       onError(
         new Error(
           event === "message"
             ? "Owned fixture worker did not send a message"
-            : "Owned fixture worker did not exit",
+            : failedKill
+              ? "Owned fixture worker could not be stopped and did not exit/close"
+              : "Owned fixture worker did not exit/close",
         ),
       );
     }, timeoutMs);
     if (event === "message") child.once("message", onMessage);
+    else child.once("close", onClose);
     child.once("error", onError);
     child.once("exit", onExit);
     if (stopOwned) {
       try {
         assert.ok(
-          child.pid !== undefined,
+          lifecycle && child.pid !== undefined,
           "Only an owned spawned child may be stopped",
         );
-        assert.equal(
-          child.exitCode,
-          null,
-          "Owned child must be live before kill",
-        );
-        assert.equal(
-          child.signalCode,
-          null,
-          "Owned child must be live before kill",
-        );
-        assert.equal(
-          child.kill("SIGKILL"),
-          true,
-          "Owned child kill must succeed before waiting for exit",
-        );
+        if (
+          child.exitCode === null &&
+          child.signalCode === null &&
+          !lifecycle.successfulKill
+        ) {
+          lifecycle.successfulKill = child.kill("SIGKILL");
+          // False can race with natural exit or an OS kill. Only actual bounded
+          // close with exit evidence can establish quiescence in that case.
+          failedKill = !lifecycle.successfulKill;
+        }
       } catch (error) {
         onError(
           new Error("Owned fixture worker could not be stopped", {
@@ -462,6 +484,11 @@ async function regressionGuard<T>(promise: Promise<T>): Promise<T> {
   }
 }
 function noWaitListeners(child: ChildProcess) {
+  assert.equal(
+    child.listenerCount("close"),
+    ownedWorkerLifecycles.get(child)?.closed ? 0 : 1,
+    "leftover close wait listener (one lifecycle observer is retained until reaped)",
+  );
   for (const event of ["message", "error", "exit"])
     assert.equal(
       child.listenerCount(event),
@@ -524,6 +551,98 @@ test("owned live worker exit wait times out and clears listeners before cleanup 
   );
   assert.equal(child.child.exitCode, null);
   assert.equal(child.child.signalCode, null);
+  noWaitListeners(child.child);
+});
+
+test("owned false-kill race requires the real child close before quiescence", async (t) => {
+  const f = fixture(t);
+  const child = worker(f);
+  await child.message;
+  let closed = false;
+  child.child.once("close", () => {
+    closed = true;
+  });
+  const originalKill = child.child.kill.bind(child.child);
+  const stopping = t.mock.method(
+    child.child,
+    "kill",
+    (signal?: NodeJS.Signals | number) => {
+      assert.equal(originalKill(signal), true);
+      return false; // The OS has stopped the owned child before kill reports its race.
+    },
+  );
+  try {
+    await regressionGuard(workerExit(child.child, 1000, true));
+    assert.equal(closed, true);
+    assert.ok(child.child.exitCode !== null || child.child.signalCode !== null);
+  } finally {
+    stopping.mock.restore();
+  }
+  noWaitListeners(child.child);
+});
+
+test("owned unsuccessful kill cannot report a live child as quiescent", async (t) => {
+  const f = fixture(t);
+  const child = worker(f);
+  await child.message;
+  const stopping = t.mock.method(child.child, "kill", () => false);
+  try {
+    await assert.rejects(
+      regressionGuard(workerExit(child.child, 100, true)),
+      /could not be stopped.*did not exit/u,
+    );
+    assert.equal(child.child.exitCode, null);
+    assert.equal(child.child.signalCode, null);
+    noWaitListeners(child.child);
+  } finally {
+    stopping.mock.restore();
+  }
+});
+
+test("owned concurrent reap shares a successful kill and waits for delayed close", async (t) => {
+  const f = fixture(t);
+  const child = worker(f);
+  await child.message;
+  let closed = false;
+  const originalEmit = child.child.emit.bind(child.child);
+  const emitting = t.mock.method(
+    child.child,
+    "emit",
+    (event: string | symbol, ...args: unknown[]) => {
+      if (event === "close") {
+        setTimeout(() => {
+          closed = true;
+          originalEmit(event, ...args);
+        }, 100);
+        return true;
+      }
+      return originalEmit(event, ...args);
+    },
+  );
+  const originalKill = child.child.kill.bind(child.child);
+  let kills = 0;
+  const stopping = t.mock.method(
+    child.child,
+    "kill",
+    (signal?: NodeJS.Signals | number) => {
+      kills++;
+      if (kills > 1) return false;
+      return originalKill(signal);
+    },
+  );
+  try {
+    await regressionGuard(
+      Promise.all([
+        workerExit(child.child, 1000, true),
+        workerExit(child.child, 1000, true),
+      ]),
+    );
+    assert.equal(kills, 1);
+    assert.equal(closed, true);
+  } finally {
+    stopping.mock.restore();
+    emitting.mock.restore();
+  }
   noWaitListeners(child.child);
 });
 
@@ -798,6 +917,7 @@ for (const layout of [
       );
     }
     if (layout === "symlink-directory") {
+      writeFileSync(join(gitdir, "commondir"), join(f.root, ".git") + "\n");
       rmSync(join(linked, ".git"));
       symlinkSync(
         gitdir,
@@ -1682,6 +1802,9 @@ function lifetimeFixture(
     renameSync(dotGit, pointer);
     symlinkSync(pointer, dotGit, "file");
   } else if (layout === "symlink-directory") {
+    // Git for Windows can resolve ../.. relative to the junction spelling.
+    // Bind to the actual common directory before installing the directory link.
+    writeFileSync(join(gitdir, "commondir"), common + "\n");
     rmSync(dotGit);
     symlinkSync(
       gitdir,
@@ -1819,6 +1942,14 @@ for (const layout of LIFETIME_LAYOUTS) {
   });
 }
 
+function physicalGitPath(output: Buffer): Buffer {
+  assert.ok(output.length > 1 && output[output.length - 1] === 0x0a);
+  const path = output.subarray(0, -1);
+  assert.ok(!path.includes(0) && !path.includes(0x0a) && !path.includes(0x0d));
+  // Preserve the path bytes; Git's slash spelling can differ from native Windows.
+  return realpathSync.native(path, { encoding: "buffer" });
+}
+
 function redirectGitdirIntoFenceParent(
   f: ReturnType<typeof lifetimeFixture>,
 ): void {
@@ -1840,23 +1971,136 @@ function redirectGitdirIntoFenceParent(
       process.platform === "win32" ? "junction" : "dir",
     );
   else writeFileSync(dotGit, "gitdir: " + f.host + "\n");
-  assert.equal(
-    realpathSync.native(
-      git(f.repository, "rev-parse", "--absolute-git-dir")
-        .toString("utf8")
-        .trim(),
-    ),
-    f.host,
+  assert.deepEqual(
+    physicalGitPath(git(f.repository, "rev-parse", "--absolute-git-dir")),
+    realpathSync.native(Buffer.from(f.host), { encoding: "buffer" }),
   );
-  assert.equal(
-    git(f.repository, "rev-parse", "--path-format=absolute", "--git-common-dir")
-      .toString("utf8")
-      .trim(),
-    f.common,
+  assert.deepEqual(
+    physicalGitPath(
+      git(
+        f.repository,
+        "rev-parse",
+        "--path-format=absolute",
+        "--git-common-dir",
+      ),
+    ),
+    realpathSync.native(Buffer.from(f.common), { encoding: "buffer" }),
   );
   assert.equal(lstatSync(f.common, { bigint: true }).ino, commonIdentity.ino);
   assert.equal(lstatSync(f.host, { bigint: true }).ino, parentIdentity.ino);
 }
+
+test("modeled Windows Git rejects relative junction commondir but the real linked fixture is recognized", async (t) => {
+  const f = lifetimeFixture(t, "symlink-directory");
+  const original = childProcess.execFileSync;
+  const reading = t.mock.method(
+    childProcess,
+    "execFileSync",
+    (...args: Parameters<typeof execFileSync>) => {
+      const command = args[1];
+      if (
+        Array.isArray(command) &&
+        command[0] === "-C" &&
+        command[1] === f.repository &&
+        readFileSync(join(f.gitdir, "commondir"), "utf8").trim() === "../.."
+      ) {
+        throw new Error(
+          "modeled Windows Git: fatal: not a git repository: junction with relative commondir",
+        );
+      }
+      return original(...args);
+    },
+  );
+  syncBuiltinESMExports();
+  const commondir = readFileSync(join(f.gitdir, "commondir"));
+  try {
+    // This is a genuine Git operation; only the unsupported relative layout is modeled.
+    git(f.repository, "rev-parse", "--git-common-dir");
+    const { createGitPromotionHostControl } = await controlModule();
+    const controller = createGitPromotionHostControl({
+      ...f.config,
+      repositoryPath: f.repository,
+    });
+    assert.deepEqual(controller.query(), { status: "available" });
+    writeFileSync(join(f.gitdir, "commondir"), "../..\n");
+    assert.throws(
+      () => git(f.repository, "rev-parse", "--git-common-dir"),
+      /junction with relative commondir/u,
+    );
+  } finally {
+    writeFileSync(join(f.gitdir, "commondir"), commondir);
+    reading.mock.restore();
+    syncBuiltinESMExports();
+  }
+});
+
+test("modeled Windows Git path separators preserve physical relocation identity and reject another common directory", (t) => {
+  const f = lifetimeFixture(t, "file");
+  const commonSpelling = Buffer.from("C:/modeled/common é");
+  const wrongSpelling = Buffer.from("C:/modeled/wrong common é");
+  const wrongCommon = join(f.scratch, "different common é");
+  mkdirSync(wrongCommon);
+  let wrong = false;
+  let byteResolutions = 0;
+  const originalGit = childProcess.execFileSync;
+  const reading = t.mock.method(
+    childProcess,
+    "execFileSync",
+    (...args: Parameters<typeof execFileSync>) => {
+      const result = originalGit(...args);
+      const command = args[1];
+      if (
+        Array.isArray(command) &&
+        command[1] === f.repository &&
+        command.includes("--git-common-dir")
+      )
+        return Buffer.concat([
+          wrong ? wrongSpelling : commonSpelling,
+          Buffer.from("\n"),
+        ]);
+      return result;
+    },
+  );
+  const originalRealpath = realpathSync.native;
+  const resolving = t.mock.method(
+    realpathSync,
+    "native",
+    (path: fs.PathLike, options?: fs.EncodingOption) => {
+      if (
+        Buffer.isBuffer(path) &&
+        (path.equals(commonSpelling) || path.equals(wrongSpelling))
+      ) {
+        assert.equal(
+          typeof options === "object" ? options?.encoding : options,
+          "buffer",
+        );
+        byteResolutions++;
+        return originalRealpath(
+          path.equals(commonSpelling) ? f.common : wrongCommon,
+          options,
+        );
+      }
+      return originalRealpath(path, options);
+    },
+  );
+  syncBuiltinESMExports();
+  try {
+    redirectGitdirIntoFenceParent(f);
+    assert.equal(byteResolutions, 1);
+    wrong = true;
+    assert.throws(
+      () => {
+        redirectGitdirIntoFenceParent(f);
+      },
+      { name: "AssertionError" },
+    );
+    assert.equal(byteResolutions, 2);
+  } finally {
+    reading.mock.restore();
+    resolving.mock.restore();
+    syncBuiltinESMExports();
+  }
+});
 
 for (const layout of ["file", "symlink-file", "symlink-directory"] as const) {
   for (const timing of ["available", "held"] as const) {
