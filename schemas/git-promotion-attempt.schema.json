@@ -1,0 +1,370 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://reprogate.dev/schemas/git-promotion-attempt-v1.json",
+  "title": "ReproGate immutable T1 promotion intent v1",
+  "$comment": "Prepared intent only: no dispatch, finalAuthorizationCheckedAt, physical ref observations, completion, reason codes or quiescence evidence. Task3C adds validated prepared|confirmed|failed|indeterminate transition evidence without changing reservedAt/precheckedAt semantics or permanent consumption. Structural code-point caps match runtime; real dates, cross-field digests, sorted unique changed paths, exact proposal/authority/candidate bindings and canonical JSON require library checks. Concrete host control additionally checks canonical lossless physical filesystem paths with 4096-byte caps and a 16384-byte fence-owner envelope. The entire durable record is bounded to 16777216 UTF-8 bytes in library/SQLite, independently of structural character caps.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "attemptVersion",
+    "state",
+    "attemptId",
+    "approvalId",
+    "proposalId",
+    "reviewDigest",
+    "authorityDigest",
+    "effectDigest",
+    "proposal",
+    "prepared",
+    "authority",
+    "repositoryPath",
+    "fenceOwner",
+    "precheckedAt",
+    "reservedAt",
+    "admissionDeadline"
+  ],
+  "properties": {
+    "attemptVersion": {
+      "const": 1
+    },
+    "state": {
+      "const": "prepared"
+    },
+    "attemptId": {
+      "$ref": "#/$defs/uuid"
+    },
+    "approvalId": {
+      "$ref": "#/$defs/uuid"
+    },
+    "proposalId": {
+      "$ref": "#/$defs/digest"
+    },
+    "reviewDigest": {
+      "$ref": "#/$defs/digest"
+    },
+    "authorityDigest": {
+      "$ref": "#/$defs/digest"
+    },
+    "effectDigest": {
+      "$ref": "#/$defs/digest"
+    },
+    "proposal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "proposalVersion",
+        "proposalId",
+        "repositoryId",
+        "actionId",
+        "policyDigest",
+        "patchDigest",
+        "allowedPaths",
+        "createdAt",
+        "expiresAt",
+        "workspace"
+      ],
+      "properties": {
+        "proposalVersion": {
+          "const": 2
+        },
+        "proposalId": {
+          "$ref": "#/$defs/digest"
+        },
+        "repositoryId": {
+          "$ref": "#/$defs/identifier"
+        },
+        "actionId": {
+          "$ref": "#/$defs/digest"
+        },
+        "policyDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "patchDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "allowedPaths": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 256,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "uniqueItems": true
+        },
+        "createdAt": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "expiresAt": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "workspace": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "workspaceVersion",
+            "source",
+            "destinationMode",
+            "rootDigest",
+            "commonDirDigest",
+            "headRef",
+            "headCommit",
+            "headTree",
+            "destinationRef",
+            "destinationOid",
+            "status"
+          ],
+          "properties": {
+            "workspaceVersion": {
+              "const": 2
+            },
+            "source": {
+              "const": "git_observed"
+            },
+            "destinationMode": {
+              "const": "uncheckout_destination"
+            },
+            "rootDigest": {
+              "$ref": "#/$defs/digest"
+            },
+            "commonDirDigest": {
+              "$ref": "#/$defs/digest"
+            },
+            "headRef": {
+              "$ref": "#/$defs/ref"
+            },
+            "headCommit": {
+              "$ref": "#/$defs/oid"
+            },
+            "headTree": {
+              "$ref": "#/$defs/oid"
+            },
+            "destinationRef": {
+              "$ref": "#/$defs/ref"
+            },
+            "destinationOid": {
+              "$ref": "#/$defs/oid"
+            },
+            "status": {
+              "const": "clean"
+            }
+          }
+        }
+      }
+    },
+    "prepared": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "preparedVersion",
+        "attemptId",
+        "proposalId",
+        "expectedOldOid",
+        "baseCommit",
+        "candidateCommitOid",
+        "candidateTreeOid",
+        "staged",
+        "effectDigest",
+        "hostCommitMetadataDigest",
+        "createdAt"
+      ],
+      "properties": {
+        "preparedVersion": {
+          "const": 1
+        },
+        "attemptId": {
+          "$ref": "#/$defs/uuid"
+        },
+        "proposalId": {
+          "$ref": "#/$defs/digest"
+        },
+        "expectedOldOid": {
+          "$ref": "#/$defs/oid"
+        },
+        "baseCommit": {
+          "$ref": "#/$defs/oid"
+        },
+        "candidateCommitOid": {
+          "$ref": "#/$defs/oid"
+        },
+        "candidateTreeOid": {
+          "$ref": "#/$defs/oid"
+        },
+        "staged": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "stageVersion",
+            "proposalId",
+            "baseCommit",
+            "candidateTreeOid",
+            "changedPaths",
+            "stagedPatchDigest"
+          ],
+          "properties": {
+            "stageVersion": {
+              "const": 1
+            },
+            "proposalId": {
+              "$ref": "#/$defs/digest"
+            },
+            "baseCommit": {
+              "$ref": "#/$defs/oid"
+            },
+            "candidateTreeOid": {
+              "$ref": "#/$defs/oid"
+            },
+            "changedPaths": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 256,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              }
+            },
+            "stagedPatchDigest": {
+              "$ref": "#/$defs/digest"
+            }
+          }
+        },
+        "effectDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "hostCommitMetadataDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "createdAt": {
+          "$ref": "#/$defs/timestamp"
+        }
+      }
+    },
+    "authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repositoryId",
+        "actionId",
+        "policyDigest",
+        "workspaceRootDigest",
+        "destinationRef",
+        "maxExpiresAt"
+      ],
+      "properties": {
+        "repositoryId": {
+          "$ref": "#/$defs/identifier"
+        },
+        "actionId": {
+          "$ref": "#/$defs/digest"
+        },
+        "policyDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "workspaceRootDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "destinationRef": {
+          "$ref": "#/$defs/ref"
+        },
+        "maxExpiresAt": {
+          "$ref": "#/$defs/timestamp"
+        }
+      }
+    },
+    "repositoryPath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    },
+    "fenceOwner": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ownerVersion",
+        "token",
+        "attemptId",
+        "commonDirectory",
+        "approvalDatabasePath",
+        "fencePath",
+        "createdAt"
+      ],
+      "properties": {
+        "ownerVersion": {
+          "const": 1
+        },
+        "token": {
+          "$ref": "#/$defs/uuid"
+        },
+        "attemptId": {
+          "$ref": "#/$defs/uuid"
+        },
+        "commonDirectory": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "approvalDatabasePath": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "fencePath": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "createdAt": {
+          "type": "string",
+          "minLength": 24,
+          "maxLength": 24,
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$(?![\\s\\S])"
+        }
+      }
+    },
+    "precheckedAt": {
+      "$ref": "#/$defs/timestamp"
+    },
+    "reservedAt": {
+      "$ref": "#/$defs/timestamp"
+    },
+    "admissionDeadline": {
+      "$ref": "#/$defs/timestamp"
+    }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "minLength": 71,
+      "maxLength": 71,
+      "pattern": "^sha256:[0-9a-f]{64}$(?![\\s\\S])"
+    },
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$(?![\\s\\S])"
+    },
+    "oid": {
+      "type": "string",
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$(?![\\s\\S])"
+    },
+    "timestamp": {
+      "type": "string",
+      "minLength": 24,
+      "maxLength": 27,
+      "pattern": "^(?:[0-9]{4}|[+-][0-9]{6})-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$(?![\\s\\S])"
+    },
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/@-]*$(?![\\s\\S])"
+    },
+    "ref": {
+      "type": "string",
+      "minLength": 12,
+      "maxLength": 1024,
+      "pattern": "^refs/heads/(?!.*(?:\\.\\.|@\\{|//|/\\.|\\.lock(?:/|$)|\\.(?:/|$)))(?!.*/$)[A-Za-z0-9_+@-][A-Za-z0-9_./+@-]*$(?![\\s\\S])"
+    }
+  }
+}

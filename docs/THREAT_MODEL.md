@@ -60,6 +60,12 @@ The host owns configuration, plan/approval storage, key isolation, and the clock
 
 Review staging exposes the exact Git-generated diff for inspection while retaining only its digest and changed-path manifest in the staging contract. Diff content is untrusted source data, not instructions. Raw diff access is not a portable promotion receipt, and neither signing nor checking a review updates a protected Git ref.
 
+## Prepared Git promotion reservation boundary
+
+The [prepared promotion journal](GIT_PROMOTION_JOURNAL.md) permanently consumes an exact linked signed approval in the same private SQLite connection/transaction as its approval and review evidence. Reservation verifies installed candidate objects and rechecks live persisted-plan authority, trust, proof, expiry, and concrete fence ownership after acquiring the writer lock. Unique attempt/approval/proposal links, strict canonical readback, cross-column bindings, canonical timestamp-to-epoch triggers, immutable prepared records, and guarded raw revocation reject replay and ambiguous retained state. A commit/readback error cannot promise rollback or approval reuse; the fence must remain held for inspection.
+
+The connection's disk identity is obtained as SQLite filename bytes, validated with fatal UTF-8 and native byte realpath, and pinned by device/inode to the exact fence-owner ledger. This rejects invalid-byte filenames before they can alias a valid Unicode twin; valid U+FFFD names remain supported. Reservation requires an absolute disk ledger, foreign keys, and FULL synchronous mode. The host owns SQLite schema/functions and access, configuration, cooperative fence mapping, plan state, operator trust, signing-key isolation, and the clock. Windows ACLs and storage durability remain deployment assumptions. No status read or prepared record authorizes dispatch, proves ref mutation/quiescence, or implements final admission, ref compare-and-swap, recovery, or a promotion CLI.
+
 ## Known gaps before execution is production-safe
 
 - SQLite is durable locally but has no replica lease/ownership protocol;
