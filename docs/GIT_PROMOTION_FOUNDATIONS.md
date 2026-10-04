@@ -13,7 +13,7 @@ The implemented pieces are:
 - a persistent cooperative repository ownership fence;
 - bounded reads that reject observable metadata changes during reads.
 
-The authenticated one-use journal, final ref transition and host CLI/config integration remain follow-up work. Do not infer those guarantees from the presence of a candidate commit or an ownership record.
+The subsequent [prepared promotion journal](GIT_PROMOTION_JOURNAL.md) implements durable one-use intent reservation. Final ref transition and host CLI/config integration remain follow-up work. Neither a candidate commit, ownership record nor prepared intent grants dispatch authority.
 
 ## Requirements
 
@@ -81,4 +81,4 @@ These checks reject observable truncation, same-size replacement and permission/
 
 ## Remaining promotion gates
 
-A complete promotion still needs a durable one-use intent in the existing approval database, fresh authenticated admission under persistent ownership and a shared SQLite write lock, expected-old direct-ref CAS, serialized revocation and conservative quiescent recovery. Git ref movement and SQLite completion are not one distributed atomic transaction. No portable signed promotion receipt or proof of human presence/inspection is delivered by these foundations.
+A complete promotion builds on the [durable prepared-only journal](GIT_PROMOTION_JOURNAL.md) and still needs fresh authenticated admission under persistent ownership and a shared SQLite write lock, expected-old direct-ref CAS, ownership-aware revocation and conservative quiescent recovery. Git ref movement and SQLite completion are not one distributed atomic transaction. No portable signed promotion receipt or proof of human presence/inspection is delivered by these foundations.
