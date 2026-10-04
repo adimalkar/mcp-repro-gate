@@ -47,6 +47,75 @@ function executeGit(
   return { stdout: result.stdout, status: result.status };
 }
 
+/** Exact plumbing reads used by witnesses/fence checks; every other shape probes. */
+function isMetadataRead(
+  args: string[],
+  input: Uint8Array | undefined,
+): boolean {
+  if (input !== undefined || args[0] !== "-C" || !args[1]) return false;
+  const command = args[2];
+  const options = args.slice(3);
+  const fixedQueries = [
+    ["rev-parse", "--show-toplevel"],
+    ["rev-parse", "--is-bare-repository"],
+    ["rev-parse", "--path-format=absolute", "--show-toplevel"],
+    ["rev-parse", "--path-format=absolute", "--git-dir"],
+    ["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    ["rev-parse", "--verify", "HEAD^{commit}"],
+    ["rev-parse", "--verify", "HEAD^{tree}"],
+    ["symbolic-ref", "--quiet", "HEAD"],
+    ["worktree", "list", "--porcelain", "-z"],
+  ];
+  if (
+    fixedQueries.some(
+      (query) =>
+        query[0] === command &&
+        query.length === options.length + 1 &&
+        options.every((option, index) => option === query[index + 1]),
+    )
+  )
+    return true;
+  // This deliberately narrow literal-ref grammar has no revision operators,
+  // option prefixes or format expansion. Other legal refs take the full path.
+  const localBranch = (ref: string | undefined) =>
+    ref !== undefined &&
+    Buffer.byteLength(ref) <= 1024 &&
+    /^refs\/heads\/[A-Za-z0-9][A-Za-z0-9._/-]*$/u.test(ref) &&
+    !ref.includes("..") &&
+    ref
+      .slice("refs/heads/".length)
+      .split("/")
+      .every(
+        (component) =>
+          component.length > 0 &&
+          !component.startsWith(".") &&
+          !component.endsWith(".") &&
+          !component.endsWith(".lock"),
+      );
+  if (command === "check-ref-format")
+    return options.length === 1 && localBranch(options[0]);
+  if (command === "for-each-ref")
+    return (
+      options.length === 2 &&
+      options[0] ===
+        "--format=%(refname)%09%(objectname)%09%(objecttype)%09%(symref)" &&
+      localBranch(options[1])
+    );
+  if (
+    command === "rev-parse" &&
+    options.length === 2 &&
+    options[0] === "--verify"
+  ) {
+    const revision = options[1];
+    return (
+      revision !== undefined &&
+      ((revision.endsWith("^{commit}") && localBranch(revision.slice(0, -9))) ||
+        /^(?:[0-9a-f]{40}|[0-9a-f]{64})\^\{tree\}$/u.test(revision))
+    );
+  }
+  return false;
+}
+
 /** Internal concrete Git runner, not an execution/authorization extension point. */
 export function runGit(
   args: string[],
@@ -60,6 +129,9 @@ export function runGit(
   ) {
     throw new Error("Invalid Git output bound");
   }
+  // Classification, config observation and dispatch share one ordinary array;
+  // switching caller accessors cannot change an approved metadata read later.
+  args = [...args];
   const scratch = mkdtempSync(join(tmpdir(), "reprogate-git-runner-"));
   try {
     const hooks = join(scratch, "hooks");
@@ -75,67 +147,72 @@ export function runGit(
     // we must probe the effective benign enums before overriding the config environment.
     const probeArgs =
       args[0] === "-C" && args[1] !== undefined ? ["-C", args[1]] : [];
-    const lineEndingsProbe = executeGit(
-      [
-        ...probeArgs,
-        "config",
-        "--null",
-        "--get-regexp",
-        "^(core\\.autocrlf|core\\.eol)$",
-      ],
-      { ...environment, LC_ALL: "C" },
-      undefined,
-      1024,
-      true,
-    );
+    const metadataRead = isMetadataRead(args, input);
     const lineEndingConfig: [string, string][] = [];
-    if (lineEndingsProbe.status === 0) {
-      const output = new TextDecoder("utf-8", { fatal: true }).decode(
-        lineEndingsProbe.stdout,
+    if (!metadataRead) {
+      const lineEndingsProbe = executeGit(
+        [
+          ...probeArgs,
+          "config",
+          "--null",
+          "--get-regexp",
+          "^(core\\.autocrlf|core\\.eol)$",
+        ],
+        { ...environment, LC_ALL: "C" },
+        undefined,
+        1024,
+        true,
       );
-      if (!output.endsWith("\0"))
-        throw new Error("Git config probe was malformed");
-      const effective = new Map<string, string | undefined>();
-      for (const part of output.slice(0, -1).split("\0")) {
-        const fields = part.split("\n");
-        const [key, value] = fields;
-        if (
-          (key !== "core.autocrlf" && key !== "core.eol") ||
-          (fields.length !== 2 &&
-            !(fields.length === 1 && key === "core.autocrlf"))
-        )
-          throw new Error("Git normalization configuration was malformed");
-        effective.set(key, value);
-      }
-      for (const [key, value] of effective) {
-        if (key === "core.autocrlf") {
-          if (value?.toLowerCase() === "input") {
-            lineEndingConfig.push([key, "input"]);
-          } else {
-            // Let Git validate and canonicalize its own boolean aliases (for
-            // example TRUE, 1, yes and bare autocrlf), rather than dropping them.
-            const canonical = executeGit(
-              [...probeArgs, "config", "--bool", "--get", key],
-              { ...environment, LC_ALL: "C" },
-              undefined,
-              16,
-            ).stdout;
-            if (canonical.equals(Buffer.from("true\n")))
-              lineEndingConfig.push([key, "true"]);
-            else if (canonical.equals(Buffer.from("false\n")))
-              lineEndingConfig.push([key, "false"]);
-            else
-              throw new Error("Git normalization configuration was malformed");
-          }
-        } else {
-          const canonical = value?.toLowerCase();
+      if (lineEndingsProbe.status === 0) {
+        const output = new TextDecoder("utf-8", { fatal: true }).decode(
+          lineEndingsProbe.stdout,
+        );
+        if (!output.endsWith("\0"))
+          throw new Error("Git config probe was malformed");
+        const effective = new Map<string, string | undefined>();
+        for (const part of output.slice(0, -1).split("\0")) {
+          const fields = part.split("\n");
+          const [key, value] = fields;
           if (
-            canonical !== "lf" &&
-            canonical !== "crlf" &&
-            canonical !== "native"
+            (key !== "core.autocrlf" && key !== "core.eol") ||
+            (fields.length !== 2 &&
+              !(fields.length === 1 && key === "core.autocrlf"))
           )
-            throw new Error("Unsupported Git line-ending configuration");
-          lineEndingConfig.push([key, canonical]);
+            throw new Error("Git normalization configuration was malformed");
+          effective.set(key, value);
+        }
+        for (const [key, value] of effective) {
+          if (key === "core.autocrlf") {
+            if (value?.toLowerCase() === "input") {
+              lineEndingConfig.push([key, "input"]);
+            } else {
+              // Let Git validate and canonicalize its own boolean aliases (for
+              // example TRUE, 1, yes and bare autocrlf), rather than dropping them.
+              const canonical = executeGit(
+                [...probeArgs, "config", "--bool", "--get", key],
+                { ...environment, LC_ALL: "C" },
+                undefined,
+                16,
+              ).stdout;
+              if (canonical.equals(Buffer.from("true\n")))
+                lineEndingConfig.push([key, "true"]);
+              else if (canonical.equals(Buffer.from("false\n")))
+                lineEndingConfig.push([key, "false"]);
+              else
+                throw new Error(
+                  "Git normalization configuration was malformed",
+                );
+            }
+          } else {
+            const canonical = value?.toLowerCase();
+            if (
+              canonical !== "lf" &&
+              canonical !== "crlf" &&
+              canonical !== "native"
+            )
+              throw new Error("Unsupported Git line-ending configuration");
+            lineEndingConfig.push([key, canonical]);
+          }
         }
       }
     }
@@ -204,7 +281,7 @@ export function runGit(
       });
     };
     installConfig();
-    if (args[0] === "-C" && args[1] !== undefined) {
+    if (!metadataRead && args[0] === "-C" && args[1] !== undefined) {
       // Status can execute filters; diff can execute named external/textconv
       // drivers independently of diff.external. Probe effective config names
       // only (including local includes), never command values. Command-scope

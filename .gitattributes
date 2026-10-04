@@ -1,0 +1,2 @@
+# Schema contracts and their frozen byte digests use LF on every checkout.
+/schemas/*.json text eol=lf
