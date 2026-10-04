@@ -2,6 +2,11 @@ import assert from "node:assert/strict";
 import { execFileSync, fork, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs, {
+  fchmodSync,
+  ftruncateSync,
+  futimesSync,
+  readSync,
+  writeSync,
   chmodSync,
   chownSync,
   closeSync,
@@ -28,6 +33,34 @@ import { dirname, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test, { type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
+
+import { sep } from "node:path";
+
+function probeInvalidBytePaths(): boolean {
+  const probeScratch = mkdtempSync(join(tmpdir(), "reprogate-probe-"));
+  let fd: number | undefined;
+  try {
+    const probeFile = Buffer.concat([
+      Buffer.from(probeScratch),
+      Buffer.from(sep),
+      Buffer.from([0xff]),
+    ]);
+    fd = openSync(probeFile, "wx");
+    // Some Unicode-only filesystems accept Buffer input after replacement
+    // decoding. Creation alone is not proof that the original byte survived.
+    return readdirSync(probeScratch, { encoding: "buffer" }).some((entry) =>
+      entry.equals(Buffer.from([0xff])),
+    );
+  } catch (error: unknown) {
+    const err = error as NodeJS.ErrnoException;
+    if (err.code === "EILSEQ" || err.code === "EINVAL") return false;
+    throw error;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+    rmSync(probeScratch, { recursive: true, force: true });
+  }
+}
+const supportsInvalidBytePaths = probeInvalidBytePaths();
 
 // Dynamic import deliberately allows a real-fixture RED run before production exists.
 async function controlModule(): Promise<
@@ -65,17 +98,25 @@ function fixture(t: TestContext) {
   const workers: ChildProcess[] = [];
   // One FIFO after-hook: reap children before deleting their files (also on Windows).
   t.after(async () => {
+    const failures: unknown[] = [];
     for (const worker of workers) {
-      if (worker.exitCode === null && worker.signalCode === null) {
-        const done = new Promise<void>((resolve) =>
-          worker.once("exit", () => {
-            resolve();
-          }),
-        );
-        worker.kill("SIGKILL");
-        await done;
+      if (
+        worker.pid !== undefined &&
+        worker.exitCode === null &&
+        worker.signalCode === null
+      ) {
+        try {
+          await workerExit(worker, 10_000, true);
+        } catch (error) {
+          failures.push(error);
+        }
       }
     }
+    if (failures.length > 0)
+      throw new AggregateError(
+        failures,
+        "Owned fixture workers could not all be reaped",
+      );
     rmSync(scratch, { recursive: true, force: true });
   });
   return { scratch, root, host, config, workers };
@@ -117,7 +158,12 @@ function snapshotFile(path: string): Buffer {
     closeSync(descriptor);
   }
 }
-function worker(f: ReturnType<typeof fixture>, mode = "acquire") {
+function worker(
+  f: ReturnType<typeof fixture>,
+  mode = "acquire",
+  timeoutMs = 10_000,
+  execPath = process.execPath,
+) {
   const child = fork(
     fileURLToPath(
       new URL(
@@ -126,34 +172,195 @@ function worker(f: ReturnType<typeof fixture>, mode = "acquire") {
       ),
     ),
     [JSON.stringify(f.config), mode],
-    { stdio: ["ignore", "ignore", "pipe", "ipc"] },
+    { stdio: ["ignore", "ignore", "pipe", "ipc"], execPath },
   );
   f.workers.push(child);
   return {
     child,
-    message: new Promise<{
-      status: string;
-      owner: import("../src/git-promotion-host-control.js").GitPromotionFenceOwnerV1;
-    }>((resolve, reject) => {
-      child.once("message", (message) => {
-        resolve(
-          message as {
-            status: string;
-            owner: import("../src/git-promotion-host-control.js").GitPromotionFenceOwnerV1;
-          },
-        );
-      });
-      child.once("error", reject);
-      child.once("exit", (code, signal) => {
+    message: workerMessage(child, timeoutMs),
+  };
+}
+interface WorkerMessage {
+  status: string;
+  owner: import("../src/git-promotion-host-control.js").GitPromotionFenceOwnerV1;
+}
+function boundedWorkerWait(
+  child: ChildProcess,
+  event: "message" | "exit",
+  timeoutMs: number,
+  stopOwned = false,
+): Promise<unknown> {
+  if (
+    !stopOwned &&
+    event === "exit" &&
+    (child.exitCode !== null || child.signalCode !== null)
+  )
+    return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      clearTimeout(timer);
+      child.off("message", onMessage);
+      child.off("error", onError);
+      child.off("exit", onExit);
+    };
+    const onMessage = (message: unknown) => {
+      cleanup();
+      resolve(message);
+    };
+    const onError = (error: Error) => {
+      cleanup();
+      reject(error);
+    };
+    const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
+      cleanup();
+      if (event === "exit") resolve(undefined);
+      else
         reject(
           new Error(
             `Worker exited before message: ${String(code)}/${String(signal)}`,
           ),
         );
-      });
-    }),
-  };
+    };
+    const timer = setTimeout(() => {
+      onError(
+        new Error(
+          event === "message"
+            ? "Owned fixture worker did not send a message"
+            : "Owned fixture worker did not exit",
+        ),
+      );
+    }, timeoutMs);
+    if (event === "message") child.once("message", onMessage);
+    child.once("error", onError);
+    child.once("exit", onExit);
+    if (stopOwned) {
+      try {
+        assert.ok(
+          child.pid !== undefined,
+          "Only an owned spawned child may be stopped",
+        );
+        assert.equal(
+          child.exitCode,
+          null,
+          "Owned child must be live before kill",
+        );
+        assert.equal(
+          child.signalCode,
+          null,
+          "Owned child must be live before kill",
+        );
+        assert.equal(
+          child.kill("SIGKILL"),
+          true,
+          "Owned child kill must succeed before waiting for exit",
+        );
+      } catch (error) {
+        onError(
+          new Error("Owned fixture worker could not be stopped", {
+            cause: error,
+          }),
+        );
+      }
+    }
+  });
 }
+function workerMessage(
+  child: ChildProcess,
+  timeoutMs: number,
+): Promise<WorkerMessage> {
+  return boundedWorkerWait(child, "message", timeoutMs).then(
+    (message) => message as WorkerMessage,
+  );
+}
+function workerExit(
+  child: ChildProcess,
+  timeoutMs = 10_000,
+  stopOwned = false,
+): Promise<void> {
+  return boundedWorkerWait(child, "exit", timeoutMs, stopOwned).then(
+    () => undefined,
+  );
+}
+async function regressionGuard<T>(promise: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          reject(new Error("Regression guard: worker wait is unbounded"));
+        }, 2000);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+function noWaitListeners(child: ChildProcess) {
+  for (const event of ["message", "error", "exit"])
+    assert.equal(
+      child.listenerCount(event),
+      0,
+      `leftover ${event} wait listener`,
+    );
+}
+
+test("owned silent worker message wait times out, clears listeners, and cleanup reaps it", async (t) => {
+  const f = fixture(t);
+  const before = snapshot(f.root, f.host);
+  const child = worker(f, "silent", 100);
+  t.after(() => {
+    assert.ok(child.child.exitCode !== null || child.child.signalCode !== null);
+    noWaitListeners(child.child);
+    assert.equal(existsSync(f.scratch), false);
+  });
+  await assert.rejects(
+    regressionGuard(child.message),
+    /did not send a message/u,
+  );
+  assert.equal(child.child.exitCode, null);
+  noWaitListeners(child.child);
+  assert.deepEqual(snapshot(f.root, f.host), before);
+});
+test("owned worker exit before message rejects and clears listeners", async (t) => {
+  const f = fixture(t);
+  const child = worker(f, "exit-before-message");
+  await assert.rejects(
+    regressionGuard(child.message),
+    /Worker exited before message: 17/u,
+  );
+  assert.equal(child.child.exitCode, 17);
+  noWaitListeners(child.child);
+});
+test("owned fork spawn error rejects without stale listeners or a child to kill", async (t) => {
+  const f = fixture(t);
+  const child = worker(
+    f,
+    "acquire",
+    10_000,
+    join(f.scratch, "missing-owned-worker-executable"),
+  );
+  await assert.rejects(regressionGuard(child.message), /ENOENT/u);
+  assert.equal(child.child.pid, undefined);
+  noWaitListeners(child.child);
+});
+test("owned live worker exit wait times out and clears listeners before cleanup kill", async (t) => {
+  const f = fixture(t);
+  const child = worker(f);
+  t.after(() => {
+    assert.ok(child.child.exitCode !== null || child.child.signalCode !== null);
+    noWaitListeners(child.child);
+    assert.equal(existsSync(f.scratch), false);
+  });
+  assert.equal((await child.message).status, "acquired");
+  await assert.rejects(
+    regressionGuard(workerExit(child.child, 100)),
+    /did not exit/u,
+  );
+  assert.equal(child.child.exitCode, null);
+  assert.equal(child.child.signalCode, null);
+  noWaitListeners(child.child);
+});
 
 test("exclusive instances release only exact immutable bound owner after explicit quiescence; no Git/SQLite mutation", async (t) => {
   const f = fixture(t);
@@ -218,6 +425,8 @@ test("two compiled workers compete, SIGKILL leaves persistent ownership; fresh p
   const a = worker(f);
   const b = worker(f);
   const results = await Promise.all([a.message, b.message]);
+  noWaitListeners(a.child);
+  noWaitListeners(b.child);
   assert.deepEqual(results.map((r) => r.status).sort(), ["acquired", "held"]);
   const winningIndex = results.findIndex((r) => r.status === "acquired");
   const winner = [a, b][winningIndex];
@@ -227,13 +436,8 @@ test("two compiled workers compete, SIGKILL leaves persistent ownership; fresh p
   const owner = result.owner;
   assert.equal(winner.child.exitCode, null);
   assert.equal(winner.child.signalCode, null);
-  const exited = new Promise<void>((resolve) =>
-    winner.child.once("exit", () => {
-      resolve();
-    }),
-  );
-  assert.equal(winner.child.kill("SIGKILL"), true);
-  await exited;
+  await workerExit(winner.child, 10_000, true);
+  noWaitListeners(winner.child);
   // No PID is persisted or treated as authority. Even an ancient canonical time cannot expire a latch.
   writeFileSync(
     join(f.config.fencePath, "owner.json"),
@@ -476,10 +680,10 @@ test("unsafe ledger/owner/fence symlinks, hardlinks and nonregular files fail cl
   const target = join(f.host, "target");
   writeFileSync(target, "unchanged", { mode: 0o600 });
   symlinkSync(target, f.config.approvalDatabasePath, "file");
-  assert.throws(() => createGitPromotionHostControl(f.config));
+  assert.throws(() => createGitPromotionHostControl(f.config).query());
   rmSync(f.config.approvalDatabasePath);
   linkSync(target, f.config.approvalDatabasePath);
-  assert.throws(() => createGitPromotionHostControl(f.config));
+  assert.throws(() => createGitPromotionHostControl(f.config).query());
   rmSync(f.config.approvalDatabasePath);
   const c = createGitPromotionHostControl(f.config);
   const owner = c.acquire(randomUUID());
@@ -502,7 +706,7 @@ test("unsafe ledger/owner/fence symlinks, hardlinks and nonregular files fail cl
     f.config.fencePath,
     process.platform === "win32" ? "junction" : "dir",
   );
-  assert.throws(() => createGitPromotionHostControl(f.config));
+  assert.throws(() => createGitPromotionHostControl(f.config).query());
   assert.equal(readFileSync(target, "utf8"), "unchanged");
 });
 
@@ -513,7 +717,7 @@ test(
     const f = fixture(t);
     const { createGitPromotionHostControl } = await controlModule();
     chmodSync(f.host, 0o755);
-    assert.throws(() => createGitPromotionHostControl(f.config));
+    assert.throws(() => createGitPromotionHostControl(f.config).query());
     chmodSync(f.host, 0o700);
     const c = createGitPromotionHostControl(f.config);
     const owner = c.acquire(randomUUID());
@@ -536,7 +740,7 @@ test(
     });
     rmSync(path);
     execFileSync("mkfifo", [f.config.approvalDatabasePath]);
-    assert.throws(() => createGitPromotionHostControl(f.config));
+    assert.throws(() => createGitPromotionHostControl(f.config).query());
   },
 );
 
@@ -672,7 +876,7 @@ test(
 
 test(
   "invalid UTF-8 registered worktree paths fail closed instead of replacement decoding",
-  { skip: process.platform === "win32" },
+  { skip: !supportsInvalidBytePaths },
   async (t) => {
     const f = fixture(t);
     const { createGitPromotionHostControl } = await controlModule();
@@ -696,7 +900,7 @@ test(
     assert.ok(
       git(f.root, "worktree", "list", "--porcelain", "-z").includes(rawPath),
     );
-    assert.throws(() => createGitPromotionHostControl(f.config));
+    assert.throws(() => createGitPromotionHostControl(f.config).query());
     assert.equal(existsSync(f.config.fencePath), false);
   },
 );
@@ -773,7 +977,7 @@ test("host config accessors, sparse state paths, unsafe ledger sidecars, and ret
       f.config.approvalDatabasePath + suffix,
       "file",
     );
-    assert.throws(() => createGitPromotionHostControl(f.config));
+    assert.throws(() => createGitPromotionHostControl(f.config).query());
     rmSync(f.config.approvalDatabasePath + suffix);
   }
   const c = createGitPromotionHostControl(f.config);
@@ -1301,7 +1505,7 @@ function lifetimeFixture(
   const f = fixture(t);
   const common = realpathSync.native(join(f.root, ".git"));
   if (layout === "directory")
-    return { ...f, repository: f.root, gitdir: common, common };
+    return { ...f, repository: f.root, gitdir: common, common, layout };
   const repository = join(f.scratch, "linked lifetime é");
   git(f.root, "worktree", "add", "-qb", "lifetime", repository);
   let gitdir = realpathSync.native(
@@ -1326,7 +1530,7 @@ function lifetimeFixture(
     writeFileSync(join(gitdir, "commondir"), common + "\n");
     writeFileSync(join(gitdir, "gitdir"), dotGit + "\n");
   }
-  return { ...f, repository, gitdir, common };
+  return { ...f, repository, gitdir, common, layout };
 }
 function replaceCommon(common: string): void {
   const identity = lstatSync(common, { bigint: true });
@@ -1460,8 +1664,10 @@ function redirectGitdirIntoFenceParent(
   writeFileSync(join(f.host, "commondir"), f.common + "\n");
   const dotGit = join(f.repository, ".git");
   const directoryLink =
-    lstatSync(dotGit).isSymbolicLink() && fs.statSync(dotGit).isDirectory();
-  rmSync(dotGit);
+    f.layout === "directory" ||
+    f.layout === "symlink-directory" ||
+    f.layout === "directory-commondir";
+  rmSync(dotGit, { recursive: true, force: true });
   if (directoryLink)
     symlinkSync(
       f.host,
@@ -1801,7 +2007,7 @@ for (const target of UNICODE_PHYSICAL_TARGETS) {
   });
   test(
     `lossless physical paths reject invalid-byte ${target} with existing Unicode twin before construction inspection`,
-    { skip: process.platform === "win32" },
+    { skip: !supportsInvalidBytePaths },
     async (t) => {
       const f = unicodePhysicalFixture(t, target);
       const { createGitPromotionHostControl } = await controlModule();
@@ -1834,7 +2040,7 @@ for (const target of [
   for (const timing of ["available", "held"] as const) {
     test(
       `lossless physical paths revalidate captured ${target} against raw-byte redirection while ${timing}`,
-      { skip: process.platform === "win32" },
+      { skip: !supportsInvalidBytePaths },
       async (t) => {
         const f = unicodePhysicalFixture(t, target);
         const { createGitPromotionHostControl } = await controlModule();
@@ -1931,29 +2137,111 @@ test("owner snapshots accept atime-only observation changes throughout acquire/q
 
 type OwnerMutation = "truncate" | "same-size-token" | "unsafe-mode";
 function mutateOwner(path: string, mutation: OwnerMutation) {
-  const before = lstatSync(path, { bigint: true });
-  const bytes = readFileSync(path);
-  if (mutation === "truncate") writeFileSync(path, "{");
-  else if (mutation === "same-size-token") {
-    const owner = JSON.parse(bytes.toString("utf8")) as { token: string };
-    const token = randomUUID();
-    assert.notEqual(token, owner.token);
-    const replacement = Buffer.from(JSON.stringify({ ...owner, token }));
-    assert.equal(replacement.length, bytes.length);
-    writeFileSync(path, replacement);
-  } else chmodSync(path, process.platform === "win32" ? 0o444 : 0o644);
-  const after = lstatSync(path, { bigint: true });
-  assert.equal(after.dev, before.dev);
-  assert.equal(after.ino, before.ino);
-  assert.notEqual(after.ctimeNs, before.ctimeNs);
-  if (mutation === "same-size-token") {
-    assert.equal(after.size, before.size);
-    assert.notDeepEqual(readFileSync(path), bytes);
+  const fd = openSync(path, "r+");
+  try {
+    const before = fstatSync(fd, { bigint: true });
+    const bytes = Buffer.alloc(Number(before.size));
+    readSync(fd, bytes, 0, bytes.length, 0);
+
+    if (mutation === "truncate") {
+      ftruncateSync(fd, 1);
+      writeSync(fd, Buffer.from("{"), 0, 1, 0);
+    } else if (mutation === "same-size-token") {
+      const owner = JSON.parse(bytes.toString("utf8")) as { token: string };
+      const token = randomUUID();
+      assert.notEqual(token, owner.token);
+      const replacement = Buffer.from(JSON.stringify({ ...owner, token }));
+      assert.equal(replacement.length, bytes.length);
+      writeSync(fd, replacement, 0, replacement.length, 0);
+      const mtime = Number(before.mtimeMs) / 1000 + 1;
+      futimesSync(fd, mtime, mtime);
+    } else fchmodSync(fd, process.platform === "win32" ? 0o444 : 0o644);
+
+    const after = fstatSync(fd, { bigint: true });
+    assert.equal(after.dev, before.dev);
+    assert.equal(after.ino, before.ino);
+
+    if (mutation === "truncate") assert.notEqual(after.size, before.size);
+    else if (mutation === "unsafe-mode")
+      assert.notEqual(after.mode, before.mode);
+    else {
+      assert.equal(after.size, before.size);
+      assert.ok(
+        after.ctimeNs !== before.ctimeNs || after.mtimeNs !== before.mtimeNs,
+        "same-size replacement must expose a stable timestamp change",
+      );
+      const afterBytes = Buffer.alloc(Number(after.size));
+      readSync(fd, afterBytes, 0, afterBytes.length, 0);
+      assert.notDeepEqual(afterBytes, bytes);
+    }
+    const finalBytes = Buffer.alloc(Number(after.size));
+    readSync(fd, finalBytes, 0, finalBytes.length, 0);
+    return { bytes: finalBytes, stats: after };
+  } finally {
+    closeSync(fd);
   }
-  if (mutation === "truncate") assert.notEqual(after.size, before.size);
-  if (mutation === "unsafe-mode") assert.notEqual(after.mode, before.mode);
-  return { bytes: readFileSync(path), stats: after };
 }
+
+test("modeled unchanged ctime permits real same-size owner token mutation evidence", async (t) => {
+  const f = fixture(t);
+  const { createGitPromotionHostControl } = await controlModule();
+  const controller = createGitPromotionHostControl(f.config);
+  const owner = controller.acquire(randomUUID());
+  const path = join(f.config.fencePath, "owner.json");
+  const fd = openSync(path, "r");
+  let before: fs.BigIntStats;
+  let bytes: Buffer;
+  try {
+    before = fstatSync(fd, { bigint: true });
+    bytes = readFileSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+  const original = fs.fstatSync;
+  let observations = 0;
+  const observing = t.mock.method(
+    fs,
+    "fstatSync",
+    (...args: Parameters<typeof fs.fstatSync>) => {
+      const stats = original(...args);
+      if (
+        "ctimeNs" in stats &&
+        stats.dev === before.dev &&
+        stats.ino === before.ino
+      ) {
+        observations++;
+        stats.ctimeNs = before.ctimeNs;
+        stats.ctimeMs = before.ctimeMs;
+        stats.ctime = before.ctime;
+      }
+      return stats;
+    },
+  );
+  syncBuiltinESMExports();
+  let evidence: ReturnType<typeof mutateOwner>;
+  try {
+    evidence = mutateOwner(path, "same-size-token");
+  } finally {
+    observing.mock.restore();
+    syncBuiltinESMExports();
+  }
+  assert.ok(observations >= 2);
+  assert.equal(
+    evidence.stats.ctimeNs,
+    before.ctimeNs,
+    "modeled metadata, not an NTFS claim",
+  );
+  assert.notEqual(evidence.stats.mtimeNs, before.mtimeNs);
+  assert.equal(evidence.stats.size, before.size);
+  assert.equal(evidence.stats.mode, before.mode);
+  assert.equal(evidence.stats.nlink, before.nlink);
+  assert.notDeepEqual(evidence.bytes, bytes);
+  assert.ok(existsSync(f.config.fencePath));
+  assert.throws(() => {
+    controller.release(owner, { childrenQuiescent: true });
+  }, /exact persisted owner/u);
+  assert.deepEqual(snapshotFile(path), evidence.bytes);
+});
 
 for (const timing of ["during-read", "after-close"] as const) {
   for (const mutation of [
@@ -2069,73 +2357,350 @@ for (const timing of ["during-read", "after-close"] as const) {
   }
 }
 
+function ownerDescriptorSnapshot(fd: number) {
+  const stats = fstatSync(fd, { bigint: true });
+  assert.ok(stats.isFile());
+  const bytes = Buffer.alloc(Number(stats.size));
+  assert.equal(readSync(fd, bytes, 0, bytes.length, 0), bytes.length);
+  return { bytes, stats };
+}
+type OwnerDescriptorSnapshot = ReturnType<typeof ownerDescriptorSnapshot>;
+function assertRestoredOwner(
+  after: OwnerDescriptorSnapshot,
+  before: OwnerDescriptorSnapshot,
+) {
+  assert.deepEqual(after.bytes, before.bytes);
+  for (const field of [
+    "dev",
+    "ino",
+    "size",
+    "mode",
+    "nlink",
+    "uid",
+    "gid",
+    "birthtimeNs",
+    "rdev",
+  ] as const)
+    assert.equal(
+      after.stats[field],
+      before.stats[field],
+      `owner ${field} must be restored`,
+    );
+}
+type RestoredOwnerMutation =
+  "rewrite-identical" | "mode-restored" | "link-restored";
+function mutateRestoredOwner(
+  fd: number,
+  path: string,
+  alias: string,
+  mutation: RestoredOwnerMutation,
+  before: OwnerDescriptorSnapshot,
+) {
+  if (mutation === "rewrite-identical")
+    assert.equal(
+      writeSync(fd, before.bytes, 0, before.bytes.length, 0),
+      before.bytes.length,
+    );
+  else if (mutation === "mode-restored") {
+    fchmodSync(fd, process.platform === "win32" ? 0o444 : 0o644);
+    assert.notEqual(fstatSync(fd, { bigint: true }).mode, before.stats.mode);
+    fchmodSync(fd, Number(before.stats.mode & 0o777n));
+  } else {
+    // Only link creation needs the defined fixture path; observations and I/O stay on fd.
+    linkSync(path, alias);
+    try {
+      assert.equal(
+        fstatSync(fd, { bigint: true }).nlink,
+        before.stats.nlink + 1n,
+      );
+    } finally {
+      rmSync(alias);
+    }
+  }
+  // Baselines use whole seconds so restoration is exact despite futimes' numeric API.
+  futimesSync(
+    fd,
+    Number(before.stats.atimeMs) / 1000,
+    Number(before.stats.mtimeMs) / 1000,
+  );
+  const after = ownerDescriptorSnapshot(fd);
+  assertRestoredOwner(after, before);
+  assert.equal(after.stats.mtimeNs, before.stats.mtimeNs);
+  return after;
+}
+function pinOwnerMtime(fd: number) {
+  const stats = fstatSync(fd, { bigint: true });
+  futimesSync(
+    fd,
+    Number(stats.atimeMs) / 1000,
+    Math.floor(Number(stats.mtimeMs) / 1000) - 10,
+  );
+  return ownerDescriptorSnapshot(fd);
+}
+async function exposesRestoredOwnerCtime(
+  root: string,
+  mutation: RestoredOwnerMutation,
+) {
+  const path = join(root, "owned ctime capability probe");
+  const fd = openSync(path, "wx+", 0o600);
+  try {
+    writeSync(fd, Buffer.from("capability fixture"));
+    const before = pinOwnerMtime(fd);
+    for (let attempt = 0; attempt < 3; attempt++) {
+      // Retry across coarse timestamp ticks, not a narrow release deadline.
+      if (attempt > 0)
+        await new Promise((resolve) => setTimeout(resolve, 1100));
+      const after = mutateRestoredOwner(
+        fd,
+        path,
+        join(root, "probe alias"),
+        mutation,
+        before,
+      );
+      if (after.stats.ctimeNs !== before.stats.ctimeNs) return true;
+    }
+    return false;
+  } finally {
+    closeSync(fd);
+    rmSync(path);
+  }
+}
+
 for (const mutation of [
   "rewrite-identical",
   "mode-restored",
   "link-restored",
 ] as const) {
-  test(`observable owner metadata ${mutation} between release inspections retains owner and latch`, async (t) => {
+  test(`observable owner ctime-only metadata ${mutation} between release inspections retains owner and latch`, async (t) => {
+    const f = fixture(t);
+    const { createGitPromotionHostControl } = await controlModule();
+    const controller = createGitPromotionHostControl(f.config);
+    const owner = controller.acquire(randomUUID());
+    if (!(await exposesRestoredOwnerCtime(f.host, mutation))) {
+      t.skip(
+        `Actual ${mutation} capability probe exposed no ctime drift with bytes/mtime/mode/size/nlink restored after three attempts across coarse timestamp ticks`,
+      );
+      return;
+    }
+    const path = join(f.config.fencePath, "owner.json");
+    const fd = openSync(path, "r+");
+    try {
+      const before = pinOwnerMtime(fd);
+      // Give coarse POSIX clocks an owned tick before the synchronous release observations.
+      await new Promise((resolve) => setTimeout(resolve, 1100));
+      let observations = 0;
+      let evidence: OwnerDescriptorSnapshot | undefined;
+      const original = fs.lstatSync;
+      const observing = t.mock.method(
+        fs,
+        "lstatSync",
+        (...args: Parameters<typeof fs.lstatSync>) => {
+          // Third owner lstat is the second inspect's initial snapshot, after inspect one completed.
+          if (args[0] === path && ++observations === 3)
+            evidence = mutateRestoredOwner(
+              fd,
+              path,
+              join(f.host, "transient owner alias"),
+              mutation,
+              before,
+            );
+          return original(...args);
+        },
+      );
+      syncBuiltinESMExports();
+      try {
+        assert.throws(() => {
+          controller.release(owner, { childrenQuiescent: true });
+        }, /Fence changed before release/u);
+      } finally {
+        observing.mock.restore();
+        syncBuiltinESMExports();
+      }
+      assert.equal(observations, 4, "both full inspections must execute");
+      assert.ok(evidence, "real restored-metadata mutation must have executed");
+      const after = ownerDescriptorSnapshot(fd);
+      assertRestoredOwner(after, before);
+      assert.equal(
+        after.stats.mtimeNs,
+        before.stats.mtimeNs,
+        "ctime-only case must restore mtime exactly",
+      );
+      assert.notEqual(after.stats.ctimeNs, before.stats.ctimeNs);
+      assert.ok(existsSync(f.config.fencePath));
+      assert.deepEqual(controller.query(), { status: "held", owner });
+      assert.throws(() => controller.acquire(randomUUID()), /held/u);
+    } finally {
+      closeSync(fd);
+    }
+  });
+}
+
+for (const metadata of ["native", "modeled-unchanged-ctime"] as const) {
+  test(`observable owner deterministic mtime between release inspections retains identical owner and latch (${metadata})`, async (t) => {
     const f = fixture(t);
     const { createGitPromotionHostControl } = await controlModule();
     const controller = createGitPromotionHostControl(f.config);
     const owner = controller.acquire(randomUUID());
     const path = join(f.config.fencePath, "owner.json");
-    const bytes = readFileSync(path);
-    const before = lstatSync(path, { bigint: true });
+    const fd = openSync(path, "r+");
+    try {
+      const before = pinOwnerMtime(fd);
+      let observations = 0;
+      let evidence: OwnerDescriptorSnapshot | undefined;
+      const originalLstat = fs.lstatSync;
+      const originalFstat = fs.fstatSync;
+      function model(stats: fs.Stats | fs.BigIntStats | undefined) {
+        if (
+          metadata === "modeled-unchanged-ctime" &&
+          stats &&
+          "ctimeNs" in stats &&
+          stats.dev === before.stats.dev &&
+          stats.ino === before.stats.ino
+        ) {
+          stats.ctimeNs = before.stats.ctimeNs;
+          stats.ctimeMs = before.stats.ctimeMs;
+          stats.ctime = before.stats.ctime;
+        }
+        return stats;
+      }
+      const observing = t.mock.method(
+        fs,
+        "lstatSync",
+        (...args: Parameters<typeof fs.lstatSync>) => {
+          if (args[0] === path && ++observations === 3) {
+            assert.equal(
+              writeSync(fd, before.bytes, 0, before.bytes.length, 0),
+              before.bytes.length,
+            );
+            futimesSync(
+              fd,
+              Number(before.stats.atimeMs) / 1000,
+              Number(before.stats.mtimeMs) / 1000 + 1,
+            );
+            evidence = ownerDescriptorSnapshot(fd);
+          }
+          return model(originalLstat(...args));
+        },
+      );
+      const descriptorStats = t.mock.method(
+        fs,
+        "fstatSync",
+        (...args: Parameters<typeof fs.fstatSync>) =>
+          model(originalFstat(...args)),
+      );
+      syncBuiltinESMExports();
+      try {
+        assert.throws(() => {
+          controller.release(owner, { childrenQuiescent: true });
+        }, /Fence changed before release/u);
+      } finally {
+        for (const mock of [observing, descriptorStats]) mock.mock.restore();
+        syncBuiltinESMExports();
+      }
+      assert.equal(observations, 4);
+      assert.ok(
+        evidence,
+        "real rewrite and deterministic mtime advance must have executed",
+      );
+      assertRestoredOwner(evidence, before);
+      assert.equal(
+        evidence.stats.mtimeNs,
+        before.stats.mtimeNs + 1_000_000_000n,
+      );
+      if (metadata === "modeled-unchanged-ctime")
+        assert.equal(
+          evidence.stats.ctimeNs,
+          before.stats.ctimeNs,
+          "modeled metadata, not an NTFS claim",
+        );
+      const after = ownerDescriptorSnapshot(fd);
+      assertRestoredOwner(after, before);
+      assert.equal(after.stats.mtimeNs, evidence.stats.mtimeNs);
+      assert.ok(existsSync(f.config.fencePath));
+      assert.deepEqual(controller.query(), { status: "held", owner });
+      assert.throws(() => controller.acquire(randomUUID()), /held/u);
+    } finally {
+      closeSync(fd);
+    }
+  });
+}
+
+test("injected ctime-only owner snapshots between release inspections retain unchanged real owner and latch", async (t) => {
+  const f = fixture(t);
+  const { createGitPromotionHostControl } = await controlModule();
+  const controller = createGitPromotionHostControl(f.config);
+  const owner = controller.acquire(randomUUID());
+  const path = join(f.config.fencePath, "owner.json");
+  const fd = openSync(path, "r");
+  try {
+    const before = ownerDescriptorSnapshot(fd);
     let observations = 0;
-    let mutated = false;
-    const original = fs.lstatSync;
+    let injected = 0;
+    const originalLstat = fs.lstatSync;
+    const originalFstat = fs.fstatSync;
+    function model(stats: fs.Stats | fs.BigIntStats | undefined) {
+      if (
+        observations >= 3 &&
+        stats &&
+        "ctimeNs" in stats &&
+        stats.dev === before.stats.dev &&
+        stats.ino === before.stats.ino
+      ) {
+        stats.ctimeNs += 1n;
+        injected++;
+      }
+      return stats;
+    }
     const observing = t.mock.method(
       fs,
       "lstatSync",
       (...args: Parameters<typeof fs.lstatSync>) => {
-        // Mutate before the next captured owner snapshot, after the first inspect completed.
-        if (args[0] === path && ++observations === 3) {
-          if (mutation === "rewrite-identical") writeFileSync(path, bytes);
-          else if (mutation === "mode-restored") {
-            chmodSync(path, process.platform === "win32" ? 0o444 : 0o644);
-            chmodSync(path, 0o600);
-          } else {
-            const alias = join(f.host, "transient owner alias");
-            linkSync(path, alias);
-            rmSync(alias);
-          }
-          mutated = true;
-        }
-        return original(...args);
+        if (args[0] === path) observations++;
+        return model(originalLstat(...args));
       },
     );
+    const descriptorStats = t.mock.method(
+      fs,
+      "fstatSync",
+      (...args: Parameters<typeof fs.fstatSync>) =>
+        model(originalFstat(...args)),
+    );
     syncBuiltinESMExports();
-    let error: unknown;
     try {
-      controller.release(owner, { childrenQuiescent: true });
-    } catch (caught) {
-      error = caught;
+      assert.throws(() => {
+        controller.release(owner, { childrenQuiescent: true });
+      }, /Fence changed before release/u);
     } finally {
-      observing.mock.restore();
+      for (const mock of [observing, descriptorStats]) mock.mock.restore();
       syncBuiltinESMExports();
     }
-    assert.equal(mutated, true);
-    assert.ok(
-      error instanceof Error,
-      "release must honor metadata drift even with identical owner bytes",
+    assert.equal(observations, 4);
+    assert.equal(
+      injected,
+      4,
+      "second inspect's path and descriptor snapshots must agree",
+    );
+    const after = ownerDescriptorSnapshot(fd);
+    assertRestoredOwner(after, before);
+    assert.equal(after.stats.mtimeNs, before.stats.mtimeNs);
+    assert.equal(
+      after.stats.ctimeNs,
+      before.stats.ctimeNs,
+      "real metadata was unchanged; only the snapshot contract was injected",
     );
     assert.ok(existsSync(f.config.fencePath));
-    assert.deepEqual(readFileSync(path), bytes);
-    const after = lstatSync(path, { bigint: true });
-    assert.equal(after.ino, before.ino);
-    assert.equal(after.size, before.size);
-    assert.equal(after.mode, before.mode);
-    assert.equal(after.nlink, before.nlink);
-    assert.notEqual(after.ctimeNs, before.ctimeNs);
-  });
-}
+    assert.deepEqual(controller.query(), { status: "held", owner });
+    assert.throws(() => controller.acquire(randomUUID()), /held/u);
+  } finally {
+    closeSync(fd);
+  }
+});
 
 for (const target of ["metadata-pointer", "common-pointer"] as const) {
   for (const timing of ["available", "held"] as const) {
     test(
       `lossless physical paths reject late invalid-byte ${target} during all ${timing} operations without twin inspection`,
-      { skip: process.platform === "win32" },
+      { skip: !supportsInvalidBytePaths },
       async (t) => {
         const f = unicodePhysicalFixture(t, target);
         const { createGitPromotionHostControl } = await controlModule();
@@ -2173,3 +2738,27 @@ for (const target of ["metadata-pointer", "common-pointer"] as const) {
     );
   }
 }
+
+test("lossless physical paths reject invalid-byte paths via mocked realpathSync.native", async (t) => {
+  const f = fixture(t);
+  const { createGitPromotionHostControl } = await controlModule();
+
+  const original = realpathSync.native;
+  t.mock.method(
+    realpathSync,
+    "native",
+    (p: fs.PathLike, options?: fs.EncodingOption) => {
+      if (typeof p === "string" && p === f.config.repositoryPath) {
+        return Buffer.concat([
+          Buffer.from(f.config.repositoryPath),
+          Buffer.from([0xff]),
+        ]);
+      }
+      return original(p, options);
+    },
+  );
+
+  assert.throws(() => createGitPromotionHostControl(f.config).query(), {
+    name: "TypeError",
+  });
+});
