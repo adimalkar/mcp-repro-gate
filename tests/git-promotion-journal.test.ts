@@ -605,7 +605,19 @@ test("wrong fence token, attempt, physical common, ledger, config or fake contro
 
 // Probe the filesystem before creating raw-name regressions. Only demonstrated
 // encoding limitations may skip; unexpected permissions/I/O errors still fail.
-function rawFilenameSupported(t: TestContext, scratch: string): boolean {
+function rawFilenameSupported(
+  t: Pick<TestContext, "skip">,
+  scratch: string,
+  options: {
+    platform?: NodeJS.Platform;
+    writeProbe?: (path: string | Buffer) => void;
+  } = {},
+): boolean {
+  const writeProbe =
+    options.writeProbe ??
+    ((path: string | Buffer) => {
+      writeFileSync(path, "probe");
+    });
   const name = Buffer.concat([
     Buffer.from("encoding-probe-"),
     Buffer.from([0xff]),
@@ -614,46 +626,227 @@ function rawFilenameSupported(t: TestContext, scratch: string): boolean {
   const controlPath = join(scratch, "encoding-probe-valid");
   // Prove this location accepts ordinary filenames before attributing a
   // rejection/normalization specifically to the malformed byte fixture.
-  writeFileSync(controlPath, "probe");
+  writeProbe(controlPath);
   let created = false;
   try {
-    writeFileSync(path, "probe");
-    created = true;
-    const observed = realpathSync.native(path, { encoding: "buffer" });
-    const names = readdirSync(scratch, { encoding: "buffer" });
-    if (
-      !names.some((entry) => entry.equals(name)) &&
-      names.some((entry) => entry.equals(Buffer.from(name.toString("utf8"))))
-    ) {
-      t.skip(
-        "Filesystem substituted invalid filename bytes with UTF-8 U+FFFD (byte roundtrip probe)",
+    const verifyControl = () => {
+      assert.ok(statSync(scratch).isDirectory(), "Probe parent must exist");
+      assert.equal(readFileSync(controlPath, "utf8"), "probe");
+      assert.deepEqual(
+        realpathSync.native(controlPath, { encoding: "buffer" }),
+        Buffer.from(controlPath),
+        "Ordinary control filename must roundtrip exactly",
       );
-      return false;
+    };
+    // Ordinary-path failures stay outside the raw-name error classification.
+    verifyControl();
+    try {
+      writeProbe(path);
+      created = true;
+      const observed = realpathSync.native(path, { encoding: "buffer" });
+      const names = readdirSync(scratch, { encoding: "buffer" });
+      if (
+        !names.some((entry) => entry.equals(name)) &&
+        names.some((entry) => entry.equals(Buffer.from(name.toString("utf8"))))
+      ) {
+        t.skip(
+          "Filesystem substituted invalid filename bytes with UTF-8 U+FFFD (byte roundtrip probe)",
+        );
+        return false;
+      }
+      assert.deepEqual(observed, path);
+      assert.ok(names.some((entry) => entry.equals(name)));
+      return true;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (
+        ["EILSEQ", "EINVAL"].includes(code ?? "") ||
+        (!created &&
+          (options.platform ?? process.platform) === "win32" &&
+          code === "ENOENT")
+      ) {
+        // Hosted Windows rejects a malformed Buffer filename at creation with
+        // ENOENT. Reprove the existing parent/control now, so missing ordinary
+        // paths or concurrent fixture deletion can never masquerade as this gap.
+        verifyControl();
+        assert.equal(
+          readdirSync(scratch, { encoding: "buffer" }).some((entry) =>
+            entry.equals(name),
+          ),
+          false,
+        );
+        t.skip(
+          `Filesystem rejected invalid filename bytes with ${String((error as NodeJS.ErrnoException).code)} (byte roundtrip probe)`,
+        );
+        return false;
+      }
+      throw error;
     }
-    assert.deepEqual(observed, path);
-    assert.ok(names.some((entry) => entry.equals(name)));
-    return true;
-  } catch (error) {
-    if (
-      ["EILSEQ", "EINVAL"].includes((error as NodeJS.ErrnoException).code ?? "")
-    ) {
-      assert.equal(
-        readdirSync(scratch, { encoding: "buffer" }).some((entry) =>
-          entry.equals(name),
-        ),
-        false,
-      );
-      t.skip(
-        `Filesystem rejected invalid filename bytes with ${String((error as NodeJS.ErrnoException).code)} (byte roundtrip probe)`,
-      );
-      return false;
-    }
-    throw error;
   } finally {
     if (created) rmSync(path, { force: true });
     rmSync(controlPath, { force: true });
   }
 }
+
+function modeledRawFilenameProbe(t: TestContext) {
+  const scratch = realpathSync.native(
+    mkdtempSync(join(tmpdir(), "reprogate-raw-name-model-")),
+  );
+  t.after(() => {
+    rmSync(scratch, { recursive: true, force: true });
+  });
+  const skips: string[] = [];
+  const context = {
+    skip: (message?: string) => {
+      skips.push(message ?? "");
+    },
+  };
+  return { scratch, skips, context };
+}
+
+test("modeled Windows malformed Buffer filename ENOENT is a narrowly supported capability skip", (t) => {
+  const f = modeledRawFilenameProbe(t);
+  const error = Object.assign(new Error("modeled raw filename rejection"), {
+    code: "ENOENT",
+  });
+  const result = rawFilenameSupported(f.context, f.scratch, {
+    platform: "win32",
+    writeProbe: (path) => {
+      if (Buffer.isBuffer(path)) {
+        const control = join(f.scratch, "encoding-probe-valid");
+        assert.equal(readFileSync(control, "utf8"), "probe");
+        assert.deepEqual(
+          realpathSync.native(control, { encoding: "buffer" }),
+          Buffer.from(control),
+        );
+        assert.ok(statSync(f.scratch).isDirectory());
+        throw error;
+      }
+      writeFileSync(path, "probe");
+    },
+  });
+  assert.equal(result, false);
+  assert.equal(f.skips.length, 1);
+  assert.match(f.skips[0] ?? "", /ENOENT/u);
+  assert.deepEqual(readdirSync(f.scratch), []);
+});
+
+for (const platform of ["linux", "darwin"] as const) {
+  test(`modeled ${platform} malformed filename ENOENT remains an error`, (t) => {
+    const f = modeledRawFilenameProbe(t);
+    const error = Object.assign(new Error("modeled ordinary I/O failure"), {
+      code: "ENOENT",
+    });
+    assert.throws(
+      () =>
+        rawFilenameSupported(f.context, f.scratch, {
+          platform,
+          writeProbe: (path) => {
+            if (Buffer.isBuffer(path)) throw error;
+            writeFileSync(path, "probe");
+          },
+        }),
+      (caught) => caught === error,
+    );
+    assert.deepEqual(f.skips, []);
+  });
+}
+
+for (const code of ["EACCES", "EIO"] as const) {
+  test(`modeled Windows malformed filename ${code} remains an error`, (t) => {
+    const f = modeledRawFilenameProbe(t);
+    const error = Object.assign(new Error("modeled ordinary I/O failure"), {
+      code,
+    });
+    assert.throws(
+      () =>
+        rawFilenameSupported(f.context, f.scratch, {
+          platform: "win32",
+          writeProbe: (path) => {
+            if (Buffer.isBuffer(path)) throw error;
+            writeFileSync(path, "probe");
+          },
+        }),
+      (caught) => caught === error,
+    );
+    assert.deepEqual(f.skips, []);
+  });
+}
+
+test("modeled Windows ordinary control-file ENOENT is never a capability skip", (t) => {
+  const f = modeledRawFilenameProbe(t);
+  const error = Object.assign(new Error("modeled missing ordinary control"), {
+    code: "ENOENT",
+  });
+  assert.throws(
+    () =>
+      rawFilenameSupported(f.context, f.scratch, {
+        platform: "win32",
+        writeProbe: () => {
+          throw error;
+        },
+      }),
+    (caught) => caught === error,
+  );
+  assert.deepEqual(f.skips, []);
+});
+
+test("modeled Windows missing ordinary probe parent is never a capability skip", (t) => {
+  const f = modeledRawFilenameProbe(t);
+  assert.throws(
+    () =>
+      rawFilenameSupported(f.context, join(f.scratch, "missing-parent"), {
+        platform: "win32",
+      }),
+    (error) => (error as NodeJS.ErrnoException).code === "ENOENT",
+  );
+  assert.deepEqual(f.skips, []);
+});
+
+test("modeled Windows disappearing control after raw ENOENT remains an error", (t) => {
+  const f = modeledRawFilenameProbe(t);
+  assert.throws(
+    () =>
+      rawFilenameSupported(f.context, f.scratch, {
+        platform: "win32",
+        writeProbe: (path) => {
+          if (Buffer.isBuffer(path)) {
+            rmSync(join(f.scratch, "encoding-probe-valid"));
+            throw Object.assign(new Error("modeled raw filename rejection"), {
+              code: "ENOENT",
+            });
+          }
+          writeFileSync(path, "probe");
+        },
+      }),
+    (error) => (error as NodeJS.ErrnoException).code === "ENOENT",
+  );
+  assert.deepEqual(f.skips, []);
+});
+
+test("modeled Windows invalid ordinary control roundtrip never classifies a raw filename", (t) => {
+  const f = modeledRawFilenameProbe(t);
+  let rawCalls = 0;
+  assert.throws(
+    () =>
+      rawFilenameSupported(f.context, f.scratch, {
+        platform: "win32",
+        writeProbe: (path) => {
+          if (Buffer.isBuffer(path)) {
+            rawCalls++;
+            throw Object.assign(new Error("modeled raw filename rejection"), {
+              code: "ENOENT",
+            });
+          }
+          // Model a control creation returning without creating the requested file.
+          writeFileSync(path + "-different", "probe");
+        },
+      }),
+    (error) => (error as NodeJS.ErrnoException).code === "ENOENT",
+  );
+  assert.equal(rawCalls, 0);
+  assert.deepEqual(f.skips, []);
+});
 
 function copyClosedLedger(
   f: ReturnType<typeof fixture>,
