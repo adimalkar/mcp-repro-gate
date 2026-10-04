@@ -71,9 +71,79 @@ export function runGit(
         ([name]) => !name.toUpperCase().startsWith("GIT_"),
       ),
     );
+    // To preserve safe line-ending behavior while dropping malicious global hooks,
+    // we must probe the effective benign enums before overriding the config environment.
+    const probeArgs =
+      args[0] === "-C" && args[1] !== undefined ? ["-C", args[1]] : [];
+    const lineEndingsProbe = executeGit(
+      [
+        ...probeArgs,
+        "config",
+        "--null",
+        "--get-regexp",
+        "^(core\\.autocrlf|core\\.eol)$",
+      ],
+      { ...environment, LC_ALL: "C" },
+      undefined,
+      1024,
+      true,
+    );
+    const lineEndingConfig: [string, string][] = [];
+    if (lineEndingsProbe.status === 0) {
+      const output = new TextDecoder("utf-8", { fatal: true }).decode(
+        lineEndingsProbe.stdout,
+      );
+      if (!output.endsWith("\0"))
+        throw new Error("Git config probe was malformed");
+      const effective = new Map<string, string | undefined>();
+      for (const part of output.slice(0, -1).split("\0")) {
+        const fields = part.split("\n");
+        const [key, value] = fields;
+        if (
+          (key !== "core.autocrlf" && key !== "core.eol") ||
+          (fields.length !== 2 &&
+            !(fields.length === 1 && key === "core.autocrlf"))
+        )
+          throw new Error("Git normalization configuration was malformed");
+        effective.set(key, value);
+      }
+      for (const [key, value] of effective) {
+        if (key === "core.autocrlf") {
+          if (value?.toLowerCase() === "input") {
+            lineEndingConfig.push([key, "input"]);
+          } else {
+            // Let Git validate and canonicalize its own boolean aliases (for
+            // example TRUE, 1, yes and bare autocrlf), rather than dropping them.
+            const canonical = executeGit(
+              [...probeArgs, "config", "--bool", "--get", key],
+              { ...environment, LC_ALL: "C" },
+              undefined,
+              16,
+            ).stdout;
+            if (canonical.equals(Buffer.from("true\n")))
+              lineEndingConfig.push([key, "true"]);
+            else if (canonical.equals(Buffer.from("false\n")))
+              lineEndingConfig.push([key, "false"]);
+            else
+              throw new Error("Git normalization configuration was malformed");
+          }
+        } else {
+          const canonical = value?.toLowerCase();
+          if (
+            canonical !== "lf" &&
+            canonical !== "crlf" &&
+            canonical !== "native"
+          )
+            throw new Error("Unsupported Git line-ending configuration");
+          lineEndingConfig.push([key, canonical]);
+        }
+      }
+    }
+
     // Environment-backed command scope survives the local upload-pack child.
     // A parent-only -c is insufficient for malicious global packObjectsHook.
     const config: [string, string][] = [
+      ...lineEndingConfig,
       ["core.hooksPath", hooks],
       // Newer Git also accepts config-based hooks outside core.hooksPath.
       ...[

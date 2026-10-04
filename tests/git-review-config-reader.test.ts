@@ -1,12 +1,16 @@
 import assert from "node:assert/strict";
 import fs, {
-  chmodSync,
   closeSync,
+  fchmodSync,
   fstatSync,
+  ftruncateSync,
+  futimesSync,
+  openSync,
+  readSync,
+  writeSync,
   linkSync,
   lstatSync,
   mkdtempSync,
-  readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -26,71 +30,123 @@ function fixture(t: TestContext, bytes = "fixture-only bytes") {
   return { root, path, bytes: Buffer.from(bytes) };
 }
 
-for (const mutation of [
-  "truncate",
-  "same-length",
-  "mode",
-  "hardlink",
-  "grow-within-bound",
-  "grow-over-bound",
-] as const) {
-  test(`bounded descriptor reader rejects real ${mutation} mutation after copying bytes`, (t) => {
-    const f = fixture(t);
-    const before = lstatSync(f.path, { bigint: true });
-    const original = fs.readSync;
-    let mutated = false;
-    let chunk: Uint8Array | undefined;
-    const reading = t.mock.method(
-      fs,
-      "readSync",
-      (...args: Parameters<typeof fs.readSync>) => {
-        const count = original(...args);
-        if (count > 0 && !mutated) {
-          assert.ok(args[1] instanceof Uint8Array);
-          chunk = args[1];
-          mutated = true;
-          if (mutation === "truncate") writeFileSync(f.path, "{");
-          if (mutation === "same-length")
-            writeFileSync(f.path, Buffer.alloc(f.bytes.length, 0x78));
-          if (mutation === "mode")
-            chmodSync(f.path, process.platform === "win32" ? 0o444 : 0o644);
-          if (mutation === "hardlink") linkSync(f.path, join(f.root, "alias"));
-          if (mutation.startsWith("grow-"))
-            writeFileSync(
-              f.path,
-              Buffer.alloc(mutation === "grow-over-bound" ? 65 : 32, 0x78),
-            );
-          const after = lstatSync(f.path, { bigint: true });
-          assert.equal(after.dev, before.dev);
-          assert.equal(after.ino, before.ino);
-          assert.notEqual(after.ctimeNs, before.ctimeNs);
-          if (mutation === "same-length") {
-            assert.equal(after.size, before.size);
-            assert.notDeepEqual(readFileSync(f.path), f.bytes);
+for (const metadata of ["native", "modeled-unchanged-ctime"] as const) {
+  for (const mutation of [
+    "truncate",
+    "same-length",
+    "mode",
+    "hardlink",
+    "grow-within-bound",
+    "grow-over-bound",
+  ] as const) {
+    test(`bounded descriptor reader rejects real ${mutation} mutation after copying bytes (${metadata})`, (t) => {
+      const f = fixture(t);
+      const before = lstatSync(f.path, { bigint: true });
+      const originalStat = fs.fstatSync;
+      const observing = t.mock.method(
+        fs,
+        "fstatSync",
+        (...args: Parameters<typeof fs.fstatSync>) => {
+          const stats = originalStat(...args);
+          if (
+            metadata === "modeled-unchanged-ctime" &&
+            "ctimeNs" in stats &&
+            stats.dev === before.dev &&
+            stats.ino === before.ino
+          ) {
+            stats.ctimeNs = before.ctimeNs;
+            stats.ctimeMs = before.ctimeMs;
+            stats.ctime = before.ctime;
           }
-        }
-        return count;
-      },
-    );
-    syncBuiltinESMExports();
-    try {
-      assert.throws(
-        () => readBoundedRegularFile(f.path, 64, "Fixture"),
-        mutation === "grow-over-bound"
-          ? /exceeds the 64 byte limit/u
-          : /changed|regular/u,
+          return stats;
+        },
       );
-    } finally {
-      reading.mock.restore();
+      const original = fs.readSync;
+      let mutated = false;
+      let chunk: Uint8Array | undefined;
+      const reading = t.mock.method(
+        fs,
+        "readSync",
+        (...args: Parameters<typeof fs.readSync>) => {
+          const count = original(...args);
+          if (count > 0 && !mutated) {
+            assert.ok(args[1] instanceof Uint8Array);
+            chunk = args[1];
+            mutated = true;
+            const fd = openSync(f.path, "r+");
+            try {
+              if (mutation === "truncate") {
+                ftruncateSync(fd, 1);
+                writeSync(fd, Buffer.from("{"), 0, 1, 0);
+              } else if (mutation === "same-length") {
+                const replacement = Buffer.alloc(f.bytes.length, 0x78);
+                writeSync(fd, replacement, 0, replacement.length, 0);
+                const mtime = Number(before.mtimeMs) / 1000 + 1;
+                futimesSync(fd, mtime, mtime);
+              } else if (mutation === "mode") {
+                fchmodSync(fd, process.platform === "win32" ? 0o444 : 0o644);
+              } else if (mutation === "hardlink") {
+                linkSync(f.path, join(f.root, "alias"));
+              } else if (mutation.startsWith("grow-")) {
+                const replacement = Buffer.alloc(
+                  mutation === "grow-over-bound" ? 65 : 32,
+                  0x78,
+                );
+                writeSync(fd, replacement, 0, replacement.length, 0);
+              }
+              const after = fstatSync(fd, { bigint: true });
+              assert.equal(after.dev, before.dev);
+              assert.equal(after.ino, before.ino);
+              if (mutation === "truncate") assert.equal(after.size, 1n);
+              else if (mutation.startsWith("grow-"))
+                assert.equal(
+                  after.size,
+                  mutation === "grow-over-bound" ? 65n : 32n,
+                );
+              else assert.equal(after.size, before.size);
+              if (mutation === "mode") assert.notEqual(after.mode, before.mode);
+              else assert.equal(after.mode, before.mode);
+              assert.equal(
+                after.nlink,
+                before.nlink + (mutation === "hardlink" ? 1n : 0n),
+              );
+              if (mutation === "same-length") {
+                assert.equal(after.size, before.size);
+                assert.ok(
+                  after.ctimeNs !== before.ctimeNs ||
+                    after.mtimeNs !== before.mtimeNs,
+                );
+                const afterBytes = Buffer.alloc(Number(after.size));
+                readSync(fd, afterBytes, 0, afterBytes.length, 0);
+                assert.notDeepEqual(afterBytes, f.bytes);
+              }
+            } finally {
+              closeSync(fd);
+            }
+          }
+          return count;
+        },
+      );
       syncBuiltinESMExports();
-    }
-    assert.equal(mutated, true);
-    assert.ok(chunk);
-    assert.ok(
-      chunk.every((byte) => byte === 0),
-      "read scratch must be erased on rejection",
-    );
-  });
+      try {
+        assert.throws(
+          () => readBoundedRegularFile(f.path, 64, "Fixture"),
+          mutation === "grow-over-bound"
+            ? /exceeds the 64 byte limit/u
+            : /changed|regular/u,
+        );
+      } finally {
+        for (const mock of [reading, observing]) mock.mock.restore();
+        syncBuiltinESMExports();
+      }
+      assert.equal(mutated, true);
+      assert.ok(chunk);
+      assert.ok(
+        chunk.every((byte) => byte === 0),
+        "read scratch must be erased on rejection",
+      );
+    });
+  }
 }
 
 for (const field of [
