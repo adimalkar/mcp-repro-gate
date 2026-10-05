@@ -64,12 +64,12 @@ Exit criteria:
 
 **Goal:** make one developer action enforceable at a durable boundary: promote an agent-proposed patch to an approved Git ref.
 
-Current slices: the Git proposal API captures a clean-worktree witness, exact patch digest, and path list. Isolated staging checks Git-observed paths and modes and exposes the exact computed diff for review. Approval authority comes from a persisted exact-action Git intent plus current operator configuration. Ed25519 operator reviews bind an authorized configured key's decision to that authority and effect; the SQLite ledger atomically records approval plus signed evidence or a durable denial. Checks revalidate current plan, trust, workspace and ledger state. Host configuration, database/process/key isolation and clock remain trusted inputs; there is no human-presence guarantee or protected-ref promotion. See [Git change proposal, staging, and approval](GIT_CHANGE_PROPOSAL.md).
+Current slices: the Git proposal API captures a clean-worktree witness, exact patch digest, and path list. A separate staging API applies the patch to a disposable Git index and checks Git-observed paths and modes. A host-side SQLite ledger binds a reviewed effect to a durable, revocable approval record. A Git intent and plan-binding helper now derive approval authority from a persisted exact-action plan plus current operator configuration. These remain library-level reference contracts: operator identity and host configuration are not authenticated inside the library, and no protected-ref promotion occurs. See [Git change proposal, staging, and approval](GIT_CHANGE_PROPOSAL.md).
 
 Implementation slices, in order:
 
 1. **Contract and adversarial fixtures:** define a versioned change contract that binds repository identity, base commit/tree or dirty-state witness, allowed paths, exact patch digest, policy/approval identity, expiry/revocation epoch, and destination ref. Model renames, deletes, modes, symlinks, untracked files, and concurrent ref movement. Keep raw source and arguments out of receipts by default.
-2. **Staged execution and promotion:** isolated staging, changed-path manifests, exact-intent persisted-plan authority and authenticated out-of-band operator decisions with atomic approval/evidence linkage are implemented. Next design safe promotion that does not update a checked-out branch behind its worktree. Recheck signed review, current key permissions, approval/revocation, policy, base/ref witness, paths and patch at promotion; serialize revocation with this check and use a compare-and-swap Git ref update or fail closed. Include crash/recovery fixtures and state any residual cross-system atomicity limit. Current review matches are fresh observations, not reservations. A direct-write backend may produce an observation receipt but cannot receive the stronger pre-commit claim.
+2. **Staged execution and promotion:** the disposable index, Git-observed changed-path manifest, host-side revocable effect approval ledger, and exact-intent persisted-plan binding are implemented. Next authenticate the out-of-band operator decision and design safe promotion that does not update a checked-out branch behind its worktree. Recheck approval, policy, base/ref witness, paths, and patch at promotion; serialize revocation with this check and use a compare-and-swap Git ref update or fail closed. State any residual cross-system atomicity limit. A direct-write backend may produce an observation receipt but cannot receive the stronger pre-commit claim.
 3. **Portable evidence:** export the envelope, change manifest, observer-coverage statement, verifier outputs, key identity, and receipt as a content-addressed bundle. Add asymmetric signing and an offline verifier that checks approval validity **at promotion time**, detects tampering, and can recompute the Git effect claim from a trusted local repository or supplied patch artifact. Optional test and secret-scan verifiers supply separate evidence; passing them does not upgrade an authorization claim. Keep downstream success separate from `verified`, `drifted`, `failed`, and `indeterminate` effect outcomes.
 
 Exit criteria:
@@ -82,23 +82,24 @@ Exit criteria:
 
 This phase is the first candidate for an "authorized change" product claim. It does not imply that arbitrary MCP servers are confined, or that a Git ref update makes every working-tree or external side effect atomic.
 
-## Phase 4 — agent-native façade and compatibility (secondary, provisional 2–3 weeks)
+## Phase 4 — agent-native façade, multi-agent continuity, and token-budgeted intelligence (secondary, provisional 2–3 weeks)
 
-**Goal:** let agents use the contract with few calls and little model-visible data while retaining full evidence for operators and verifiers.
+**Goal:** let agents use the contract with few calls, near-zero token bloat, and persistent continuity across sessions, models, and harnesses while retaining full evidence for operators and verifiers.
 
 Scope:
 
-- keep a small static tool surface; add schema-on-demand discovery for one catalog entry instead of exposing all downstream schemas;
-- return compact, typed plan/results with `actionId`, decision/reason code, next step, and evidence reference; make full envelopes and bundles opt-in through inspection or resources;
-- use output schemas, concise descriptions, conservative truthful annotations, and stable actionable errors;
-- mediate approval and capability use in a trusted host-side integration so the model need not handle a capability token;
-- bound and redact downstream result text, which remains untrusted input to the agent;
-- preserve MCP-compatible text alongside `structuredContent` where needed; measure what each host actually includes in model context rather than assuming wire-byte savings equal token savings. See the [MCP tool-result specification](https://modelcontextprotocol.io/specification/2025-11-25/server/tools).
+- **Small static tool surface & schema-on-demand:** add schema-on-demand discovery for one catalog entry instead of exposing all downstream schemas; return compact, typed plan/results with `actionId`, decision/reason code, next step, and evidence reference; make full envelopes and bundles opt-in through inspection or resources.
+- **Multi-agent handoff & session continuity façade:** provide native `handoff_status` and `handoff_update` MCP tools that bind to `.agent/handoff.md` and ReproGate's SQLite execution store; preserves active goals, uncommitted git working-tree diffs, touched files, blockers, and next steps across Claude Code, Codex CLI, and Hermes when rate limits force model switches.
+- **Downstream codebase knowledge graph integration:** configure and proxy `codebase-memory-mcp` via `StdioMcpConnector`, exposing its 14 AST graph tools (`search_graph`, `trace_path`, `get_code_snippet`, `query_graph`, etc.) through ReproGate's catalog façade; replaces expensive 80,000-token whole-repo grep scans with ~500-token structural queries.
+- **Token-budgeted web research & error resolver:** provide native `smart_search` and `resolve_stuck_error` tools equipped with DOM distillation (stripping scripts, styles, navbars, footers, and ads), code-block extraction, and lexical relevance windowing; enforces a strict **800–1,000 token ceiling** per search, achieving a 98% token reduction over raw web dumping.
+- **Active tool-calling enforcement & "2-strike" error gating:** give exposed MCP tools authoritative, action-oriented descriptions commanding models to call graph tools before manual file exploration; enforce a deterministic "2-Strike Rule" requiring models to query `resolve_stuck_error` when a command or test fails twice, preventing stubborn hallucination loops.
+- **Host mediation & redaction:** mediate approval and capability use in a trusted host-side integration so the model need not handle a capability token; bound and redact untrusted downstream output; preserve MCP-compatible text alongside `structuredContent`.
 
 Exit criteria:
 
 - benchmark at least two MCP hosts on a published fixture set: agent-visible tokens, call count, completion rate, approval time, and error recovery versus the current façade;
-- target at least 25% lower median agent-visible tool-result tokens without worse task completion; report per-host results and abandon the target if it compromises evidence or usability;
+- target at least 25% lower median agent-visible tool-result tokens on baseline operations, with >90% reduction on code discovery (graph queries vs. raw grep) and >95% reduction on external research (distilled snippets vs. raw HTML);
+- seamless session transition between Claude Code, Codex CLI, and Hermes without manual re-prompting or context loss;
 - no approval secret appears in model-visible tool arguments, results, or logs by default;
 - a verifier can still obtain the complete unchanged evidence bundle.
 
