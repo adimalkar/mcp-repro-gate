@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {
+  linkSync,
   mkdirSync,
   readFileSync,
   readdirSync,
@@ -321,12 +322,8 @@ for (const layout of ["leaf", "ancestor"] as const) {
         assert.match(String(opened.error), /lossless|UTF-8/u);
         assert.equal(
           opened.closed.length,
-          1,
-          "failed constructor closes its actual private connection",
-        );
-        assert.throws(
-          () => opened.closed[0]?.prepare("SELECT 1"),
-          /not open|closed/u,
+          0,
+          "invalid physical identity rejects before opening a private connection",
         );
         assert.deepEqual(
           readdirSync(f.scratch, { encoding: "buffer" }),
@@ -496,3 +493,108 @@ for (const kind of ["memory", "relative"] as const) {
     f.assertProtected();
   });
 }
+
+// Windows SQLite can retain an alias spelling for WAL despite native realpath
+// resolving the base inode. Model only that filesystem normalization; all SQL
+// writes/readers below use the real SQLite engine and remain open concurrently.
+test("canonical connection opening keeps real WAL writes visible across a modeled VFS alias", (t) => {
+  const f = fixture(t);
+  const canonical = join(f.scratch, "wal-canonical.sqlite");
+  const alias = join(f.scratch, "wal-alias.sqlite");
+  copyClosedLedger(f, [canonical]);
+  linkSync(canonical, alias);
+  assert.equal(
+    statSync(canonical, { bigint: true }).ino,
+    statSync(alias, { bigint: true }).ino,
+  );
+  const native = realpathSync.native;
+  t.mock.method(
+    realpathSync,
+    "native",
+    (...args: Parameters<typeof native>) => {
+      const physical = native(...args);
+      if (Buffer.isBuffer(physical))
+        return physical.equals(Buffer.from(alias))
+          ? Buffer.from(canonical)
+          : physical;
+      return physical === alias ? canonical : physical;
+    },
+  );
+  const store = new SqliteGitApprovalStore(alias);
+  try {
+    assert.equal(store.revoke(f.approval.approvalId), true);
+    const reader = new DatabaseSync(canonical);
+    try {
+      assert.equal(
+        reader
+          .prepare(
+            "SELECT status FROM git_change_approvals WHERE approval_id = ?",
+          )
+          .get(f.approval.approvalId)?.status,
+        "revoked",
+      );
+    } finally {
+      reader.close();
+    }
+    assert.equal(
+      readdirSync(f.scratch).includes("wal-alias.sqlite-wal"),
+      false,
+    );
+  } finally {
+    store.close();
+  }
+  f.assertProtected();
+});
+
+test("new disk ledger through a valid directory alias opens its canonical physical leaf", (t) => {
+  const f = modeledRawFilenameProbe(t);
+  const directory = join(f.scratch, "physical");
+  mkdirSync(directory);
+  const alias = join(f.scratch, "alias");
+  symlinkSync(
+    directory,
+    alias,
+    process.platform === "win32" ? "junction" : "dir",
+  );
+  const canonical = join(directory, "new-\uFFFD.sqlite");
+  const store = new SqliteGitApprovalStore(join(alias, "new-\uFFFD.sqlite"));
+  try {
+    const reader = new DatabaseSync(canonical);
+    try {
+      assert.equal(
+        reader
+          .prepare(
+            "SELECT count(*) AS n FROM sqlite_schema WHERE name = 'git_promotion_attempts'",
+          )
+          .get()?.n,
+        1,
+      );
+    } finally {
+      reader.close();
+    }
+    assert.ok(statSync(canonical).isFile());
+  } finally {
+    store.close();
+  }
+});
+
+test("missing ordinary parent and dangling disk aliases fail before opening a private connection", (t) => {
+  const f = modeledRawFilenameProbe(t);
+  const target = join(f.scratch, "missing.sqlite");
+  const dangling = join(f.scratch, "dangling.sqlite");
+  symlinkSync(target, dangling, "file");
+  for (const path of [
+    join(f.scratch, "missing-parent", "db.sqlite"),
+    dangling,
+  ]) {
+    const opened = openObserved(t, path);
+    try {
+      assert.equal(opened.store, undefined);
+      assert.equal((opened.error as NodeJS.ErrnoException).code, "ENOENT");
+      assert.equal(opened.closed.length, 0);
+    } finally {
+      opened.store?.close();
+    }
+  }
+  assert.deepEqual(readdirSync(f.scratch), ["dangling.sqlite"]);
+});

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { realpathSync, statSync, type BigIntStats } from "node:fs";
-import { isAbsolute } from "node:path";
+import { lstatSync, realpathSync, statSync, type BigIntStats } from "node:fs";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import {
   deriveGitApprovalAuthorityFromPlan,
   type GitPlanBindingContext,
@@ -249,6 +249,35 @@ function promotionPhysicalPath(path: string): string {
   );
 }
 
+// SQLite may keep the caller's alias spelling for its WAL namespace even when
+// the main file resolves to the pinned inode. Resolve before opening any disk
+// connection, including an absent ordinary leaf beneath a physical parent.
+function promotionDatabaseOpenPath(path: string): string {
+  if (path === "" || path === ":memory:") return path;
+  try {
+    return promotionPhysicalPath(path);
+  } catch (error) {
+    if (!(error instanceof Error && "code" in error && error.code === "ENOENT"))
+      throw error;
+    try {
+      lstatSync(path);
+    } catch (leafError) {
+      if (!(
+        leafError instanceof Error &&
+        "code" in leafError &&
+        leafError.code === "ENOENT"
+      ))
+        throw leafError;
+      return losslessPromotionPath(
+        Buffer.from(join(promotionPhysicalPath(dirname(path)), basename(path))),
+      );
+    }
+    // A dangling link exists: do not create a database through an unresolved
+    // alias, whose sidecars could occupy a different namespace.
+    throw error;
+  }
+}
+
 /** Host-side approval ledger. Call grant only after an operator decision. */
 export class SqliteGitApprovalStore {
   readonly #database: DatabaseSync;
@@ -256,7 +285,8 @@ export class SqliteGitApprovalStore {
   readonly #promotionDatabaseIdentity: BigIntStats | undefined;
 
   constructor(path: string) {
-    this.#database = new DatabaseSync(path);
+    const openPath = promotionDatabaseOpenPath(path);
+    this.#database = new DatabaseSync(openPath);
     try {
       // Register our pure projection on EVERY owned connection; callers cannot
       // supply authorization via a callback or replace this private connection.
@@ -274,6 +304,10 @@ export class SqliteGitApprovalStore {
       // the file bound to THIS connection. Relative/memory constructors remain
       // supported for legacy APIs; durable reservation requires an absolute file.
       const file = this.#connectionPromotionPath();
+      if (file !== undefined && file !== openPath)
+        throw new Error(
+          "Promotion database physical path changed during opening",
+        );
       this.#promotionDatabasePath = isAbsolute(path) ? file : undefined;
       this.#promotionDatabaseIdentity = this.#promotionDatabasePath
         ? statSync(this.#promotionDatabasePath, { bigint: true })

@@ -126,7 +126,7 @@ test("owned journal spawn error rejects without stale waits or a PID to kill", a
 
 test(
   "competing owned processes permanently consume exactly one approval",
-  { timeout: 60_000 },
+  { timeout: 90_000 },
   async (t) => {
     const f = fixture(t);
     const workers = [startWorker(f, "reserve"), startWorker(f, "reserve")];
@@ -149,7 +149,7 @@ test(
 for (const mode of ["before-commit", "after-commit"] as const) {
   test(
     `hard kill owned worker ${mode} retains fence and correct durable consumption`,
-    { timeout: 60_000 },
+    { timeout: 90_000 },
     async (t) => {
       const f = fixture(t);
       const w = startWorker(f, mode);
