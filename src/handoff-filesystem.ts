@@ -214,6 +214,9 @@ export function prepareHandoffDatabase(path: string): HandoffDatabaseBinding {
         throw createError;
     }
   }
+  // Re-check the leaf itself: after losing a creation race it must still be
+  // a private regular file, never a symlink planted in the window.
+  statPrivateFile(candidate);
   const canonical = canonicalHandoffPath(candidate);
   const identity = statPrivateFile(canonical);
   const verify = () => {
