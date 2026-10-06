@@ -120,7 +120,9 @@ export class SqliteExecutionStore implements PlanStore, TokenUseStore {
     // read-to-write upgrade race with SQLITE_BUSY at once instead of
     // invoking the busy handler. Switch to WAL and create the schema with
     // a bounded retry.
-    retryBusy(() => this.#database.exec("PRAGMA journal_mode = WAL"));
+    retryBusy(() => {
+      this.#database.exec("PRAGMA journal_mode = WAL");
+    });
     this.#database.exec("PRAGMA foreign_keys = ON");
     this.#writeSchema(`
       CREATE TABLE IF NOT EXISTS plans (
