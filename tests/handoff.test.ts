@@ -3,12 +3,14 @@ import { randomUUID } from "node:crypto";
 import {
   chmodSync,
   existsSync,
+  linkSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -447,3 +449,70 @@ test("two connections with the same expected revision cannot both commit", (t) =
     1,
   );
 });
+test(
+  "a failed projection stays pending and an identical retry reconciles it",
+  { skip: process.platform === "win32" || process.getuid?.() === 0 },
+  (t) => {
+    const f = fixture(t);
+    const service = f.service();
+    const agent = join(f.workspaceRoot, ".agent");
+    mkdirSync(agent, { mode: 0o700 });
+    chmodSync(agent, 0o500);
+    t.after(() => {
+      if (existsSync(agent)) chmodSync(agent, 0o700);
+    });
+    const update = input();
+    assert.throws(() => service.update(update), errorCode("unavailable"));
+    const pending = service.status(statusInput);
+    assert.equal(pending.state, "pending");
+    assert.equal(pending.revision, 1);
+    assert.equal(existsSync(f.document), false);
+    chmodSync(agent, 0o700);
+    // The live service bound the earlier directory mode and keeps failing closed.
+    assert.throws(() => service.update(update), errorCode("unavailable"));
+    const retried = f.service().update(update);
+    assert.equal(retried.state, "synchronized");
+    assert.equal(retried.revision, 1);
+    assert.equal(
+      readdirSync(agent).filter((name) => name.startsWith(".handoff-")).length,
+      0,
+    );
+    assert.equal(
+      f
+        .database()
+        .prepare("SELECT count(*) AS count FROM handoff_snapshots")
+        .get()?.count,
+      1,
+    );
+  },
+);
+test(
+  "symlinked and hard-linked projection targets are refused without touching their targets",
+  { skip: process.platform === "win32" },
+  (t) => {
+    for (const kind of ["symlink", "hardlink"] as const) {
+      const f = fixture(t);
+      mkdirSync(join(f.workspaceRoot, ".agent"), { mode: 0o700 });
+      const target = join(f.scratch, `outside-${kind}.md`);
+      writeFileSync(target, "outside stays\n", { mode: 0o600 });
+      if (kind === "symlink") symlinkSync(target, f.document);
+      else linkSync(target, f.document);
+      const service = f.service();
+      assert.equal(service.status(statusInput).state, "unavailable", kind);
+      assert.throws(
+        () => service.update(input()),
+        errorCode("unavailable"),
+        kind,
+      );
+      assert.equal(readFileSync(target, "utf8"), "outside stays\n", kind);
+      assert.equal(
+        f
+          .database()
+          .prepare("SELECT count(*) AS count FROM handoff_snapshots")
+          .get()?.count,
+        0,
+        kind,
+      );
+    }
+  },
+);
