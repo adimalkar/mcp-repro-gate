@@ -99,18 +99,18 @@ function verifyDirectory(
   )
     throw new HandoffError("unavailable");
 }
+// Open first (no-follow, non-blocking), judge the descriptor, then confirm
+// the path still names that same file; no check precedes the open.
 export function readPrivateHandoffFile(path: string, cap: number): Buffer {
-  const before = lstatSync(path, { bigint: true });
-  privateStats(before, false);
   const fd = openSync(path, readFlags);
   const chunks: Buffer[] = [];
   const chunk = Buffer.alloc(Math.min(cap + 1, 32768));
   let total = 0;
+  let opened: BigIntStats;
   try {
-    const opened = fstatSync(fd, { bigint: true });
+    opened = fstatSync(fd, { bigint: true });
     privateStats(opened, false);
-    if (!stableFile(before, opened) || opened.size > BigInt(cap))
-      throw new HandoffError("unavailable");
+    if (opened.size > BigInt(cap)) throw new HandoffError("unavailable");
     for (;;) {
       const count = readSync(
         fd,
@@ -134,23 +134,21 @@ export function readPrivateHandoffFile(path: string, cap: number): Buffer {
   }
   const final = lstatSync(path, { bigint: true });
   privateStats(final, false);
-  if (!stableFile(before, final)) throw new HandoffError("unavailable");
+  if (!stableFile(opened, final)) throw new HandoffError("unavailable");
   return Buffer.concat(chunks, total);
 }
 function verifyPrivateFile(path: string): BigIntStats {
-  const before = lstatSync(path, { bigint: true });
-  privateStats(before, false);
   const fd = openSync(path, readFlags);
+  let opened: BigIntStats;
   try {
-    const stats = fstatSync(fd, { bigint: true });
-    privateStats(stats, false);
-    if (!sameIdentity(before, stats)) throw new HandoffError("unavailable");
+    opened = fstatSync(fd, { bigint: true });
+    privateStats(opened, false);
   } finally {
     closeSync(fd);
   }
   const after = lstatSync(path, { bigint: true });
   privateStats(after, false);
-  if (!sameIdentity(before, after)) throw new HandoffError("unavailable");
+  if (!sameIdentity(opened, after)) throw new HandoffError("unavailable");
   return after;
 }
 // Database files are inspected with lstat only. Opening and closing any
