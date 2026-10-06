@@ -140,8 +140,12 @@ export type HandoffErrorCode =
   | "drifted"
   | "unavailable";
 export class HandoffError extends Error {
-  constructor(readonly code: HandoffErrorCode) {
-    super(`Handoff ${code}`);
+  // A cause stays host-side for diagnosis; MCP results carry only the code.
+  constructor(
+    readonly code: HandoffErrorCode,
+    options?: { cause?: unknown },
+  ) {
+    super(`Handoff ${code}`, options);
     this.name = "HandoffError";
   }
 }

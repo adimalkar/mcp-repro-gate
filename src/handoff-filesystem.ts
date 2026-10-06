@@ -184,29 +184,37 @@ export function prepareHandoffDatabase(path: string): HandoffDatabaseBinding {
       if (!missing(error)) throw error;
     }
   }
-  let canonical: string;
   try {
     statPrivateFile(candidate);
-    canonical = canonicalHandoffPath(candidate);
   } catch (error) {
     if (!missing(error)) throw error;
     verifyDirectory(parent, true);
-    const fd = openSync(
-      candidate,
-      constants.O_CREAT |
-        constants.O_EXCL |
-        constants.O_WRONLY |
-        optionalFlag("O_NOFOLLOW"),
-      0o600,
-    );
     try {
-      privateStats(fstatSync(fd, { bigint: true }), false);
-      fsyncSync(fd);
-    } finally {
-      closeSync(fd);
+      const fd = openSync(
+        candidate,
+        constants.O_CREAT |
+          constants.O_EXCL |
+          constants.O_WRONLY |
+          optionalFlag("O_NOFOLLOW"),
+        0o600,
+      );
+      try {
+        privateStats(fstatSync(fd, { bigint: true }), false);
+        fsyncSync(fd);
+      } finally {
+        closeSync(fd);
+      }
+    } catch (createError) {
+      // Another process created it first; verify that file below instead.
+      if (!(
+        createError instanceof Error &&
+        "code" in createError &&
+        createError.code === "EEXIST"
+      ))
+        throw createError;
     }
-    canonical = canonicalHandoffPath(candidate);
   }
+  const canonical = canonicalHandoffPath(candidate);
   const identity = statPrivateFile(canonical);
   const verify = () => {
     verifyDirectory(parent, true);
