@@ -60,6 +60,10 @@ The host owns configuration, plan/approval storage, key isolation, and the clock
 
 Review staging exposes the exact Git-generated diff for inspection while retaining only its digest and changed-path manifest in the staging contract. Diff content is untrusted source data, not instructions. Raw diff access is not a portable promotion receipt, and neither signing nor checking a review updates a protected Git ref.
 
+## Native handoff context boundary
+
+The opt-in handoff tools store context that is caller-asserted. The host fixes the workspace and database paths; model input cannot name a filesystem or database target. Snapshots are immutable and digest-checked, revisions are serialized by SQLite writers, and plan references are re-verified against the persisted envelope. None of these records grant authority: no capability, approval, plan, receipt or execution state reads them. Projection writes use a private exclusive temporary file, identity checks on the parent directories and target, fsync, and an atomic rename. Symlinked, hard-linked, or overly permissive targets are refused, not repaired. A same-user hostile writer can still race these checks, and the SQLite record and Markdown projection are not one atomic transaction. See [docs/HANDOFF.md](HANDOFF.md).
+
 ## Known gaps before execution is production-safe
 
 - SQLite is durable locally but has no replica lease/ownership protocol;
