@@ -16,6 +16,13 @@ const text = (bytes: number) =>
         Buffer.byteLength(value) <= bytes &&
         Buffer.from(value).toString("utf8") === value,
     );
+// Terminal escapes and bidi overrides would render deceptively when an agent
+// or operator prints the projection; only tab, LF and CR remain.
+export const HANDOFF_UNSAFE_TEXT =
+  // eslint-disable-next-line no-control-regex -- Matching control characters is the purpose.
+  /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/u;
+const contextText = (bytes: number) =>
+  text(bytes).refine((value) => !HANDOFF_UNSAFE_TEXT.test(value));
 export const handoffDigestSchema = z.string().regex(HANDOFF_DIGEST_PATTERN);
 export const handoffUuidSchema = z.string().regex(HANDOFF_UUID_PATTERN);
 const revisionSchema = z
@@ -26,7 +33,7 @@ const revisionSchema = z
 const pathSchema = text(4096)
   .min(1)
   .refine((value) => !/[\0\r\n]/u.test(value));
-const declaredPathSchema = text(512)
+const declaredPathSchema = contextText(512)
   .min(1)
   .refine(
     (value) =>
@@ -37,14 +44,14 @@ const declaredPathSchema = text(512)
         .every((part) => part !== "" && part !== "." && part !== ".."),
   );
 export const handoffContextSchema = z.strictObject({
-  activeAgent: text(64)
+  activeAgent: contextText(64)
     .min(1)
     .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$(?![\s\S])/u),
-  goal: text(4096).min(1),
-  completed: z.array(text(4096).min(1)).max(16),
+  goal: contextText(4096).min(1),
+  completed: z.array(contextText(4096).min(1)).max(16),
   touchedFiles: z.array(declaredPathSchema).max(32),
-  blockers: z.array(text(4096).min(1)).max(16),
-  nextSteps: z.array(text(4096).min(1)).max(16),
+  blockers: z.array(contextText(4096).min(1)).max(16),
+  nextSteps: z.array(contextText(4096).min(1)).max(16),
 });
 export const handoffConfigSchema = z.strictObject({
   configVersion: z.literal(1),
@@ -130,7 +137,6 @@ export type HandoffErrorCode =
   | "update_conflict"
   | "unknown_plan"
   | "read_only"
-  | "pending"
   | "drifted"
   | "unavailable";
 export class HandoffError extends Error {

@@ -19,10 +19,18 @@ export interface HandoffService {
   update(input: unknown): HandoffStatusV1;
   close(): void;
 }
+export interface HandoffServiceOptions {
+  /** Execution store to share; it must be open on the configured database. */
+  store?: SqliteExecutionStore;
+  /** Clock for snapshot timestamps; tests inject a deterministic one. */
+  now?: () => Date;
+}
 export function createHandoffService(
   value: unknown,
-  sharedStore?: SqliteExecutionStore,
+  options: HandoffServiceOptions = {},
 ): HandoffService {
+  const sharedStore = options.store;
+  const now = options.now ?? (() => new Date());
   const config = parseHandoffConfig(value);
   let store: SqliteExecutionStore | undefined;
   const ownsStore = sharedStore === undefined;
@@ -95,15 +103,16 @@ export function createHandoffService(
         if (!config.allowUpdates) throw new HandoffError("read_only");
         try {
           binding.verify();
-          const document = files.document();
           const record = contextStore.reserveHandoff(
             workspaceId,
             input,
-            document.digest,
+            () => files.document().digest,
+            now(),
           );
           contextStore.projectHandoff(workspaceId, record.updateId, (owned) => {
             binding.verify();
             files.project(
+              owned.revision,
               owned.updateId,
               owned.expectedDocumentDigest,
               renderHandoffRecord(owned),

@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { lstatSync, realpathSync } from "node:fs";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 import { canonicalJson } from "./canonical-json.js";
@@ -46,18 +48,43 @@ interface ExecutionRow {
   receipt_json: string | null;
 }
 
+// SQLite names WAL/SHM sidecars after the spelling it opens; on Windows an
+// alias spelling would get a separate namespace. Open absolute paths through
+// their physical location, including a new leaf below a physical parent.
+function physicalOpenPath(path: string): string {
+  if (!isAbsolute(path)) return path;
+  try {
+    return realpathSync.native(path);
+  } catch (error) {
+    if (!(error instanceof Error && "code" in error && error.code === "ENOENT"))
+      throw error;
+  }
+  try {
+    lstatSync(path);
+    return path;
+  } catch {
+    try {
+      return join(realpathSync.native(dirname(path)), basename(path));
+    } catch {
+      return path;
+    }
+  }
+}
+
 export class SqliteExecutionStore implements PlanStore, TokenUseStore {
   readonly #database: DatabaseSync;
   readonly #openedPath: string;
   #handoffBinding: HandoffDatabaseBinding | undefined;
 
   constructor(path: string) {
-    this.#openedPath = path;
-    this.#database = new DatabaseSync(path);
+    this.#openedPath = physicalOpenPath(path);
+    this.#database = new DatabaseSync(this.#openedPath);
+    // Wait out another process's lock (including WAL recovery) before the
+    // first statement that touches the database file.
+    this.#database.exec("PRAGMA busy_timeout = 5000");
     this.#database.exec(`
       PRAGMA journal_mode = WAL;
       PRAGMA foreign_keys = ON;
-      PRAGMA busy_timeout = 5000;
 
       CREATE TABLE IF NOT EXISTS plans (
         action_id TEXT PRIMARY KEY,
@@ -272,7 +299,8 @@ export class SqliteExecutionStore implements PlanStore, TokenUseStore {
   reserveHandoff(
     workspaceId: string,
     value: unknown,
-    documentDigest: string | null,
+    observeDocument: () => string | null,
+    now: Date = new Date(),
   ): HandoffRecordV1 {
     const input = parseHandoffUpdate(value);
     this.#verifyHandoff();
@@ -301,7 +329,9 @@ export class SqliteExecutionStore implements PlanStore, TokenUseStore {
       }
       if ((previous?.record.revision ?? 0) !== input.expectedRevision)
         throw new HandoffError("revision_conflict");
-      if (documentDigest !== input.expectedDocumentDigest)
+      // Observe the document under the writer lock, so a cooperating
+      // projection cannot change it between observation and reservation.
+      if (observeDocument() !== input.expectedDocumentDigest)
         throw new HandoffError("document_conflict");
       const references = input.actionIds.map((actionId) => {
         const planDigest = this.#verifiedPlanDigest(actionId);
@@ -333,7 +363,7 @@ export class SqliteExecutionStore implements PlanStore, TokenUseStore {
         workspaceId,
         revision: input.expectedRevision + 1,
         updateId: input.updateId,
-        createdAt: new Date().toISOString(),
+        createdAt: now.toISOString(),
         provenance: "caller_asserted",
         expectedDocumentDigest: input.expectedDocumentDigest,
         requestDigest,
@@ -357,8 +387,18 @@ export class SqliteExecutionStore implements PlanStore, TokenUseStore {
       this.#database.exec("COMMIT");
       return record;
     } catch (error) {
-      this.#database.exec("ROLLBACK");
+      this.#rollback();
       throw error;
+    }
+  }
+
+  // SQLite may already have rolled back (for example after SQLITE_FULL);
+  // never let that replace the original error.
+  #rollback(): void {
+    try {
+      this.#database.exec("ROLLBACK");
+    } catch {
+      // No transaction remained to roll back.
     }
   }
 
@@ -398,7 +438,7 @@ export class SqliteExecutionStore implements PlanStore, TokenUseStore {
       committed = true;
       if (failure !== undefined) throw failure;
     } catch (error) {
-      if (!committed) this.#database.exec("ROLLBACK");
+      if (!committed) this.#rollback();
       throw error;
     }
   }

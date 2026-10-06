@@ -7,6 +7,7 @@ import {
   mkdirSync,
   openSync,
   readSync,
+  readdirSync,
   realpathSync,
   renameSync,
   unlinkSync,
@@ -218,6 +219,37 @@ export function prepareHandoffDatabase(path: string): HandoffDatabaseBinding {
   verify();
   return { path: canonical, verify };
 }
+// Physical location of a database path whose leaf may not exist yet.
+function physicalDatabaseLocation(path: string): string | undefined {
+  try {
+    return canonicalHandoffPath(path);
+  } catch {
+    try {
+      return join(canonicalHandoffPath(dirname(path)), basename(path));
+    } catch {
+      return undefined;
+    }
+  }
+}
+/** Whether two configured database paths name the same physical file. */
+export function sameHandoffDatabase(left: string, right: string): boolean {
+  if (!isAbsolute(left) || !isAbsolute(right)) return false;
+  const a = physicalDatabaseLocation(left);
+  return a !== undefined && a === physicalDatabaseLocation(right);
+}
+export const MAX_HANDOFF_HISTORY = 32;
+const HISTORY_NAME =
+  /^[0-9]{16}-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}-[0-9a-f]{64}\.md$/u;
+// Make a completed rename durable; Windows cannot open directories for sync.
+function syncDirectory(path: string): void {
+  if (process.platform === "win32") return;
+  const fd = openSync(path, constants.O_RDONLY);
+  try {
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+}
 export function loadHandoffConfig(path: string): HandoffConfigV1 {
   try {
     const bytes = readPrivateHandoffFile(path, MAX_HANDOFF_BYTES);
@@ -252,10 +284,18 @@ export class HandoffFiles {
     }
   }
   assertDatabaseOutsideProjection(path: string): void {
-    const relation = relative(this.#agentPath, path);
+    // Keep the database out of .agent entirely. macOS and Windows volumes
+    // are usually case-insensitive, so HANDOFF.md would alias handoff.md.
+    const fold = (value: string) =>
+      process.platform === "darwin" || process.platform === "win32"
+        ? value.toLowerCase()
+        : value;
+    const relation = relative(fold(this.#agentPath), fold(path));
     if (
-      relation === "handoff.md" ||
-      relation.startsWith(`handoff-history${sep}`) ||
+      relation === "" ||
+      (!relation.startsWith(`..${sep}`) &&
+        relation !== ".." &&
+        !isAbsolute(relation)) ||
       basename(path).startsWith(".handoff-")
     )
       throw new HandoffError("unavailable");
@@ -289,6 +329,7 @@ export class HandoffFiles {
     return { digest: sha256(bytes), bytes };
   }
   project(
+    revision: number,
     updateId: string,
     expectedDigest: string | null,
     bytes: Buffer,
@@ -321,7 +362,7 @@ export class HandoffFiles {
       this.#verify();
       const archive = join(
         historyPath,
-        `${updateId}-${(base.digest ?? "").slice(7)}.md`,
+        `${String(revision).padStart(16, "0")}-${updateId}-${(base.digest ?? "").slice(7)}.md`,
       );
       try {
         const archived = readPrivateHandoffFile(
@@ -350,15 +391,38 @@ export class HandoffFiles {
         throw new HandoffError("drifted");
       renameSync(temporary, this.#documentPath);
       renamed = true;
+      syncDirectory(this.#agentPath);
       this.#verify();
       if (this.document().digest !== sha256(bytes))
         throw new HandoffError("unavailable");
+      this.#pruneHistory();
     } finally {
       if (!renamed) {
         this.#verify();
         const observed = verifyPrivateFile(temporary);
         if (sameIdentity(identity, observed)) unlinkSync(temporary);
       }
+    }
+  }
+  // Keep the newest archives; delete only private single-link files with
+  // our own name shape. Best effort: the projection already succeeded.
+  #pruneHistory(): void {
+    if (this.#history === undefined) return;
+    try {
+      const archives = readdirSync(this.#history.path)
+        .filter((name) => HISTORY_NAME.test(name))
+        .sort();
+      for (const name of archives.slice(
+        0,
+        Math.max(0, archives.length - MAX_HANDOFF_HISTORY),
+      )) {
+        this.#verify();
+        const path = join(this.#history.path, name);
+        verifyPrivateFile(path);
+        unlinkSync(path);
+      }
+    } catch {
+      // Leave remaining archives in place; the next projection retries.
     }
   }
   #writeExclusive(path: string, bytes: Buffer): BigIntStats {
@@ -371,8 +435,25 @@ export class HandoffFiles {
         optionalFlag("O_NOFOLLOW"),
       0o600,
     );
-    let stats: BigIntStats;
     try {
+      return this.#finishExclusive(fd, path, bytes);
+    } catch (error) {
+      // Never leave a partial file that would block an identical retry.
+      try {
+        const created = fstatSync(fd, { bigint: true });
+        const current = lstatSync(path, { bigint: true });
+        if (sameIdentity(created, current)) unlinkSync(path);
+      } catch {
+        // The original failure is more informative than cleanup trouble.
+      }
+      throw error;
+    } finally {
+      closeSync(fd);
+    }
+  }
+  #finishExclusive(fd: number, path: string, bytes: Buffer): BigIntStats {
+    let stats: BigIntStats;
+    {
       const before = fstatSync(fd, { bigint: true });
       privateStats(before, false);
       let written = 0;
@@ -386,8 +467,6 @@ export class HandoffFiles {
       privateStats(stats, false);
       if (!sameIdentity(before, stats) || stats.size !== BigInt(bytes.length))
         throw new HandoffError("unavailable");
-    } finally {
-      closeSync(fd);
     }
     this.#verify();
     const current = verifyPrivateFile(path);

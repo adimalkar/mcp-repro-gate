@@ -7,7 +7,11 @@ import { issueCapabilityToken } from "./capability-token.js";
 import { SqliteExecutionStore } from "./execution-store.js";
 import { runGitReviewCli } from "./git-review-cli.js";
 import { createHandoffService, type HandoffService } from "./handoff.js";
-import { loadHandoffConfig } from "./handoff-filesystem.js";
+import {
+  loadHandoffConfig,
+  prepareHandoffDatabase,
+  sameHandoffDatabase,
+} from "./handoff-filesystem.js";
 import { verifyExecutionReceipt } from "./receipt.js";
 import {
   createConfiguredRuntime,
@@ -96,22 +100,34 @@ async function main(): Promise<void> {
     }
     const configPath = options.get("--config");
     const handoffConfigPath = options.get("--handoff-config");
+    const handoffConfig =
+      handoffConfigPath === undefined
+        ? undefined
+        : loadHandoffConfig(handoffConfigPath);
+    // Share the runtime connection only for the same physical database, so
+    // plan references resolve against the plans this server records. Prepare
+    // the private database file before the runtime's SQLite connection
+    // could create it with default permissions.
+    const shareDatabase =
+      handoffConfig !== undefined &&
+      configPath !== undefined &&
+      sameHandoffDatabase(
+        handoffConfig.databasePath,
+        loadRuntimeConfig(configPath).databasePath,
+      );
+    if (shareDatabase) prepareHandoffDatabase(handoffConfig.databasePath);
     const runtime =
       configPath === undefined
         ? undefined
         : await createConfiguredRuntime(configPath);
     let handoff: HandoffService | undefined;
     try {
-      if (handoffConfigPath !== undefined) {
-        const handoffConfig = loadHandoffConfig(handoffConfigPath);
-        // Share the runtime connection only for the same configured database,
-        // so plan references resolve against the plans this server records.
-        handoff = createHandoffService(
-          handoffConfig,
-          runtime?.config.databasePath === handoffConfig.databasePath
-            ? runtime.store
-            : undefined,
-        );
+      if (handoffConfig !== undefined) {
+        handoff = createHandoffService(handoffConfig, {
+          ...(shareDatabase && runtime !== undefined
+            ? { store: runtime.store }
+            : {}),
+        });
       }
     } catch (error) {
       runtime?.close();

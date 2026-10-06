@@ -19,3 +19,4 @@ All notable changes will be documented in this file. The project follows [Semant
 - Pre-spawn downstream artifact digest verification.
 - Bounded, symlink-safe filesystem manifest observation.
 - Configuration-aware approval issuance and receipt verification.
+- Opt-in native agent handoff: host-configured `handoff_status`/`handoff_update` MCP tools, `serve --handoff-config`, Handoff Configuration v1 and Handoff v1 JSON Schemas, immutable SQLite snapshots with optimistic concurrency, and a bounded shared-protocol `.agent/handoff.md` projection with private history.

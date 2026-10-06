@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { once } from "node:events";
 import {
   chmodSync,
   existsSync,
@@ -10,20 +12,24 @@ import {
   readdirSync,
   realpathSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { Ajv2020 } from "ajv/dist/2020.js";
 import test, { type TestContext } from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import { createReproGateServer } from "../src/server.js";
 import { createHandoffService, type HandoffService } from "../src/handoff.js";
 import { HandoffError, parseHandoffUpdate } from "../src/handoff-contract.js";
+import { MAX_HANDOFF_HISTORY } from "../src/handoff-filesystem.js";
 import { sha256 } from "../src/digest.js";
+import { sha256File } from "../src/file-digest.js";
 import { ReproGateKernel } from "../src/kernel.js";
 import { demoCatalog, demoPolicy } from "../src/demo-config.js";
 
@@ -516,3 +522,333 @@ test(
     }
   },
 );
+test("serve shares a fresh runtime database reached through an alias and binds its plans", async (t) => {
+  const f = fixture(t);
+  const state = join(f.scratch, "private state");
+  // An aliased ancestor, as macOS /var -> /private/var gives temp paths.
+  const alias = join(f.scratch, "..", `${basename(f.scratch)}-alias`);
+  symlinkSync(
+    f.scratch,
+    alias,
+    process.platform === "win32" ? "junction" : "dir",
+  );
+  t.after(() => {
+    rmSync(alias, { force: true });
+  });
+  const artifactPath = join(state, "downstream.mjs");
+  const fixtureUrl = pathToFileURL(
+    fileURLToPath(new URL("./fixtures/downstream-server.js", import.meta.url)),
+  ).href;
+  writeFileSync(artifactPath, `await import(${JSON.stringify(fixtureUrl)});\n`);
+  const artifactDigest = await sha256File(artifactPath);
+  const runtimeConfigPath = join(state, "runtime.json");
+  writeFileSync(
+    runtimeConfigPath,
+    JSON.stringify({
+      configVersion: 1,
+      // A different spelling of the handoff database, which does not exist yet.
+      databasePath: join(alias, "private state", "context.sqlite"),
+      catalog: [
+        {
+          toolRef: "configured.publish",
+          serverRef: "configured",
+          toolName: "publish",
+          description: "Configured integration fixture",
+          inputSchema: {
+            type: "object",
+            properties: { content: { type: "string" } },
+            required: ["content"],
+          },
+          effects: ["local_write"],
+          filesystemRoots: [f.workspaceRoot],
+          artifactDigest,
+        },
+      ],
+      policy: demoPolicy,
+      backends: {
+        configured: {
+          transport: "stdio",
+          command: process.execPath,
+          args: [artifactPath],
+          cwd: state,
+          environment: { inherit: "safe", from: {} },
+          artifact: { path: artifactPath, digest: artifactDigest },
+        },
+      },
+      observer: { kind: "filesystem_manifest", roots: [f.workspaceRoot] },
+      secrets: {
+        capabilitySecretEnv: "TEST_CAPABILITY_SECRET",
+        receiptSecretEnv: "TEST_RECEIPT_SECRET",
+        receiptKeyId: "test-key-1",
+      },
+    }),
+  );
+  const handoffConfigPath = join(state, "handoff.json");
+  writeFileSync(handoffConfigPath, JSON.stringify(f.config), { mode: 0o600 });
+  const client = new Client({ name: "shared-handoff", version: "1.0.0" });
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [
+      fileURLToPath(new URL("../src/cli.js", import.meta.url)),
+      "serve",
+      "--config",
+      runtimeConfigPath,
+      "--handoff-config",
+      handoffConfigPath,
+    ],
+    env: {
+      ...process.env,
+      TEST_CAPABILITY_SECRET: "configured-capability-secret-at-least-32-bytes",
+      TEST_RECEIPT_SECRET: "configured-receipt-secret-different-32-bytes",
+    },
+    stderr: "pipe",
+  });
+  let stderr = "";
+  transport.stderr?.on("data", (chunk: Buffer) => {
+    stderr += chunk.toString();
+  });
+  t.after(async () => client.close());
+  await client.connect(transport).catch((error: unknown) => {
+    throw new Error(`serve failed: ${stderr}`, { cause: error });
+  });
+  const planned = await client.callTool({
+    name: "action.plan",
+    arguments: { toolRef: "configured.publish", arguments: { content: "x" } },
+  });
+  const actionId = (
+    planned.structuredContent as { envelope: { actionId: string } }
+  ).envelope.actionId;
+  const update = input();
+  update.actionIds.push(actionId);
+  const updated = await client.callTool({
+    name: "handoff_update",
+    arguments: update,
+  });
+  assert.equal(updated.isError, undefined, JSON.stringify(updated.content));
+  const status = await client.callTool({
+    name: "handoff_status",
+    arguments: { handoffVersion: 1, includeContext: true },
+  });
+  assert.equal(
+    (status.structuredContent as { references: { actionId: string }[] })
+      .references[0]?.actionId,
+    actionId,
+  );
+  if (process.platform !== "win32")
+    assert.equal(statSync(f.config.databasePath).mode & 0o777, 0o600);
+});
+const worker = fileURLToPath(
+  new URL("./fixtures/handoff-worker.js", import.meta.url),
+);
+function runWorker(args: string[]) {
+  const child = spawn(process.execPath, [worker, ...args], {
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", (chunk: Buffer) => (stdout += chunk.toString()));
+  child.stderr.on("data", (chunk: Buffer) => (stderr += chunk.toString()));
+  const timer = setTimeout(() => child.kill(), 30_000);
+  return {
+    done: once(child, "exit").then(([code]) => {
+      clearTimeout(timer);
+      return { code: code as number | null, stdout, stderr };
+    }),
+  };
+}
+function writeJson(path: string, value: unknown) {
+  writeFileSync(path, JSON.stringify(value), { mode: 0o600 });
+  return path;
+}
+test("two processes racing from one revision commit exactly one snapshot", async (t) => {
+  const f = fixture(t);
+  const state = join(f.scratch, "private state");
+  const configPath = writeJson(join(state, "worker-config.json"), f.config);
+  const barrier = join(state, "go");
+  const workers = [0, 1].map((index) =>
+    runWorker([
+      "update",
+      configPath,
+      writeJson(join(state, `update-${String(index)}.json`), input()),
+      barrier,
+    ]),
+  );
+  writeFileSync(barrier, "");
+  const results = await Promise.all(workers.map(({ done }) => done));
+  for (const result of results) assert.equal(result.code, 0, result.stderr);
+  const outcomes = results
+    .map(
+      ({ stdout }) =>
+        JSON.parse(stdout) as { revision?: number; code?: string },
+    )
+    .map((outcome) => outcome.code ?? `revision ${String(outcome.revision)}`)
+    .sort();
+  assert.deepEqual(outcomes, ["revision 1", "revision_conflict"]);
+  const status = f.service(false).status(statusInput);
+  assert.equal(status.state, "synchronized");
+  assert.equal(status.revision, 1);
+  assert.equal(
+    f
+      .database()
+      .prepare("SELECT count(*) AS count FROM handoff_snapshots")
+      .get()?.count,
+    1,
+  );
+});
+test("a process crash inside projection leaves a pending snapshot that an identical retry reconciles", async (t) => {
+  const f = fixture(t);
+  const state = join(f.scratch, "private state");
+  const update = input();
+  const updatePath = writeJson(join(state, "update.json"), update);
+  const crashed = await runWorker([
+    "crash-in-projection",
+    writeJson(join(state, "worker-config.json"), f.config),
+    updatePath,
+  ]).done;
+  assert.equal(crashed.code, 86, crashed.stderr);
+  const service = f.service();
+  const pending = service.status(statusInput);
+  assert.equal(pending.state, "pending");
+  assert.equal(pending.revision, 1);
+  assert.equal(existsSync(f.document), false);
+  assert.equal(
+    f
+      .database()
+      .prepare("SELECT count(*) AS count FROM handoff_projection_events")
+      .get()?.count,
+    0,
+  );
+  assert.equal(service.update(update).state, "synchronized");
+});
+test("snapshot timestamps come from the injected clock", (t) => {
+  const f = fixture(t);
+  const service = createHandoffService(f.config, {
+    now: () => new Date("2026-01-02T03:04:05.006Z"),
+  });
+  t.after(() => {
+    service.close();
+  });
+  service.update(input());
+  assert.ok(
+    readFileSync(f.document, "utf8").includes(
+      "- **Last Updated**: 2026-01-02T03:04:05.006Z",
+    ),
+  );
+  const snapshot = f
+    .database()
+    .prepare("SELECT snapshot_json FROM handoff_snapshots")
+    .get()?.snapshot_json;
+  assert.equal(
+    (JSON.parse(String(snapshot)) as { createdAt: string }).createdAt,
+    "2026-01-02T03:04:05.006Z",
+  );
+});
+test("terminal escapes and bidi overrides are rejected before effects", (t) => {
+  const f = fixture(t);
+  const service = f.service();
+  for (const goal of [
+    "link \u001b]8;;https://example.invalid\u0007click",
+    "spoof ‮gnp.exe",
+    "isolate ⁦text⁩",
+    "nul \u0000 byte",
+    "c1 \u009b control",
+  ]) {
+    const update = input();
+    update.context.goal = goal;
+    assert.throws(() => service.update(update), errorCode("invalid_input"));
+  }
+  const allowed = input();
+  allowed.context.goal = "tab\tand\r\nline breaks stay";
+  assert.equal(service.update(allowed).state, "synchronized");
+});
+test("a database anywhere inside .agent is refused", (t) => {
+  const f = fixture(t);
+  const agent = join(f.workspaceRoot, ".agent");
+  mkdirSync(agent, { mode: 0o700 });
+  for (const name of ["context.sqlite", "HANDOFF.md", "handoff.md"]) {
+    assert.throws(
+      () =>
+        createHandoffService({ ...f.config, databasePath: join(agent, name) }),
+      errorCode("unavailable"),
+      name,
+    );
+  }
+  assert.deepEqual(readdirSync(agent), []);
+});
+test("history keeps only the newest archives", (t) => {
+  const f = fixture(t);
+  const service = f.service();
+  let status = service.update(input());
+  for (let revision = 1; revision <= MAX_HANDOFF_HISTORY + 3; revision++) {
+    status = service.update(input(revision, status.documentDigest));
+  }
+  const archives = readdirSync(
+    join(f.workspaceRoot, ".agent", "handoff-history"),
+  ).sort();
+  assert.equal(archives.length, MAX_HANDOFF_HISTORY);
+  // Archive N holds the document projected for revision N-1.
+  assert.ok(archives[0]?.startsWith(String(4 + 1).padStart(16, "0")));
+  assert.ok(
+    archives
+      .at(-1)
+      ?.startsWith(String(MAX_HANDOFF_HISTORY + 4).padStart(16, "0")),
+  );
+});
+test("published JSON schemas accept real handoff values and reject the same invalid inputs", (t) => {
+  const f = fixture(t);
+  const ajv = new Ajv2020({ strict: true });
+  const base = "https://github.com/adimalkar/mcp-repro-gate/schemas/";
+  for (const name of ["handoff-config", "handoff"])
+    ajv.addSchema(
+      JSON.parse(
+        readFileSync(
+          fileURLToPath(
+            new URL(`../../schemas/${name}.schema.json`, import.meta.url),
+          ),
+          "utf8",
+        ),
+      ) as object,
+    );
+  const check = (ref: string, value: unknown) => {
+    const validate = ajv.getSchema(`${base}${ref}`);
+    assert.ok(validate, ref);
+    return validate(value) === true;
+  };
+  assert.ok(check("handoff-config.schema.json", f.config));
+  const service = f.service();
+  assert.ok(
+    check("handoff.schema.json#/$defs/status", service.status(statusInput)),
+  );
+  const update = input();
+  assert.ok(check("handoff.schema.json#/$defs/update", update));
+  service.update(update);
+  assert.ok(
+    check(
+      "handoff.schema.json#/$defs/status",
+      service.status({ handoffVersion: 1, includeContext: true }),
+    ),
+  );
+  const record = JSON.parse(
+    String(
+      f.database().prepare("SELECT snapshot_json FROM handoff_snapshots").get()
+        ?.snapshot_json,
+    ),
+  ) as unknown;
+  assert.ok(check("handoff.schema.json", record));
+  const invalid = [
+    { ...input(), target: f.document },
+    { ...input(), context: { ...input().context, goal: "esc \u001b[2J" } },
+    {
+      ...input(),
+      context: { ...input().context, touchedFiles: ["../escape"] },
+    },
+    {
+      ...input(),
+      context: { ...input().context, touchedFiles: ["/absolute"] },
+    },
+  ];
+  for (const value of invalid) {
+    assert.equal(check("handoff.schema.json#/$defs/update", value), false);
+    assert.throws(() => parseHandoffUpdate(value), errorCode("invalid_input"));
+  }
+});
