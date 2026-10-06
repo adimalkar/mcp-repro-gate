@@ -288,6 +288,9 @@ export class SqliteGitApprovalStore {
     const openPath = promotionDatabaseOpenPath(path);
     this.#database = new DatabaseSync(openPath);
     try {
+      // Wait out another process's lock (including WAL recovery) before the
+      // first statement below reads the schema for identity inspection.
+      this.#database.exec("PRAGMA busy_timeout = 5000");
       // Register our pure projection on EVERY owned connection; callers cannot
       // supply authorization via a callback or replace this private connection.
       // Raw host connections must register this same projection to insert; absent
@@ -315,7 +318,6 @@ export class SqliteGitApprovalStore {
       // A signed decision is keyed by proposal and, for approve only, linked to
       // the exact approval row for that same proposal.
       this.#database.exec(`
-      PRAGMA busy_timeout = 5000;
       PRAGMA journal_mode = WAL;
       PRAGMA foreign_keys = ON;
       PRAGMA synchronous = FULL;

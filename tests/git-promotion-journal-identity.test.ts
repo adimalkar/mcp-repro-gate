@@ -376,7 +376,17 @@ for (const name of ["canonical.sqlite", "valid-\uFFFD.sqlite"]) {
         realpathSync.native(path),
       );
       assert.equal(attemptCount(path), 1);
-      assert.equal(attemptCount(alias), 1);
+      // A raw connection keeps its alias spelling for WAL/SHM names on Windows
+      // and cannot see live rows; the Store canonicalizes before opening.
+      const viaAlias = new SqliteGitApprovalStore(alias);
+      try {
+        assert.deepEqual(
+          viaAlias.getGitPromotionAttempt(f.prepared.attemptId),
+          record,
+        );
+      } finally {
+        viaAlias.close();
+      }
     } finally {
       store.close();
     }
