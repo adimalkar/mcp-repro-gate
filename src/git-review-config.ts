@@ -99,7 +99,7 @@ const pathSchema = z.string().min(1).max(MAX_PATH_LENGTH);
 // optional, as in plan-bound Git catalog tools; scopes are required because
 // plan-bound Git authority requires the promote scope.
 const catalogToolSchema = z.strictObject({
-  toolRef: z.string().min(1),
+  toolRef: z.string().min(1).max(256),
   serverRef: z.string().min(1),
   toolName: z.string().min(1),
   description: z.string().min(1),
