@@ -49,6 +49,8 @@ export const catalogDescribeOutputSchema = z.object({
   schemaDigest: digestSchema,
 });
 
+export const actionIdInputSchema = z.string().regex(/^sha256:[0-9a-f]{64}$/u);
+export const toolRefInputSchema = z.string().min(1).max(256);
 export const nextStepSchema = z.enum(["stop", "await_capability", "plan_only"]);
 export type NextStep = z.infer<typeof nextStepSchema>;
 
@@ -96,12 +98,17 @@ export function describeCatalogTool(tool: CatalogTool) {
   };
 }
 
-/** Guidance derived from policy and server configuration; never authority. */
+/** Guidance derived from policy, expiry and configuration; never authority. */
 export function nextStepFor(
   plan: PlannedAction,
   executorConfigured: boolean,
+  now: Date = new Date(),
 ): NextStep {
-  if (plan.policy.decision === "deny") return "stop";
+  if (
+    plan.policy.decision === "deny" ||
+    Date.parse(plan.envelope.expiresAt) <= now.getTime()
+  )
+    return "stop";
   return executorConfigured ? "await_capability" : "plan_only";
 }
 

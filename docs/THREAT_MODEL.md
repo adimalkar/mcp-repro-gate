@@ -64,6 +64,10 @@ Review staging exposes the exact Git-generated diff for inspection while retaini
 
 The opt-in handoff tools store context that is caller-asserted. The host fixes the workspace and database paths; model input cannot name a filesystem or database target. Snapshots are immutable and digest-checked, revisions are serialized by SQLite writers, and plan references are re-verified against the persisted envelope. None of these records grant authority: no capability, approval, plan, receipt or execution state reads them. Projection writes use a private exclusive temporary file, identity checks on the parent directories and target, fsync, and an atomic rename. Symlinked, hard-linked, or overly permissive targets are refused, not repaired. A same-user hostile writer can still race these checks, and the SQLite record and Markdown projection are not one atomic transaction. See [docs/HANDOFF.md](HANDOFF.md).
 
+## Façade evidence exposure
+
+`action.plan` returns a compact summary by default. `action.inspect` and `detail: "full"` return the persisted envelope for any known `actionId`, including its principal, run ID and declared authority (scopes, roots, destinations and secret handle names, never secret values). In a deployment where several sessions share one execution store, any connected model that learns an action ID can read that plan. Treat the store as shared within one trust domain. `catalog.describe` omits secret handle names.
+
 ## Known gaps before execution is production-safe
 
 - SQLite is durable locally but has no replica lease/ownership protocol;

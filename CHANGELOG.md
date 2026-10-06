@@ -19,3 +19,9 @@ All notable changes will be documented in this file. The project follows [Semant
 - Pre-spawn downstream artifact digest verification.
 - Bounded, symlink-safe filesystem manifest observation.
 - Configuration-aware approval issuance and receipt verification.
+- Schema-on-demand `catalog.describe` and full-evidence `action.inspect` MCP tools; output schemas and conservative annotations on every façade tool.
+
+### Changed
+
+- **Breaking:** `action.plan` returns a compact summary (`actionId`, `envelopeDigest`, `toolRef`, `decision`, `reasonCodes`, `expiresAt`, `nextStep`) by default. Pass `detail: "full"` or call `action.inspect` for the previous envelope and policy fields.
+- Façade error results other than `action.execute` carry a compact text block without `structuredContent`. `policy.explain` and `action.inspect` accept only `sha256:` action IDs, and tool references are capped at 256 characters.

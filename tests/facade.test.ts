@@ -199,3 +199,35 @@ test("nextStep reflects only the decision and executor configuration", async (co
   );
   assert.equal(JSON.stringify(awaiting).includes("capabilityToken"), false);
 });
+
+test("inspect reports stop for an expired plan and execute keeps conservative annotations", async (context) => {
+  const { call, client, kernel } = await connect(
+    context,
+    {} as ReproGateExecutor,
+  );
+  const expired = kernel.plan({
+    toolRef: "demo.publish",
+    arguments: { content: "old" },
+    now: new Date(Date.now() - 60 * 60 * 1000),
+  });
+  const inspected = await call("action.inspect", {
+    actionId: expired.envelope.actionId,
+  });
+  assert.equal(
+    actionInspectOutputSchema.parse(inspected.structuredContent).nextStep,
+    "stop",
+  );
+  const unknown = await call("action.inspect", {
+    actionId: `sha256:${"0".repeat(64)}`,
+  });
+  assert.equal(unknown.isError, true);
+  const malformed = await call("policy.explain", { actionId: "x".repeat(300) });
+  assert.equal(malformed.isError, true);
+  assert.equal(JSON.stringify(malformed).includes("x".repeat(300)), false);
+  const execute = (await client.listTools()).tools.find(
+    (tool) => tool.name === "action.execute",
+  );
+  assert.equal(execute?.annotations?.readOnlyHint, false);
+  assert.equal(execute.annotations.destructiveHint, true);
+  assert.equal(execute.annotations.openWorldHint, true);
+});

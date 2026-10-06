@@ -4,6 +4,7 @@ import * as z from "zod/v4";
 import { demoCatalog, demoPolicy } from "./demo-config.js";
 import type { ReproGateExecutor } from "./executor.js";
 import {
+  actionIdInputSchema,
   actionInspectOutputSchema,
   actionPlanOutputSchema,
   catalogDescribeOutputSchema,
@@ -12,6 +13,7 @@ import {
   describeCatalogTool,
   fullPlan,
   policyExplainOutputSchema,
+  toolRefInputSchema,
 } from "./facade.js";
 import type { HandoffService } from "./handoff.js";
 import {
@@ -99,7 +101,7 @@ export function createReproGateServer(
     {
       description:
         "Return one catalog tool's input schema, effects, declared authority and the schemaDigest a plan for it binds",
-      inputSchema: z.object({ toolRef: z.string().min(1) }),
+      inputSchema: z.object({ toolRef: toolRefInputSchema }),
       outputSchema: catalogDescribeOutputSchema,
       annotations: readOnly,
     },
@@ -118,7 +120,7 @@ export function createReproGateServer(
       description:
         'Create and persist a digest-bound action envelope and evaluate deterministic policy; never executes. Returns a compact summary with decision, reasonCodes and nextStep; pass detail "full" or call action.inspect for the full envelope',
       inputSchema: z.object({
-        toolRef: z.string().min(1),
+        toolRef: toolRefInputSchema,
         arguments: z.unknown(),
         detail: z.enum(["compact", "full"]).default("compact"),
       }),
@@ -153,7 +155,7 @@ export function createReproGateServer(
     {
       description:
         "Return the complete persisted plan (envelope, envelope digest and policy decision) for one actionId",
-      inputSchema: z.object({ actionId: z.string().min(1) }),
+      inputSchema: z.object({ actionId: actionIdInputSchema }),
       outputSchema: actionInspectOutputSchema,
       annotations: readOnly,
     },
@@ -169,7 +171,7 @@ export function createReproGateServer(
     {
       description:
         "Explain the deterministic decision for a previously planned action",
-      inputSchema: z.object({ actionId: z.string().min(1) }),
+      inputSchema: z.object({ actionId: actionIdInputSchema }),
       outputSchema: policyExplainOutputSchema,
       annotations: readOnly,
     },
@@ -209,11 +211,16 @@ export function createReproGateServer(
             }),
           );
         } catch (executionError) {
-          return error(
-            executionError instanceof Error
-              ? executionError.message
-              : "Unknown execution error",
-          );
+          // Unchanged result shape: execute declares no outputSchema.
+          return {
+            ...result({
+              error:
+                executionError instanceof Error
+                  ? executionError.message
+                  : "Unknown execution error",
+            }),
+            isError: true,
+          };
         }
       },
     );
