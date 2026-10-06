@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import {
@@ -775,24 +775,76 @@ test("a database anywhere inside .agent is refused", (t) => {
   }
   assert.deepEqual(readdirSync(agent), []);
 });
-test("history keeps only the newest archives", (t) => {
+test("history keeps only this database's newest archives", (t) => {
   const f = fixture(t);
   const service = f.service();
   let status = service.update(input());
   for (let revision = 1; revision <= MAX_HANDOFF_HISTORY + 3; revision++) {
     status = service.update(input(revision, status.documentDigest));
   }
-  const archives = readdirSync(
+  const revisions = readdirSync(
     join(f.workspaceRoot, ".agent", "handoff-history"),
-  ).sort();
-  assert.equal(archives.length, MAX_HANDOFF_HISTORY);
-  // Archive N holds the document projected for revision N-1.
-  assert.ok(archives[0]?.startsWith(String(4 + 1).padStart(16, "0")));
-  assert.ok(
-    archives
-      .at(-1)
-      ?.startsWith(String(MAX_HANDOFF_HISTORY + 4).padStart(16, "0")),
-  );
+  )
+    .map((name) => Number(name.split("-")[1]))
+    .sort((a, b) => a - b);
+  assert.equal(revisions.length, MAX_HANDOFF_HISTORY);
+  // The archive for revision N holds the document revision N replaced.
+  assert.equal(revisions[0], 5);
+  assert.equal(revisions.at(-1), MAX_HANDOFF_HISTORY + 4);
+});
+test("a replaced database never prunes the archive it just wrote or another database's archives", (t) => {
+  const f = fixture(t);
+  const first = f.service();
+  let status = first.update(input());
+  for (let revision = 1; revision <= MAX_HANDOFF_HISTORY + 1; revision++) {
+    status = first.update(input(revision, status.documentDigest));
+  }
+  first.close();
+  const history = join(f.workspaceRoot, ".agent", "handoff-history");
+  const before = readdirSync(history).sort();
+  const manual = Buffer.from("HUMAN MANUAL NOTES\n");
+  writeFileSync(f.document, manual, { mode: 0o600 });
+  const replaced = createHandoffService({
+    ...f.config,
+    databasePath: join(f.scratch, "private state", "replacement.sqlite"),
+  });
+  t.after(() => {
+    replaced.close();
+  });
+  const fresh = replaced.update(input(0, sha256(manual)));
+  assert.equal(fresh.state, "synchronized");
+  const after = readdirSync(history).sort();
+  for (const name of before) assert.ok(after.includes(name), name);
+  const added = after.filter((name) => !before.includes(name));
+  assert.equal(added.length, 1);
+  assert.deepEqual(readFileSync(join(history, added[0] ?? "")), manual);
+});
+test("database verification inside a transaction keeps SQLite's cross-process lock", (t) => {
+  const f = fixture(t);
+  const service = f.service();
+  service.update(input());
+  const holder = f.database();
+  holder.exec("PRAGMA busy_timeout = 0; BEGIN IMMEDIATE");
+  try {
+    // Verifies the database file and sidecars while this process holds the lock.
+    assert.equal(service.status(statusInput).state, "synchronized");
+    const probe = spawnSync(
+      process.execPath,
+      [
+        "-e",
+        `const { DatabaseSync } = require("node:sqlite");
+         const db = new DatabaseSync(process.argv[1]);
+         db.exec("PRAGMA busy_timeout = 0");
+         try { db.exec("BEGIN IMMEDIATE"); process.stdout.write("acquired"); }
+         catch (error) { process.stdout.write(error.errstr ?? String(error)); }`,
+        f.config.databasePath,
+      ],
+      { encoding: "utf8", timeout: 30_000 },
+    );
+    assert.equal(probe.stdout, "database is locked", probe.stderr);
+  } finally {
+    holder.exec("ROLLBACK");
+  }
 });
 test("published JSON schemas accept real handoff values and reject the same invalid inputs", (t) => {
   const f = fixture(t);

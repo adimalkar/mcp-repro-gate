@@ -42,6 +42,7 @@ export function createHandoffService(
     store = sharedStore ?? new SqliteExecutionStore(binding.path);
     store.initializeHandoff(binding);
     const contextStore = store;
+    const instanceId = contextStore.handoffInstance();
     const workspaceId = digestCanonical({
       domain: "ReproGate/HandoffWorkspace/v1",
       workspaceRoot: files.workspaceRoot,
@@ -112,6 +113,7 @@ export function createHandoffService(
           contextStore.projectHandoff(workspaceId, record.updateId, (owned) => {
             binding.verify();
             files.project(
+              instanceId,
               owned.revision,
               owned.updateId,
               owned.expectedDocumentDigest,

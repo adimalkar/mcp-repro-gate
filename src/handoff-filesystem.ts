@@ -153,6 +153,15 @@ function verifyPrivateFile(path: string): BigIntStats {
   if (!sameIdentity(before, after)) throw new HandoffError("unavailable");
   return after;
 }
+// Database files are inspected with lstat only. Opening and closing any
+// descriptor for a file on POSIX releases every fcntl lock this process
+// holds on it, including SQLite's own, which would let another process
+// write during our transaction.
+function statPrivateFile(path: string): BigIntStats {
+  const stats = lstatSync(path, { bigint: true });
+  privateStats(stats, false);
+  return stats;
+}
 export interface HandoffDatabaseBinding {
   path: string;
   verify(): void;
@@ -172,14 +181,14 @@ export function prepareHandoffDatabase(path: string): HandoffDatabaseBinding {
   const candidate = join(parent.path, basename(path));
   for (const suffix of ["-wal", "-shm", "-journal"]) {
     try {
-      verifyPrivateFile(candidate + suffix);
+      statPrivateFile(candidate + suffix);
     } catch (error) {
       if (!missing(error)) throw error;
     }
   }
   let canonical: string;
   try {
-    verifyPrivateFile(candidate);
+    statPrivateFile(candidate);
     canonical = canonicalHandoffPath(candidate);
   } catch (error) {
     if (!missing(error)) throw error;
@@ -200,17 +209,17 @@ export function prepareHandoffDatabase(path: string): HandoffDatabaseBinding {
     }
     canonical = canonicalHandoffPath(candidate);
   }
-  const identity = verifyPrivateFile(canonical);
+  const identity = statPrivateFile(canonical);
   const verify = () => {
     verifyDirectory(parent, true);
     if (
       canonicalHandoffPath(canonical) !== canonical ||
-      !sameIdentity(identity, verifyPrivateFile(canonical))
+      !sameIdentity(identity, statPrivateFile(canonical))
     )
       throw new HandoffError("unavailable");
     for (const suffix of ["-wal", "-shm", "-journal"]) {
       try {
-        verifyPrivateFile(canonical + suffix);
+        statPrivateFile(canonical + suffix);
       } catch (error) {
         if (!missing(error)) throw error;
       }
@@ -238,8 +247,9 @@ export function sameHandoffDatabase(left: string, right: string): boolean {
   return a !== undefined && a === physicalDatabaseLocation(right);
 }
 export const MAX_HANDOFF_HISTORY = 32;
+// <database instance>-<revision>-<update UUID>-<base digest hex>.md
 const HISTORY_NAME =
-  /^[0-9]{16}-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}-[0-9a-f]{64}\.md$/u;
+  /^([0-9a-f]{32})-([0-9]{16})-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}-[0-9a-f]{64}\.md$/u;
 // Make a completed rename durable; Windows cannot open directories for sync.
 function syncDirectory(path: string): void {
   if (process.platform === "win32") return;
@@ -329,6 +339,7 @@ export class HandoffFiles {
     return { digest: sha256(bytes), bytes };
   }
   project(
+    instanceId: string,
     revision: number,
     updateId: string,
     expectedDigest: string | null,
@@ -362,7 +373,7 @@ export class HandoffFiles {
       this.#verify();
       const archive = join(
         historyPath,
-        `${String(revision).padStart(16, "0")}-${updateId}-${(base.digest ?? "").slice(7)}.md`,
+        `${instanceId}-${String(revision).padStart(16, "0")}-${updateId}-${(base.digest ?? "").slice(7)}.md`,
       );
       try {
         const archived = readPrivateHandoffFile(
@@ -395,7 +406,7 @@ export class HandoffFiles {
       this.#verify();
       if (this.document().digest !== sha256(bytes))
         throw new HandoffError("unavailable");
-      this.#pruneHistory();
+      this.#pruneHistory(instanceId, revision);
     } finally {
       if (!renamed) {
         this.#verify();
@@ -404,17 +415,23 @@ export class HandoffFiles {
       }
     }
   }
-  // Keep the newest archives; delete only private single-link files with
-  // our own name shape. Best effort: the projection already succeeded.
-  #pruneHistory(): void {
+  // Keep this database's newest archives. Revisions restart in a new or
+  // replaced database, so archives from other instances are never pruned,
+  // nor is anything at or after the revision just projected. Delete only
+  // private single-link files with our name shape; best effort, because
+  // the projection already succeeded.
+  #pruneHistory(instanceId: string, revision: number): void {
     if (this.#history === undefined) return;
     try {
       const archives = readdirSync(this.#history.path)
-        .filter((name) => HISTORY_NAME.test(name))
+        .filter((name) => {
+          const match = HISTORY_NAME.exec(name);
+          return match?.[1] === instanceId && Number(match[2]) < revision;
+        })
         .sort();
       for (const name of archives.slice(
         0,
-        Math.max(0, archives.length - MAX_HANDOFF_HISTORY),
+        Math.max(0, archives.length - (MAX_HANDOFF_HISTORY - 1)),
       )) {
         this.#verify();
         const path = join(this.#history.path, name);

@@ -51,10 +51,22 @@ interface ExecutionRow {
 // SQLite names WAL/SHM sidecars after the spelling it opens; on Windows an
 // alias spelling would get a separate namespace. Open absolute paths through
 // their physical location, including a new leaf below a physical parent.
+// A physical name that is not valid UTF-8 cannot be passed on losslessly;
+// keep the caller's spelling rather than open a Unicode-replacement twin.
+function losslessPath(bytes: Buffer, fallback: string): string {
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    return fallback;
+  }
+}
 function physicalOpenPath(path: string): string {
   if (!isAbsolute(path)) return path;
   try {
-    return realpathSync.native(path);
+    return losslessPath(
+      realpathSync.native(path, { encoding: "buffer" }),
+      path,
+    );
   } catch (error) {
     if (!(error instanceof Error && "code" in error && error.code === "ENOENT"))
       throw error;
@@ -64,7 +76,13 @@ function physicalOpenPath(path: string): string {
     return path;
   } catch {
     try {
-      return join(realpathSync.native(dirname(path)), basename(path));
+      return join(
+        losslessPath(
+          realpathSync.native(dirname(path), { encoding: "buffer" }),
+          dirname(path),
+        ),
+        basename(path),
+      );
     } catch {
       return path;
     }
@@ -192,9 +210,36 @@ export class SqliteExecutionStore implements PlanStore, TokenUseStore {
         BEGIN SELECT RAISE(ABORT, 'Immutable handoff event'); END;
       CREATE TRIGGER IF NOT EXISTS handoff_events_no_delete BEFORE DELETE ON handoff_projection_events
         BEGIN SELECT RAISE(ABORT, 'Immutable handoff event'); END;
+      CREATE TABLE IF NOT EXISTS handoff_instance (
+        singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+        instance_id TEXT NOT NULL CHECK(instance_id GLOB '[0-9a-f]*' AND length(instance_id) = 32)
+      ) STRICT;
+      CREATE TRIGGER IF NOT EXISTS handoff_instance_no_update BEFORE UPDATE ON handoff_instance
+        BEGIN SELECT RAISE(ABORT, 'Immutable handoff instance'); END;
+      CREATE TRIGGER IF NOT EXISTS handoff_instance_no_delete BEFORE DELETE ON handoff_instance
+        BEGIN SELECT RAISE(ABORT, 'Immutable handoff instance'); END;
     `);
+    this.#database
+      .prepare(
+        "INSERT OR IGNORE INTO handoff_instance(singleton, instance_id) VALUES(1, ?)",
+      )
+      .run(randomUUID().replaceAll("-", ""));
     binding.verify();
     this.#handoffBinding = binding;
+  }
+
+  /** Random per-database identifier; it scopes history pruning. */
+  handoffInstance(): string {
+    this.#verifyHandoff();
+    const row = this.#database
+      .prepare("SELECT instance_id FROM handoff_instance WHERE singleton = 1")
+      .get();
+    if (
+      typeof row?.instance_id !== "string" ||
+      !/^[0-9a-f]{32}$/u.test(row.instance_id)
+    )
+      throw new HandoffError("unavailable");
+    return row.instance_id;
   }
 
   #verifyHandoff(): void {
