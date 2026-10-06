@@ -7,6 +7,7 @@ import {
   mkdirSync,
   openSync,
   readSync,
+  readdirSync,
   realpathSync,
   renameSync,
   unlinkSync,
@@ -152,6 +153,15 @@ function verifyPrivateFile(path: string): BigIntStats {
   if (!sameIdentity(before, after)) throw new HandoffError("unavailable");
   return after;
 }
+// Database files are inspected with lstat only. Opening and closing any
+// descriptor for a file on POSIX releases every fcntl lock this process
+// holds on it, including SQLite's own, which would let another process
+// write during our transaction.
+function statPrivateFile(path: string): BigIntStats {
+  const stats = lstatSync(path, { bigint: true });
+  privateStats(stats, false);
+  return stats;
+}
 export interface HandoffDatabaseBinding {
   path: string;
   verify(): void;
@@ -171,14 +181,14 @@ export function prepareHandoffDatabase(path: string): HandoffDatabaseBinding {
   const candidate = join(parent.path, basename(path));
   for (const suffix of ["-wal", "-shm", "-journal"]) {
     try {
-      verifyPrivateFile(candidate + suffix);
+      statPrivateFile(candidate + suffix);
     } catch (error) {
       if (!missing(error)) throw error;
     }
   }
   let canonical: string;
   try {
-    verifyPrivateFile(candidate);
+    statPrivateFile(candidate);
     canonical = canonicalHandoffPath(candidate);
   } catch (error) {
     if (!missing(error)) throw error;
@@ -199,17 +209,17 @@ export function prepareHandoffDatabase(path: string): HandoffDatabaseBinding {
     }
     canonical = canonicalHandoffPath(candidate);
   }
-  const identity = verifyPrivateFile(canonical);
+  const identity = statPrivateFile(canonical);
   const verify = () => {
     verifyDirectory(parent, true);
     if (
       canonicalHandoffPath(canonical) !== canonical ||
-      !sameIdentity(identity, verifyPrivateFile(canonical))
+      !sameIdentity(identity, statPrivateFile(canonical))
     )
       throw new HandoffError("unavailable");
     for (const suffix of ["-wal", "-shm", "-journal"]) {
       try {
-        verifyPrivateFile(canonical + suffix);
+        statPrivateFile(canonical + suffix);
       } catch (error) {
         if (!missing(error)) throw error;
       }
@@ -217,6 +227,38 @@ export function prepareHandoffDatabase(path: string): HandoffDatabaseBinding {
   };
   verify();
   return { path: canonical, verify };
+}
+// Physical location of a database path whose leaf may not exist yet.
+function physicalDatabaseLocation(path: string): string | undefined {
+  try {
+    return canonicalHandoffPath(path);
+  } catch {
+    try {
+      return join(canonicalHandoffPath(dirname(path)), basename(path));
+    } catch {
+      return undefined;
+    }
+  }
+}
+/** Whether two configured database paths name the same physical file. */
+export function sameHandoffDatabase(left: string, right: string): boolean {
+  if (!isAbsolute(left) || !isAbsolute(right)) return false;
+  const a = physicalDatabaseLocation(left);
+  return a !== undefined && a === physicalDatabaseLocation(right);
+}
+export const MAX_HANDOFF_HISTORY = 32;
+// <database instance>-<revision>-<update UUID>-<base digest hex>.md
+const HISTORY_NAME =
+  /^([0-9a-f]{32})-([0-9]{16})-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}-[0-9a-f]{64}\.md$/u;
+// Make a completed rename durable; Windows cannot open directories for sync.
+function syncDirectory(path: string): void {
+  if (process.platform === "win32") return;
+  const fd = openSync(path, constants.O_RDONLY);
+  try {
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
 }
 export function loadHandoffConfig(path: string): HandoffConfigV1 {
   try {
@@ -252,10 +294,18 @@ export class HandoffFiles {
     }
   }
   assertDatabaseOutsideProjection(path: string): void {
-    const relation = relative(this.#agentPath, path);
+    // Keep the database out of .agent entirely. macOS and Windows volumes
+    // are usually case-insensitive, so HANDOFF.md would alias handoff.md.
+    const fold = (value: string) =>
+      process.platform === "darwin" || process.platform === "win32"
+        ? value.toLowerCase()
+        : value;
+    const relation = relative(fold(this.#agentPath), fold(path));
     if (
-      relation === "handoff.md" ||
-      relation.startsWith(`handoff-history${sep}`) ||
+      relation === "" ||
+      (!relation.startsWith(`..${sep}`) &&
+        relation !== ".." &&
+        !isAbsolute(relation)) ||
       basename(path).startsWith(".handoff-")
     )
       throw new HandoffError("unavailable");
@@ -289,6 +339,8 @@ export class HandoffFiles {
     return { digest: sha256(bytes), bytes };
   }
   project(
+    instanceId: string,
+    revision: number,
     updateId: string,
     expectedDigest: string | null,
     bytes: Buffer,
@@ -321,7 +373,7 @@ export class HandoffFiles {
       this.#verify();
       const archive = join(
         historyPath,
-        `${updateId}-${(base.digest ?? "").slice(7)}.md`,
+        `${instanceId}-${String(revision).padStart(16, "0")}-${updateId}-${(base.digest ?? "").slice(7)}.md`,
       );
       try {
         const archived = readPrivateHandoffFile(
@@ -350,15 +402,44 @@ export class HandoffFiles {
         throw new HandoffError("drifted");
       renameSync(temporary, this.#documentPath);
       renamed = true;
+      syncDirectory(this.#agentPath);
       this.#verify();
       if (this.document().digest !== sha256(bytes))
         throw new HandoffError("unavailable");
+      this.#pruneHistory(instanceId, revision);
     } finally {
       if (!renamed) {
         this.#verify();
         const observed = verifyPrivateFile(temporary);
         if (sameIdentity(identity, observed)) unlinkSync(temporary);
       }
+    }
+  }
+  // Keep this database's newest archives. Revisions restart in a new or
+  // replaced database, so archives from other instances are never pruned,
+  // nor is anything at or after the revision just projected. Delete only
+  // private single-link files with our name shape; best effort, because
+  // the projection already succeeded.
+  #pruneHistory(instanceId: string, revision: number): void {
+    if (this.#history === undefined) return;
+    try {
+      const archives = readdirSync(this.#history.path)
+        .filter((name) => {
+          const match = HISTORY_NAME.exec(name);
+          return match?.[1] === instanceId && Number(match[2]) < revision;
+        })
+        .sort();
+      for (const name of archives.slice(
+        0,
+        Math.max(0, archives.length - (MAX_HANDOFF_HISTORY - 1)),
+      )) {
+        this.#verify();
+        const path = join(this.#history.path, name);
+        verifyPrivateFile(path);
+        unlinkSync(path);
+      }
+    } catch {
+      // Leave remaining archives in place; the next projection retries.
     }
   }
   #writeExclusive(path: string, bytes: Buffer): BigIntStats {
@@ -371,8 +452,25 @@ export class HandoffFiles {
         optionalFlag("O_NOFOLLOW"),
       0o600,
     );
-    let stats: BigIntStats;
     try {
+      return this.#finishExclusive(fd, path, bytes);
+    } catch (error) {
+      // Never leave a partial file that would block an identical retry.
+      try {
+        const created = fstatSync(fd, { bigint: true });
+        const current = lstatSync(path, { bigint: true });
+        if (sameIdentity(created, current)) unlinkSync(path);
+      } catch {
+        // The original failure is more informative than cleanup trouble.
+      }
+      throw error;
+    } finally {
+      closeSync(fd);
+    }
+  }
+  #finishExclusive(fd: number, path: string, bytes: Buffer): BigIntStats {
+    let stats: BigIntStats;
+    {
       const before = fstatSync(fd, { bigint: true });
       privateStats(before, false);
       let written = 0;
@@ -386,8 +484,6 @@ export class HandoffFiles {
       privateStats(stats, false);
       if (!sameIdentity(before, stats) || stats.size !== BigInt(bytes.length))
         throw new HandoffError("unavailable");
-    } finally {
-      closeSync(fd);
     }
     this.#verify();
     const current = verifyPrivateFile(path);

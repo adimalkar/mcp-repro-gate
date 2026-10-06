@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { lstatSync, realpathSync } from "node:fs";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 import { canonicalJson } from "./canonical-json.js";
@@ -46,18 +48,61 @@ interface ExecutionRow {
   receipt_json: string | null;
 }
 
+// SQLite names WAL/SHM sidecars after the spelling it opens; on Windows an
+// alias spelling would get a separate namespace. Open absolute paths through
+// their physical location, including a new leaf below a physical parent.
+// A physical name that is not valid UTF-8 cannot be passed on losslessly;
+// keep the caller's spelling rather than open a Unicode-replacement twin.
+function losslessPath(bytes: Buffer, fallback: string): string {
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    return fallback;
+  }
+}
+function physicalOpenPath(path: string): string {
+  if (!isAbsolute(path)) return path;
+  try {
+    return losslessPath(
+      realpathSync.native(path, { encoding: "buffer" }),
+      path,
+    );
+  } catch (error) {
+    if (!(error instanceof Error && "code" in error && error.code === "ENOENT"))
+      throw error;
+  }
+  try {
+    lstatSync(path);
+    return path;
+  } catch {
+    try {
+      return join(
+        losslessPath(
+          realpathSync.native(dirname(path), { encoding: "buffer" }),
+          dirname(path),
+        ),
+        basename(path),
+      );
+    } catch {
+      return path;
+    }
+  }
+}
+
 export class SqliteExecutionStore implements PlanStore, TokenUseStore {
   readonly #database: DatabaseSync;
   readonly #openedPath: string;
   #handoffBinding: HandoffDatabaseBinding | undefined;
 
   constructor(path: string) {
-    this.#openedPath = path;
-    this.#database = new DatabaseSync(path);
+    this.#openedPath = physicalOpenPath(path);
+    this.#database = new DatabaseSync(this.#openedPath);
+    // Wait out another process's lock (including WAL recovery) before the
+    // first statement that touches the database file.
+    this.#database.exec("PRAGMA busy_timeout = 5000");
     this.#database.exec(`
       PRAGMA journal_mode = WAL;
       PRAGMA foreign_keys = ON;
-      PRAGMA busy_timeout = 5000;
 
       CREATE TABLE IF NOT EXISTS plans (
         action_id TEXT PRIMARY KEY,
@@ -165,9 +210,36 @@ export class SqliteExecutionStore implements PlanStore, TokenUseStore {
         BEGIN SELECT RAISE(ABORT, 'Immutable handoff event'); END;
       CREATE TRIGGER IF NOT EXISTS handoff_events_no_delete BEFORE DELETE ON handoff_projection_events
         BEGIN SELECT RAISE(ABORT, 'Immutable handoff event'); END;
+      CREATE TABLE IF NOT EXISTS handoff_instance (
+        singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+        instance_id TEXT NOT NULL CHECK(instance_id GLOB '[0-9a-f]*' AND length(instance_id) = 32)
+      ) STRICT;
+      CREATE TRIGGER IF NOT EXISTS handoff_instance_no_update BEFORE UPDATE ON handoff_instance
+        BEGIN SELECT RAISE(ABORT, 'Immutable handoff instance'); END;
+      CREATE TRIGGER IF NOT EXISTS handoff_instance_no_delete BEFORE DELETE ON handoff_instance
+        BEGIN SELECT RAISE(ABORT, 'Immutable handoff instance'); END;
     `);
+    this.#database
+      .prepare(
+        "INSERT OR IGNORE INTO handoff_instance(singleton, instance_id) VALUES(1, ?)",
+      )
+      .run(randomUUID().replaceAll("-", ""));
     binding.verify();
     this.#handoffBinding = binding;
+  }
+
+  /** Random per-database identifier; it scopes history pruning. */
+  handoffInstance(): string {
+    this.#verifyHandoff();
+    const row = this.#database
+      .prepare("SELECT instance_id FROM handoff_instance WHERE singleton = 1")
+      .get();
+    if (
+      typeof row?.instance_id !== "string" ||
+      !/^[0-9a-f]{32}$/u.test(row.instance_id)
+    )
+      throw new HandoffError("unavailable");
+    return row.instance_id;
   }
 
   #verifyHandoff(): void {
@@ -272,7 +344,8 @@ export class SqliteExecutionStore implements PlanStore, TokenUseStore {
   reserveHandoff(
     workspaceId: string,
     value: unknown,
-    documentDigest: string | null,
+    observeDocument: () => string | null,
+    now: Date = new Date(),
   ): HandoffRecordV1 {
     const input = parseHandoffUpdate(value);
     this.#verifyHandoff();
@@ -301,7 +374,9 @@ export class SqliteExecutionStore implements PlanStore, TokenUseStore {
       }
       if ((previous?.record.revision ?? 0) !== input.expectedRevision)
         throw new HandoffError("revision_conflict");
-      if (documentDigest !== input.expectedDocumentDigest)
+      // Observe the document under the writer lock, so a cooperating
+      // projection cannot change it between observation and reservation.
+      if (observeDocument() !== input.expectedDocumentDigest)
         throw new HandoffError("document_conflict");
       const references = input.actionIds.map((actionId) => {
         const planDigest = this.#verifiedPlanDigest(actionId);
@@ -333,7 +408,7 @@ export class SqliteExecutionStore implements PlanStore, TokenUseStore {
         workspaceId,
         revision: input.expectedRevision + 1,
         updateId: input.updateId,
-        createdAt: new Date().toISOString(),
+        createdAt: now.toISOString(),
         provenance: "caller_asserted",
         expectedDocumentDigest: input.expectedDocumentDigest,
         requestDigest,
@@ -357,8 +432,18 @@ export class SqliteExecutionStore implements PlanStore, TokenUseStore {
       this.#database.exec("COMMIT");
       return record;
     } catch (error) {
-      this.#database.exec("ROLLBACK");
+      this.#rollback();
       throw error;
+    }
+  }
+
+  // SQLite may already have rolled back (for example after SQLITE_FULL);
+  // never let that replace the original error.
+  #rollback(): void {
+    try {
+      this.#database.exec("ROLLBACK");
+    } catch {
+      // No transaction remained to roll back.
     }
   }
 
@@ -398,7 +483,7 @@ export class SqliteExecutionStore implements PlanStore, TokenUseStore {
       committed = true;
       if (failure !== undefined) throw failure;
     } catch (error) {
-      if (!committed) this.#database.exec("ROLLBACK");
+      if (!committed) this.#rollback();
       throw error;
     }
   }
