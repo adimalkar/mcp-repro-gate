@@ -124,7 +124,7 @@ export function createHandoffService(
         } catch (error) {
           throw error instanceof HandoffError
             ? error
-            : new HandoffError("unavailable");
+            : new HandoffError("unavailable", { cause: error });
         }
       },
       close: () => {
@@ -137,6 +137,6 @@ export function createHandoffService(
     if (ownsStore) store?.close();
     throw error instanceof HandoffError
       ? error
-      : new HandoffError("unavailable");
+      : new HandoffError("unavailable", { cause: error });
   }
 }

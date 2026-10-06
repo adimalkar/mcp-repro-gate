@@ -60,6 +60,22 @@ function losslessPath(bytes: Buffer, fallback: string): string {
     return fallback;
   }
 }
+function retryBusy(operation: () => void): void {
+  const deadline = Date.now() + 5000;
+  const pause = new Int32Array(new SharedArrayBuffer(4));
+  for (;;) {
+    try {
+      operation();
+      return;
+    } catch (error) {
+      const code =
+        error instanceof Error && "errcode" in error ? error.errcode : 0;
+      if (typeof code !== "number" || (code & 0xff) !== 5) throw error;
+      if (Date.now() > deadline) throw error;
+      Atomics.wait(pause, 0, 0, 10);
+    }
+  }
+}
 function physicalOpenPath(path: string): string {
   if (!isAbsolute(path)) return path;
   try {
@@ -100,10 +116,13 @@ export class SqliteExecutionStore implements PlanStore, TokenUseStore {
     // Wait out another process's lock (including WAL recovery) before the
     // first statement that touches the database file.
     this.#database.exec("PRAGMA busy_timeout = 5000");
-    this.#database.exec(`
-      PRAGMA journal_mode = WAL;
-      PRAGMA foreign_keys = ON;
-
+    // A new database starts in rollback mode, where SQLite answers a
+    // read-to-write upgrade race with SQLITE_BUSY at once instead of
+    // invoking the busy handler. Switch to WAL and create the schema with
+    // a bounded retry.
+    retryBusy(() => this.#database.exec("PRAGMA journal_mode = WAL"));
+    this.#database.exec("PRAGMA foreign_keys = ON");
+    this.#writeSchema(`
       CREATE TABLE IF NOT EXISTS plans (
         action_id TEXT PRIMARY KEY,
         envelope_digest TEXT NOT NULL,
@@ -131,6 +150,15 @@ export class SqliteExecutionStore implements PlanStore, TokenUseStore {
         FOREIGN KEY (capability_id) REFERENCES token_uses(capability_id)
       ) STRICT;
     `);
+  }
+
+  // Every schema statement is idempotent, so a deadlock-avoidance BUSY
+  // from a concurrent first start is safe to retry as a whole.
+  #writeSchema(sql: string, after?: () => void): void {
+    retryBusy(() => {
+      this.#database.exec(sql);
+      after?.();
+    });
   }
 
   /** Actual SQLite filename, used only for opt-in host binding. */
@@ -176,7 +204,8 @@ export class SqliteExecutionStore implements PlanStore, TokenUseStore {
         }
       },
     );
-    this.#database.exec(`
+    this.#writeSchema(
+      `
       CREATE TABLE IF NOT EXISTS handoff_snapshots (
         workspace_id TEXT NOT NULL,
         revision INTEGER NOT NULL CHECK(revision > 0 AND revision < 9007199254740991),
@@ -218,12 +247,15 @@ export class SqliteExecutionStore implements PlanStore, TokenUseStore {
         BEGIN SELECT RAISE(ABORT, 'Immutable handoff instance'); END;
       CREATE TRIGGER IF NOT EXISTS handoff_instance_no_delete BEFORE DELETE ON handoff_instance
         BEGIN SELECT RAISE(ABORT, 'Immutable handoff instance'); END;
-    `);
-    this.#database
-      .prepare(
-        "INSERT OR IGNORE INTO handoff_instance(singleton, instance_id) VALUES(1, ?)",
-      )
-      .run(randomUUID().replaceAll("-", ""));
+    `,
+      () => {
+        this.#database
+          .prepare(
+            "INSERT OR IGNORE INTO handoff_instance(singleton, instance_id) VALUES(1, ?)",
+          )
+          .run(randomUUID().replaceAll("-", ""));
+      },
+    );
     binding.verify();
     this.#handoffBinding = binding;
   }

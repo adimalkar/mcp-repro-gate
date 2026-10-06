@@ -49,11 +49,23 @@ function fixture(t: TestContext) {
   };
   const services: HandoffService[] = [];
   const databases: DatabaseSync[] = [];
-  t.after(() => {
+  const deferred: (() => unknown)[] = [];
+  // One hook owns ordering: Windows cannot delete files that a client,
+  // service or connection still holds open.
+  t.after(async () => {
+    for (const close of deferred.reverse()) await close();
     for (const db of databases) db.close();
     for (const service of services) service.close();
-    rmSync(scratch, { recursive: true, force: true });
+    rmSync(scratch, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100,
+    });
   });
+  const defer = (close: () => unknown) => {
+    deferred.push(close);
+  };
   const service = (allowUpdates = true) => {
     const value = createHandoffService({ ...config, allowUpdates });
     services.push(value);
@@ -71,6 +83,7 @@ function fixture(t: TestContext) {
     service,
     database,
     document: join(workspaceRoot, ".agent", "handoff.md"),
+    defer,
   };
 }
 function input(
@@ -429,7 +442,7 @@ test("the CLI serves handoff tools from a private host configuration file over s
     ],
     stderr: "pipe",
   });
-  t.after(async () => client.close());
+  f.defer(async () => client.close());
   await client.connect(transport);
   const updated = await client.callTool({
     name: "handoff_update",
@@ -464,7 +477,7 @@ test(
     const agent = join(f.workspaceRoot, ".agent");
     mkdirSync(agent, { mode: 0o700 });
     chmodSync(agent, 0o500);
-    t.after(() => {
+    f.defer(() => {
       if (existsSync(agent)) chmodSync(agent, 0o700);
     });
     const update = input();
@@ -532,7 +545,7 @@ test("serve shares a fresh runtime database reached through an alias and binds i
     alias,
     process.platform === "win32" ? "junction" : "dir",
   );
-  t.after(() => {
+  f.defer(() => {
     rmSync(alias, { force: true });
   });
   const artifactPath = join(state, "downstream.mjs");
@@ -607,7 +620,7 @@ test("serve shares a fresh runtime database reached through an alias and binds i
   transport.stderr?.on("data", (chunk: Buffer) => {
     stderr += chunk.toString();
   });
-  t.after(async () => client.close());
+  f.defer(async () => client.close());
   await client.connect(transport).catch((error: unknown) => {
     throw new Error(`serve failed: ${stderr}`, { cause: error });
   });
@@ -693,6 +706,36 @@ test("two processes racing from one revision commit exactly one snapshot", async
     1,
   );
 });
+test("four processes initializing a fresh database together all start", async (t) => {
+  const f = fixture(t);
+  const state = join(f.scratch, "private state");
+  const configPath = writeJson(join(state, "worker-config.json"), f.config);
+  const barrier = join(state, "go");
+  const workers = [0, 1, 2, 3].map((index) =>
+    runWorker([
+      "update",
+      configPath,
+      writeJson(join(state, `update-${String(index)}.json`), input()),
+      barrier,
+    ]),
+  );
+  writeFileSync(barrier, "");
+  const results = await Promise.all(workers.map(({ done }) => done));
+  for (const result of results) assert.equal(result.code, 0, result.stderr);
+  const outcomes = results.map(
+    ({ stdout }) => JSON.parse(stdout) as { revision?: number; code?: string },
+  );
+  assert.equal(outcomes.filter((outcome) => outcome.revision === 1).length, 1);
+  assert.ok(
+    outcomes.every(
+      (outcome) =>
+        outcome.revision === 1 ||
+        outcome.code === "revision_conflict" ||
+        outcome.code === "document_conflict",
+    ),
+    JSON.stringify(outcomes),
+  );
+});
 test("a process crash inside projection leaves a pending snapshot that an identical retry reconciles", async (t) => {
   const f = fixture(t);
   const state = join(f.scratch, "private state");
@@ -723,7 +766,7 @@ test("snapshot timestamps come from the injected clock", (t) => {
   const service = createHandoffService(f.config, {
     now: () => new Date("2026-01-02T03:04:05.006Z"),
   });
-  t.after(() => {
+  f.defer(() => {
     service.close();
   });
   service.update(input());
@@ -806,7 +849,7 @@ test("a replaced database never prunes the archive it just wrote or another data
     ...f.config,
     databasePath: join(f.scratch, "private state", "replacement.sqlite"),
   });
-  t.after(() => {
+  f.defer(() => {
     replaced.close();
   });
   const fresh = replaced.update(input(0, sha256(manual)));
