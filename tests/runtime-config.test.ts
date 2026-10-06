@@ -152,7 +152,14 @@ test("configured runtime enables an artifact-bound execution facade", async (con
   await client.connect(clientTransport);
   assert.deepEqual(
     (await client.listTools()).tools.map((tool) => tool.name).sort(),
-    ["action.execute", "action.plan", "catalog.search", "policy.explain"],
+    [
+      "action.execute",
+      "action.inspect",
+      "action.plan",
+      "catalog.describe",
+      "catalog.search",
+      "policy.explain",
+    ],
   );
 
   const now = new Date();
@@ -255,7 +262,14 @@ test("CLI exposes execution only after configured startup succeeds", async (cont
     await client.connect(transport);
     assert.deepEqual(
       (await client.listTools()).tools.map((tool) => tool.name).sort(),
-      ["action.execute", "action.plan", "catalog.search", "policy.explain"],
+      [
+        "action.execute",
+        "action.inspect",
+        "action.plan",
+        "catalog.describe",
+        "catalog.search",
+        "policy.explain",
+      ],
     );
   } finally {
     await client.close();

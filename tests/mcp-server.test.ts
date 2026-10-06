@@ -22,7 +22,9 @@ test("an MCP client can list and call the Phase 1 facade", async (context) => {
 
   const listed = await client.listTools();
   assert.deepEqual(listed.tools.map((tool) => tool.name).sort(), [
+    "action.inspect",
     "action.plan",
+    "catalog.describe",
     "catalog.search",
     "policy.explain",
   ]);
@@ -36,8 +38,7 @@ test("an MCP client can list and call the Phase 1 facade", async (context) => {
   });
   assert.equal(planned.isError, undefined);
   assert.equal(
-    (planned.structuredContent as { policy?: { decision?: string } }).policy
-      ?.decision,
+    (planned.structuredContent as { decision?: string }).decision,
     "approval_required",
   );
 });
@@ -57,5 +58,5 @@ test("the CLI negotiates the modern 2026 MCP era over stdio", async (context) =>
   await client.connect(transport);
   assert.equal(client.getProtocolEra(), "modern");
   const listed = await client.listTools();
-  assert.equal(listed.tools.length, 3);
+  assert.equal(listed.tools.length, 5);
 });

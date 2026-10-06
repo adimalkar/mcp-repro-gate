@@ -70,10 +70,12 @@ Do not treat these HMAC keys or filesystem observation as OS-level enforcement. 
 
 The separate host-only `git-review` CLI prepares an exact staged-effect request, signs an explicit operator-key decision, imports linked evidence, checks current authorization, and revokes ledger approval. Signing reads a protected key file only after staging and displays the full safely escaped diff; no default MCP approval tool is added. See the [operator review guide](docs/GIT_OPERATOR_REVIEW.md) for configuration, commands, limits and deployment separation.
 
-The default server exposes exactly three tools:
+The default server exposes exactly five tools, each with an output schema and conservative annotations:
 
-- `catalog.search`
-- `action.plan`
+- `catalog.search`: names, descriptions and effects only
+- `catalog.describe`: one tool's input schema and the `schemaDigest` a plan binds
+- `action.plan`: a compact summary (`actionId`, `decision`, `reasonCodes`, `nextStep`) by default; pass `detail: "full"` for the full envelope
+- `action.inspect`: the complete persisted plan for one `actionId`
 - `policy.explain`
 
 When an executor is explicitly supplied, the server also registers `action.execute`. The CLI does this only after `serve --config <absolute-path>` successfully validates Runtime Configuration v1. See the [configuration guide](docs/CONFIGURATION.md). The included default catalog remains a deterministic, plan-only demo fixture.

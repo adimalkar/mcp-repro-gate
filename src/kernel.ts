@@ -84,6 +84,10 @@ export class ReproGateKernel {
       .map(({ tool }) => tool);
   }
 
+  describe(toolRef: string): CatalogTool | undefined {
+    return this.#catalog.get(toolRef);
+  }
+
   plan(input: PlanInput): PlannedAction {
     const tool = this.#catalog.get(input.toolRef);
     if (tool === undefined) {
