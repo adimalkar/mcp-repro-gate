@@ -28,9 +28,41 @@
       "additionalProperties": { "$ref": "#/$defs/backend" }
     },
     "observer": { "$ref": "#/$defs/observer" },
-    "secrets": { "$ref": "#/$defs/secrets" }
+    "secrets": { "$ref": "#/$defs/secrets" },
+    "mediation": { "$ref": "#/$defs/mediation" }
   },
   "$defs": {
+    "mediation": {
+      "description": "Opt-in host-mediated execution for allow-decided plans whose effects are all listed. Patterns compile with the gu flags and must not match the empty string.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["effects"],
+      "properties": {
+        "effects": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "enum": ["local_read", "network_read"] }
+        },
+        "maxRunsPerPlan": { "type": "integer", "minimum": 1, "maximum": 1000 },
+        "result": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "maxTextBytes": {
+              "type": "integer",
+              "minimum": 256,
+              "maximum": 262144
+            },
+            "redactPatterns": {
+              "type": "array",
+              "maxItems": 16,
+              "items": { "type": "string", "minLength": 1, "maxLength": 256 }
+            }
+          }
+        }
+      }
+    },
     "digest": {
       "type": "string",
       "pattern": "^sha256:[0-9a-f]{64}$"

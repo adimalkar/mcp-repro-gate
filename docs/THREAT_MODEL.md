@@ -82,6 +82,16 @@ The opt-in handoff tools store context that is caller-asserted. The host fixes t
 
 `action.plan` returns a compact summary by default. `action.inspect` and `detail: "full"` return the persisted envelope for any known `actionId`, including its principal, run ID and declared authority (scopes, roots, destinations and secret handle names, never secret values). In a deployment where several sessions share one execution store, any connected model that learns an action ID can read that plan. Treat the store as shared within one trust domain. `catalog.describe` omits secret handle names.
 
+## Host-mediated execution boundary
+
+With the opt-in `mediation` configuration, the server issues a capability itself, but only for persisted plans that policy decided `allow` and whose effects are all in a host allowlist limited to `local_read` and `network_read`. The model can trigger such a run by naming an `actionId`, so the protection rests on three things:
+
+- the operator's catalog effect declarations being accurate;
+- the policy itself;
+- the unchanged executor checks.
+
+A plan row edited directly in the store could claim an `allow` decision, but write access to the store is already outside this boundary. Each run re-checks the envelope against the live catalog and policy, so tightening either withdraws mediation for existing plans immediately. A run limit per plan (default 1) is enforced atomically through single-use capability IDs. Mediated results and error messages are redacted and bounded before the model sees them: token shapes, every fragment of 12 or more characters of the configured secrets (raw or JSON-escaped), and host patterns. Mediation removes the human review of arguments, though, and redaction cannot stop a tool that can read the gateway's own secrets from leaking them in short or encoded pieces. Operators must not mediate any tool that can reach gateway secret material. In a shared store, `action.run` error codes also reveal whether an action ID exists.
+
 ## Known gaps before execution is production-safe
 
 - SQLite is durable locally but has no replica lease/ownership protocol;

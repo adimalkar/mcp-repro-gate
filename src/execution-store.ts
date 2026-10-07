@@ -556,6 +556,20 @@ export class SqliteExecutionStore implements PlanStore, TokenUseStore {
       : (JSON.parse(row.plan_json) as PlannedAction);
   }
 
+  /** Consumed capabilities whose ID starts with this non-empty prefix. */
+  countCapabilityUses(prefix: string): number {
+    // A key range keeps the lookup on the primary-key index.
+    const upper =
+      prefix.slice(0, -1) +
+      String.fromCharCode(prefix.charCodeAt(prefix.length - 1) + 1);
+    const row = this.#database
+      .prepare(
+        "SELECT count(*) AS n FROM token_uses WHERE capability_id >= ? AND capability_id < ?",
+      )
+      .get(prefix, upper);
+    return Number(row?.n ?? 0);
+  }
+
   consume(capabilityId: string): boolean {
     try {
       this.#database

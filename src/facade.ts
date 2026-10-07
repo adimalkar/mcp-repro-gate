@@ -83,6 +83,17 @@ export const policyExplainOutputSchema = z.object({
   policy: policySchema,
 });
 
+export const actionRunOutputSchema = z.object({
+  executionId: z.string(),
+  outcome: z.enum(["succeeded", "failed"]),
+  receiptDigest: digestSchema,
+  resultDigest: digestSchema,
+  content: z.array(z.object({ type: z.literal("text"), text: z.string() })),
+  truncated: z.boolean(),
+  redactions: z.number().int().min(0),
+  omittedItems: z.number().int().min(0),
+});
+
 /** One catalog entry, including the schema digest a plan would bind. */
 export function describeCatalogTool(tool: CatalogTool) {
   return {

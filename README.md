@@ -84,7 +84,7 @@ The default server exposes exactly five tools, each with an output schema and co
 - `action.inspect`: the complete persisted plan for one `actionId`
 - `policy.explain`
 
-When an executor is explicitly supplied, the server also registers `action.execute`. The CLI does this only after `serve --config <absolute-path>` successfully validates Runtime Configuration v1. See the [configuration guide](docs/CONFIGURATION.md). The included default catalog remains a deterministic, plan-only demo fixture.
+When an executor is explicitly supplied, the server also registers `action.execute`. With an opt-in `mediation` configuration, it also registers `action.run`, which runs policy-`allow` read-only plans using a host-issued capability and returns redacted, bounded output. The CLI does this only after `serve --config <absolute-path>` successfully validates Runtime Configuration v1. See the [configuration guide](docs/CONFIGURATION.md). The included default catalog remains a deterministic, plan-only demo fixture.
 
 A host can also opt in to the advisory `handoff_status` and `handoff_update` tools with `serve --handoff-config <absolute-path>`. They keep durable, caller-asserted session context for one configured workspace and project it to `.agent/handoff.md`. They never authorize actions. See the [handoff guide](docs/HANDOFF.md).
 
