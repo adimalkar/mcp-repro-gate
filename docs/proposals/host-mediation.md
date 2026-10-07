@@ -25,7 +25,7 @@ Every downstream call needs an out-of-band capability token, and the model must 
   - the plan has not expired.
 
   Otherwise it refuses with a stable reason code and no side effect. A mediated run:
-  - issues a one-use capability bound to the exact plan, with a `jti` of `host-mediated:<uuid>` so receipts record the provenance;
+  - issues a one-use capability bound to the exact plan, with a `jti` of `host-mediated:<action digest hex>:<run number>` so receipts record the provenance;
   - consumes that capability through the existing executor, so every existing check still applies: argument digest, live schema pin, artifact digest, JSON Schema validation, write-ahead execution record, signed receipt.
 
 - The model-visible `action.run` result is compact: `executionId`, `outcome`, `receiptDigest`, `resultDigest`, `content`, `truncated`, `redactions` and `omittedItems`.

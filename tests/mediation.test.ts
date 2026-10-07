@@ -574,3 +574,38 @@ test("network reads are mediated only when allowlisted, with an open-world hint"
     error: "effect_not_mediated",
   });
 });
+
+test("a window cut mid-secret never shows the fragment before the cut", () => {
+  const mediator = unitMediator(256);
+  // Repeated secrets shrink under redaction, so the window's own end falls
+  // inside the budget; shifting a pad moves that end across a secret.
+  for (let pad = 0; pad < receiptSecret.length; pad++) {
+    const text = `${"p".repeat(pad)}${receiptSecret.repeat(60)}`;
+    const visible = mediator
+      .bound({ content: [{ type: "text", text }] })
+      .content.map((item) => item.text)
+      .join("");
+    for (let size = 4; size < 12; size++)
+      assert.equal(
+        visible.includes(receiptSecret.slice(0, size)),
+        false,
+        `${String(pad)}:${String(size)}`,
+      );
+  }
+});
+
+test("concurrent runs take the next free slot up to the limit", async (context) => {
+  const { call, plan, counts } = await configuredRuntime(context, {
+    effects: ["local_read"],
+    maxRunsPerPlan: 3,
+  });
+  const actionId = await plan("configured.echo", { text: "slots" });
+  const runs = await Promise.all(
+    [0, 1, 2, 3].map(() =>
+      call("action.run", { actionId, arguments: { text: "slots" } }),
+    ),
+  );
+  assert.equal(runs.filter((run) => run.isError === undefined).length, 3);
+  assert.equal(runs.filter((run) => run.isError === true).length, 1);
+  assert.deepEqual(counts(), { executions: 3, tokenUses: 3 });
+});

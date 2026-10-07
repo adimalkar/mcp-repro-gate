@@ -175,35 +175,40 @@ export class HostMediator {
     // Run numbers make the limit atomic: the store accepts each capability
     // ID once, so concurrent runs cannot both take the same slot.
     const prefix = `host-mediated:${plan.envelope.actionId.slice(7)}:`;
-    const used = this.executor.store.countCapabilityUses(prefix);
-    if (used >= this.#maxRuns) throw new MediationError("run_limit");
-    const capabilityToken = issueCapabilityToken(
-      {
-        jti: `${prefix}${String(used + 1)}`,
-        actionId: plan.envelope.actionId,
-        envelopeDigest: plan.envelopeDigest,
-        scopes: plan.envelope.authority.scopes,
-        issuedAt: now.toISOString(),
-        expiresAt: plan.envelope.expiresAt,
-      },
-      this.capabilitySecret,
-    );
-    let executed: Awaited<ReturnType<ReproGateExecutor["execute"]>>;
-    try {
-      executed = await this.executor.execute({
-        actionId: input.actionId,
-        arguments: input.arguments,
-        capabilityToken,
-        now,
-      });
-    } catch (error) {
-      if (
-        error instanceof Error &&
-        error.message === "Capability token has already been consumed"
-      )
-        throw new MediationError("run_limit");
-      throw error;
+    let executed: Awaited<ReturnType<ReproGateExecutor["execute"]>> | undefined;
+    // A concurrent run that took this slot first moves us to the next one.
+    for (
+      let run = this.executor.store.countCapabilityUses(prefix) + 1;
+      run <= this.#maxRuns && executed === undefined;
+      run++
+    ) {
+      const capabilityToken = issueCapabilityToken(
+        {
+          jti: `${prefix}${String(run)}`,
+          actionId: plan.envelope.actionId,
+          envelopeDigest: plan.envelopeDigest,
+          scopes: plan.envelope.authority.scopes,
+          issuedAt: now.toISOString(),
+          expiresAt: plan.envelope.expiresAt,
+        },
+        this.capabilitySecret,
+      );
+      try {
+        executed = await this.executor.execute({
+          actionId: input.actionId,
+          arguments: input.arguments,
+          capabilityToken,
+          now,
+        });
+      } catch (error) {
+        if (!(
+          error instanceof Error &&
+          error.message === "Capability token has already been consumed"
+        ))
+          throw error;
+      }
     }
+    if (executed === undefined) throw new MediationError("run_limit");
     const { receipt, downstreamResult } = executed;
     return {
       executionId: receipt.executionId,
@@ -299,11 +304,17 @@ export class HostMediator {
       const window = text.slice(0, remaining + this.#slack);
       const redacted = this.#redact(window);
       redactions += redacted.count;
-      const bounded = truncateUtf8(redacted.text, remaining);
+      // A window cut mid-secret could end in a fragment too short to
+      // recognise; never show the characters just before such a cut.
+      const shown =
+        window.length === text.length
+          ? redacted.text
+          : redacted.text.slice(0, -(SECRET_FRAGMENT_LENGTH - 1));
+      const bounded = truncateUtf8(shown, remaining);
       content.push({ type: "text", text: bounded });
       remaining -= Buffer.byteLength(bounded);
       // Stop at the first cut so the model never sees a gapped view.
-      if (window.length !== text.length || bounded !== redacted.text) {
+      if (window.length !== text.length || bounded !== shown) {
         truncated = true;
         break;
       }
