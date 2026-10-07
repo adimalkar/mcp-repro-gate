@@ -27,7 +27,7 @@ Status: proposed implementation. This proposal completes the Phase 4 backlog ite
 ## Trust notes
 
 - **Approver identity:** a held approval proves possession of the capability secret on the host, the same trust as today's `approve` command. It does not authenticate an individual approver.
-- **Database access:** write access to the store alone cannot create or alter a valid held approval. It can delete one, which only denies service. Read access reveals approval metadata, never a bearer token.
+- **Database access:** write access to the store alone cannot create, extend, or transplant a valid held approval. Signed approvals do live in the store, though. Someone who can read and write it can replay an approved run, or revive a revoked approval, until it expires, by deleting the `token_uses` record that enforces single use. Single use relies on store integrity, like the rest of the execution record. `--expires-in` bounds that window. (Review change: revocation now writes a `token_uses` tombstone in the same transaction, which also closes a revoke-versus-run race.)
 
 ## Verification
 

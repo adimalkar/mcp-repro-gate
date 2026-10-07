@@ -57,7 +57,13 @@ export function createHeldApproval(
   plan: PlannedAction,
   secret: string | Uint8Array,
   now: Date = new Date(),
+  expiresBefore?: Date,
 ): HeldApprovalV1 {
+  const planExpiry = Date.parse(plan.envelope.expiresAt);
+  const expiresAt =
+    expiresBefore !== undefined && expiresBefore.getTime() < planExpiry
+      ? expiresBefore.toISOString()
+      : plan.envelope.expiresAt;
   const record: UnsignedHeldApproval = {
     version: 1,
     approvalId: randomUUID(),
@@ -65,7 +71,7 @@ export function createHeldApproval(
     envelopeDigest: plan.envelopeDigest,
     scopes: [...new Set(plan.envelope.authority.scopes)].sort(),
     issuedAt: now.toISOString(),
-    expiresAt: plan.envelope.expiresAt,
+    expiresAt,
   };
   return { ...record, mac: mac(record, secret).toString("base64url") };
 }

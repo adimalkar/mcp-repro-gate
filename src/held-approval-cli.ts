@@ -7,7 +7,8 @@ export interface CliIo {
 }
 
 const USAGE =
-  "Usage: reprogate approve --config <absolute-path> <action-id> [--hold|--revoke-held]";
+  "Usage: reprogate approve --config <absolute-path> <action-id> (--hold [--expires-in <seconds>]|--revoke-held)";
+const MAX_EXPIRES_IN_SECONDS = 7 * 24 * 60 * 60;
 
 /**
  * Host-side: hold or revoke an approval for one exact plan. A held approval
@@ -19,13 +20,22 @@ export function runHeldApproval(
   environment: NodeJS.ProcessEnv = process.env,
   now: Date = new Date(),
 ): void {
-  const [flag, configPath, actionId, mode] = args;
+  const [flag, configPath, actionId, mode, expiresFlag, expiresValue] = args;
+  const holdWithExpiry =
+    mode === "--hold" &&
+    args.length === 6 &&
+    expiresFlag === "--expires-in" &&
+    expiresValue !== undefined &&
+    /^[1-9][0-9]{0,6}$/u.test(expiresValue) &&
+    Number(expiresValue) <= MAX_EXPIRES_IN_SECONDS;
   if (
     flag !== "--config" ||
     configPath === undefined ||
     actionId === undefined ||
-    (mode !== "--hold" && mode !== "--revoke-held") ||
-    args.length !== 4
+    !(
+      ((mode === "--hold" || mode === "--revoke-held") && args.length === 4) ||
+      holdWithExpiry
+    )
   )
     throw new Error(USAGE);
   const config = loadRuntimeConfig(configPath);
@@ -55,7 +65,16 @@ export function runHeldApproval(
       throw new Error(
         `${config.secrets.capabilitySecretEnv} must contain at least 32 bytes`,
       );
-    const record = createHeldApproval(plan, secret, now);
+    // A shorter expiry bounds how long the approval is usable at all,
+    // including by anyone able to tamper with the store.
+    const record = createHeldApproval(
+      plan,
+      secret,
+      now,
+      holdWithExpiry
+        ? new Date(now.getTime() + Number(expiresValue) * 1000)
+        : undefined,
+    );
     store.holdApproval(record);
     io.stdout(
       `${JSON.stringify({
