@@ -21,9 +21,11 @@ import { actionRunOutputSchema } from "../src/facade.js";
 import { sha256File } from "../src/file-digest.js";
 import {
   HostMediator,
+  MediationError,
   REDACTED,
   mediationConfigSchema,
 } from "../src/mediation.js";
+import { ReproGateKernel } from "../src/kernel.js";
 import { verifyExecutionReceipt } from "../src/receipt.js";
 import { createConfiguredRuntime } from "../src/runtime-config.js";
 import { createReproGateServer } from "../src/server.js";
@@ -323,4 +325,64 @@ test("the runtime configuration schema accepts and constrains mediation", () => 
     { effects: ["local_read"], result: { maxTextBytes: 1 } },
   ])
     assert.equal(validate(invalid), false, JSON.stringify(invalid));
+});
+
+test("plans without declared effects or with unlisted effects are never mediated", async () => {
+  // The kernel refuses effect-less tools, so model a tampered store row.
+  const kernel = new ReproGateKernel(
+    [
+      {
+        toolRef: "programmatic.network",
+        serverRef: "programmatic",
+        toolName: "network",
+        description: "Network read",
+        inputSchema: {},
+        effects: ["network_read"],
+      },
+    ],
+    {
+      ...demoPolicy,
+      defaults: { ...demoPolicy.defaults, network_read: "allow" },
+    },
+  );
+  const network = kernel.plan({
+    toolRef: "programmatic.network",
+    arguments: {},
+  });
+  assert.equal(network.policy.decision, "allow");
+  const effectless = {
+    ...network,
+    envelope: {
+      ...network.envelope,
+      actionId: `sha256:${"1".repeat(64)}`,
+      authority: { ...network.envelope.authority, effects: [] },
+    },
+  };
+  const plans = new Map<string, unknown>([
+    [network.envelope.actionId, network],
+    [effectless.envelope.actionId, effectless],
+  ]);
+  let executed = 0;
+  const executor = {
+    store: { get: (actionId: string) => plans.get(actionId) },
+    execute: () => {
+      executed++;
+      return Promise.reject(new Error("must not execute"));
+    },
+  } as unknown as ReproGateExecutor;
+  const mediator = new HostMediator(
+    executor,
+    mediationConfigSchema.parse({ effects: ["local_read"] }),
+    capabilitySecret,
+    receiptSecret,
+  );
+  for (const actionId of plans.keys()) {
+    await assert.rejects(
+      mediator.run({ actionId, arguments: {} }),
+      (error: unknown) =>
+        error instanceof MediationError && error.code === "effect_not_mediated",
+      actionId,
+    );
+  }
+  assert.equal(executed, 0);
 });

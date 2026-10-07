@@ -120,10 +120,11 @@ export class HostMediator {
     if (plan === undefined) throw new MediationError("unknown_action");
     if (plan.policy.decision !== "allow")
       throw new MediationError("not_allowed");
+    // An effect-less plan declares nothing to allowlist; never mediate it.
+    const effects = plan.envelope.authority.effects;
     if (
-      !plan.envelope.authority.effects.every((effect) =>
-        this.#effects.has(effect),
-      )
+      effects.length === 0 ||
+      !effects.every((effect) => this.#effects.has(effect))
     )
       throw new MediationError("effect_not_mediated");
     const now = input.now ?? this.clock();
