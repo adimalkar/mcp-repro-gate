@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/adimalkar/mcp-repro-gate/schemas/handoff-config.schema.json",
+  "title": "ReproGate Handoff Configuration v1",
+  "description": "Host-only configuration for the opt-in handoff tools. Absolute paths; the implementation additionally checks UTF-8 byte bounds, physical paths and private permissions.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "configVersion",
+    "workspaceRoot",
+    "databasePath",
+    "allowUpdates"
+  ],
+  "properties": {
+    "configVersion": {
+      "const": 1
+    },
+    "workspaceRoot": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "pattern": "^[^\\u0000\\r\\n]+$"
+    },
+    "databasePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "pattern": "^[^\\u0000\\r\\n]+$"
+    },
+    "allowUpdates": {
+      "type": "boolean"
+    }
+  }
+}

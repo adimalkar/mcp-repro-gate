@@ -5,10 +5,8 @@ This is the maintained improvement backlog for ReproGate, aligned with the [phas
 ## P0 — deliver the staged authorized-change workflow (Phase 3)
 
 - [x] Add a plan-only Git proposal with a clean-worktree witness, patch digest, exact path syntax, structural schema, and read-only drift tests.
-- [x] Bind Git approval authority to a persisted exact-intent plan and current operator catalog, policy and repository configuration.
-- [x] Authenticate scoped operator-key decisions for an exact staged effect, atomically link signed evidence to approvals or denial tombstones, and reject replay/drift/revocation in fresh checks.
 - [ ] Specify and test the versioned change contract: repository/base-ref witness, dirty state, allowed paths, exact patch digest, policy/approval identity, expiry/revocation epoch, and destination ref.
-- [x] Stage the agent's candidate patch away from the protected target; do not assign a pre-commit enforcement claim to a direct-write backend.
+- [ ] Stage the agent's candidate patch away from the protected target; do not assign a pre-commit enforcement claim to a direct-write backend.
 - [ ] Observe renames, deletions, mode changes, symlinks, untracked files, and path escapes; compare the proposed patch and changed-path manifest with approved scope.
 - [ ] Revalidate approval, policy, and Git ref/workspace witness at the promotion boundary; serialize revocation with the check, fail closed on drift, and use a compare-and-swap ref update.
 - [ ] Export coverage-aware, content-addressed receipt bundles and an asymmetric-signature offline verifier that can recompute the changed-path claim from a Git object or supplied patch; make missing or unknown effect coverage explicit.
@@ -30,9 +28,13 @@ This is the maintained improvement backlog for ReproGate, aligned with the [phas
 - [ ] Add cross-process capability race and hard-kill/response-loss fixtures.
 - [ ] Document that HMAC receipt verification requires a shared secret and bounded before/after hashes do not prove effect confinement.
 
-## P1 — make the agent-facing contract easier and cheaper to use (Phase 4)
+## P1 — make the agent-facing contract easier, cheaper, and continuous to use (Phase 4)
 
 - [ ] Add schema-on-demand detail for one catalog tool while retaining a small stable discovery surface.
+- [ ] Implement multi-agent handoff tools (`handoff_status`, `handoff_update`) binding to `.agent/handoff.md` and ReproGate's SQLite execution store for seamless Claude Code, Codex CLI, and Hermes continuity across model rate limits.
+- [ ] Configure and proxy `codebase-memory-mcp` via `StdioMcpConnector` to expose AST graph exploration tools in ReproGate's catalog, replacing expensive grep scans.
+- [ ] Implement token-budgeted web research & error resolver (`smart_search`, `resolve_stuck_error`) with DOM distillation, code extraction, and a strict 800–1,000 token output ceiling.
+- [ ] Deploy active tool-calling enforcement (authoritative imperative tool descriptions + deterministic "2-Strike Error Rule" system contract).
 - [ ] Return compact, typed plan/execution summaries, stable reason codes and next steps; expose full evidence only on demand.
 - [ ] Add output schemas and truthful, conservative tool annotations; keep backwards-compatible result text until host behavior is tested.
 - [ ] Mediate approval and capability use outside model-visible arguments and results.

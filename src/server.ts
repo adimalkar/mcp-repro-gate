@@ -3,6 +3,13 @@ import * as z from "zod/v4";
 
 import { demoCatalog, demoPolicy } from "./demo-config.js";
 import type { ReproGateExecutor } from "./executor.js";
+import type { HandoffService } from "./handoff.js";
+import {
+  HandoffError,
+  handoffStatusInputSchema,
+  handoffStatusSchema,
+  handoffUpdateSchema,
+} from "./handoff-contract.js";
 import { ReproGateKernel } from "./kernel.js";
 
 function result(value: unknown) {
@@ -12,6 +19,21 @@ function result(value: unknown) {
   };
 }
 
+// Stable codes only: never echo file contents, SQL, or host paths.
+function handoffResult(operation: () => unknown) {
+  try {
+    return result(operation());
+  } catch (error) {
+    const code = error instanceof HandoffError ? error.code : "unavailable";
+    return {
+      content: [
+        { type: "text" as const, text: JSON.stringify({ error: code }) },
+      ],
+      isError: true,
+    };
+  }
+}
+
 export function createDemoKernel(): ReproGateKernel {
   return new ReproGateKernel(demoCatalog, demoPolicy);
 }
@@ -19,6 +41,7 @@ export function createDemoKernel(): ReproGateKernel {
 export function createReproGateServer(
   kernel = createDemoKernel(),
   executor?: ReproGateExecutor,
+  handoff?: HandoffService,
 ): McpServer {
   const server = new McpServer({ name: "mcp-repro-gate", version: "0.0.0" });
 
@@ -120,6 +143,42 @@ export function createReproGateServer(
         }
       },
     );
+  }
+
+  if (handoff !== undefined) {
+    server.registerTool(
+      "handoff_status",
+      {
+        description:
+          "Report the host-configured workspace handoff state with revision, digests and counts; set includeContext for the caller-asserted context. Advisory only: it never authorizes actions",
+        inputSchema: handoffStatusInputSchema,
+        outputSchema: handoffStatusSchema,
+        annotations: {
+          readOnlyHint: true,
+          idempotentHint: true,
+          openWorldHint: false,
+        },
+      },
+      (input) => handoffResult(() => handoff.status(input)),
+    );
+    if (handoff.config.allowUpdates) {
+      server.registerTool(
+        "handoff_update",
+        {
+          description:
+            "Record a new caller-asserted handoff revision for the host-configured workspace and project it to .agent/handoff.md. Requires the expected revision and document digest from handoff_status; retry with the same updateId. Advisory only: it never authorizes actions or changes plans",
+          inputSchema: handoffUpdateSchema,
+          outputSchema: handoffStatusSchema,
+          annotations: {
+            readOnlyHint: false,
+            destructiveHint: false,
+            idempotentHint: true,
+            openWorldHint: false,
+          },
+        },
+        (input) => handoffResult(() => handoff.update(input)),
+      );
+    }
   }
 
   return server;

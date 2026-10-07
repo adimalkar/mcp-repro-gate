@@ -6,6 +6,12 @@ import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import { issueCapabilityToken } from "./capability-token.js";
 import { SqliteExecutionStore } from "./execution-store.js";
 import { runGitReviewCli } from "./git-review-cli.js";
+import { createHandoffService, type HandoffService } from "./handoff.js";
+import {
+  loadHandoffConfig,
+  prepareHandoffDatabase,
+  sameHandoffDatabase,
+} from "./handoff-filesystem.js";
 import { verifyExecutionReceipt } from "./receipt.js";
 import {
   createConfiguredRuntime,
@@ -77,42 +83,90 @@ function verifyReceiptFile(
 async function main(): Promise<void> {
   const command = process.argv[2] ?? "serve";
   if (command === "serve") {
-    const option = process.argv[3];
-    if (option === undefined) {
-      serveStdio(() => createReproGateServer());
-      return;
+    const usage =
+      "Usage: reprogate serve [--config <absolute-path>] [--handoff-config <absolute-path>]";
+    const options = new Map<string, string>();
+    const rest = process.argv.slice(3);
+    for (let index = 0; index < rest.length; index += 2) {
+      const option = rest[index];
+      const value = rest[index + 1];
+      if (
+        (option !== "--config" && option !== "--handoff-config") ||
+        value === undefined ||
+        options.has(option)
+      )
+        throw new Error(usage);
+      options.set(option, value);
     }
-    const configPath = process.argv[4];
-    if (option !== "--config" || configPath === undefined) {
-      throw new Error("Usage: reprogate serve [--config <absolute-path>]");
+    const configPath = options.get("--config");
+    const handoffConfigPath = options.get("--handoff-config");
+    const handoffConfig =
+      handoffConfigPath === undefined
+        ? undefined
+        : loadHandoffConfig(handoffConfigPath);
+    // Share the runtime connection only for the same physical database, so
+    // plan references resolve against the plans this server records. Prepare
+    // the private database file before the runtime's SQLite connection
+    // could create it with default permissions.
+    const shareDatabase =
+      handoffConfig !== undefined &&
+      configPath !== undefined &&
+      sameHandoffDatabase(
+        handoffConfig.databasePath,
+        loadRuntimeConfig(configPath).databasePath,
+      );
+    if (shareDatabase) prepareHandoffDatabase(handoffConfig.databasePath);
+    const runtime =
+      configPath === undefined
+        ? undefined
+        : await createConfiguredRuntime(configPath);
+    let handoff: HandoffService | undefined;
+    try {
+      if (handoffConfig !== undefined) {
+        handoff = createHandoffService(handoffConfig, {
+          ...(shareDatabase && runtime !== undefined
+            ? { store: runtime.store }
+            : {}),
+        });
+      }
+    } catch (error) {
+      runtime?.close();
+      throw error;
     }
-    const runtime = await createConfiguredRuntime(configPath);
-    if (runtime.recoveredExecutions > 0) {
+    if (runtime !== undefined && runtime.recoveredExecutions > 0) {
       process.stderr.write(
         `Recovered ${String(runtime.recoveredExecutions)} incomplete execution(s) as indeterminate\n`,
       );
     }
     const handle = serveStdio(
-      () => createReproGateServer(runtime.kernel, runtime.executor),
+      () =>
+        createReproGateServer(
+          runtime?.kernel ?? createDemoKernel(),
+          runtime?.executor,
+          handoff,
+        ),
       {
         onerror: (error) => {
           process.stderr.write(`MCP transport error: ${error.message}\n`);
         },
       },
     );
+    let closed = false;
+    const closeResources = (): void => {
+      if (closed) return;
+      closed = true;
+      handoff?.close();
+      runtime?.close();
+    };
     let closing = false;
     const shutdown = (): void => {
       if (closing) return;
       closing = true;
-      void handle.close().finally(() => {
-        runtime.close();
-      });
+      void handle.close().finally(closeResources);
     };
     process.once("SIGINT", shutdown);
     process.once("SIGTERM", shutdown);
-    process.once("exit", () => {
-      runtime.close();
-    });
+    process.once("exit", closeResources);
     return;
   }
   if (command === "demo") {
@@ -208,7 +262,7 @@ async function main(): Promise<void> {
     return;
   }
   process.stderr.write(
-    "Usage: reprogate [serve [--config <absolute-path>]|demo|approve [--config <absolute-path>] <target> <action-id>|verify-receipt [--config <absolute-path>] <receipt.json>|git-review <prepare|sign|import|check|revoke> ...]\n",
+    "Usage: reprogate [serve [--config <absolute-path>] [--handoff-config <absolute-path>]|demo|approve [--config <absolute-path>] <target> <action-id>|verify-receipt [--config <absolute-path>] <receipt.json>|git-review <prepare|sign|import|check|revoke> ...]\n",
   );
   process.exitCode = 2;
 }
