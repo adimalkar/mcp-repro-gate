@@ -3,6 +3,18 @@ import * as z from "zod/v4";
 
 import { demoCatalog, demoPolicy } from "./demo-config.js";
 import type { ReproGateExecutor } from "./executor.js";
+import {
+  actionIdInputSchema,
+  actionInspectOutputSchema,
+  actionPlanOutputSchema,
+  catalogDescribeOutputSchema,
+  catalogSearchOutputSchema,
+  compactPlan,
+  describeCatalogTool,
+  fullPlan,
+  policyExplainOutputSchema,
+  toolRefInputSchema,
+} from "./facade.js";
 import type { HandoffService } from "./handoff.js";
 import {
   HandoffError,
@@ -11,6 +23,16 @@ import {
   handoffUpdateSchema,
 } from "./handoff-contract.js";
 import { ReproGateKernel } from "./kernel.js";
+
+// Error results carry text only, so they never have to satisfy outputSchema.
+function error(message: string) {
+  return {
+    content: [
+      { type: "text" as const, text: JSON.stringify({ error: message }) },
+    ],
+    isError: true,
+  };
+}
 
 function result(value: unknown) {
   return {
@@ -45,15 +67,24 @@ export function createReproGateServer(
 ): McpServer {
   const server = new McpServer({ name: "mcp-repro-gate", version: "0.0.0" });
 
+  const executorConfigured = executor !== undefined;
+  const readOnly = {
+    readOnlyHint: true,
+    idempotentHint: true,
+    openWorldHint: false,
+  };
+
   server.registerTool(
     "catalog.search",
     {
       description:
-        "Search the trusted downstream tool catalog without exposing every schema",
+        "Search the trusted downstream tool catalog by name and description; returns no schemas. Use catalog.describe for one tool's input schema",
       inputSchema: z.object({
         query: z.string().default(""),
         limit: z.number().int().min(1).max(50).default(10),
       }),
+      outputSchema: catalogSearchOutputSchema,
+      annotations: readOnly,
     },
     ({ query, limit }) =>
       result({
@@ -66,27 +97,72 @@ export function createReproGateServer(
   );
 
   server.registerTool(
+    "catalog.describe",
+    {
+      description:
+        "Return one catalog tool's input schema, effects, declared authority and the schemaDigest a plan for it binds",
+      inputSchema: z.object({ toolRef: toolRefInputSchema }),
+      outputSchema: catalogDescribeOutputSchema,
+      annotations: readOnly,
+    },
+    ({ toolRef }) => {
+      const tool = kernel.describe(toolRef);
+      if (tool === undefined) {
+        return error(`Unknown catalog tool: ${toolRef}`);
+      }
+      return result(describeCatalogTool(tool));
+    },
+  );
+
+  server.registerTool(
     "action.plan",
     {
       description:
-        "Create a digest-bound action envelope and evaluate deterministic policy; this Phase 1 tool never executes the action",
+        'Create and persist a digest-bound action envelope and evaluate deterministic policy; never executes. Returns a compact summary with decision, reasonCodes and nextStep; pass detail "full" or call action.inspect for the full envelope',
       inputSchema: z.object({
-        toolRef: z.string().min(1),
+        toolRef: toolRefInputSchema,
         arguments: z.unknown(),
+        detail: z.enum(["compact", "full"]).default("compact"),
       }),
+      outputSchema: actionPlanOutputSchema,
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
     },
-    ({ toolRef, arguments: toolArguments }) => {
+    ({ toolRef, arguments: toolArguments, detail }) => {
       try {
-        return result(kernel.plan({ toolRef, arguments: toolArguments }));
-      } catch (error) {
-        return {
-          ...result({
-            error:
-              error instanceof Error ? error.message : "Unknown planning error",
-          }),
-          isError: true,
-        };
+        const plan = kernel.plan({ toolRef, arguments: toolArguments });
+        return result(
+          detail === "full"
+            ? fullPlan(plan, executorConfigured)
+            : compactPlan(plan, toolRef, executorConfigured),
+        );
+      } catch (planError) {
+        return error(
+          planError instanceof Error
+            ? planError.message
+            : "Unknown planning error",
+        );
       }
+    },
+  );
+
+  server.registerTool(
+    "action.inspect",
+    {
+      description:
+        "Return the complete persisted plan (envelope, envelope digest and policy decision) for one actionId",
+      inputSchema: z.object({ actionId: actionIdInputSchema }),
+      outputSchema: actionInspectOutputSchema,
+      annotations: readOnly,
+    },
+    ({ actionId }) => {
+      const plan = kernel.explain(actionId);
+      if (plan === undefined) return error(`Unknown actionId: ${actionId}`);
+      return result(fullPlan(plan, executorConfigured));
     },
   );
 
@@ -95,16 +171,13 @@ export function createReproGateServer(
     {
       description:
         "Explain the deterministic decision for a previously planned action",
-      inputSchema: z.object({ actionId: z.string().min(1) }),
+      inputSchema: z.object({ actionId: actionIdInputSchema }),
+      outputSchema: policyExplainOutputSchema,
+      annotations: readOnly,
     },
     ({ actionId }) => {
       const plan = kernel.explain(actionId);
-      if (plan === undefined) {
-        return {
-          ...result({ error: `Unknown actionId: ${actionId}` }),
-          isError: true,
-        };
-      }
+      if (plan === undefined) return error(`Unknown actionId: ${actionId}`);
       return result({ actionId, policy: plan.policy });
     },
   );
@@ -120,6 +193,13 @@ export function createReproGateServer(
           arguments: z.record(z.string(), z.unknown()),
           capabilityToken: z.string().min(1),
         }),
+        // Downstream effects are operator-defined; claim nothing narrower.
+        annotations: {
+          readOnlyHint: false,
+          destructiveHint: true,
+          idempotentHint: false,
+          openWorldHint: true,
+        },
       },
       async ({ actionId, arguments: toolArguments, capabilityToken }) => {
         try {
@@ -130,12 +210,13 @@ export function createReproGateServer(
               capabilityToken,
             }),
           );
-        } catch (error) {
+        } catch (executionError) {
+          // Unchanged result shape: execute declares no outputSchema.
           return {
             ...result({
               error:
-                error instanceof Error
-                  ? error.message
+                executionError instanceof Error
+                  ? executionError.message
                   : "Unknown execution error",
             }),
             isError: true,

@@ -33,7 +33,7 @@ const stringArray = z.array(z.string().min(1));
 
 const catalogToolSchema = z
   .object({
-    toolRef: z.string().min(1),
+    toolRef: z.string().min(1).max(256),
     serverRef: z.string().min(1),
     toolName: z.string().min(1),
     description: z.string().min(1),

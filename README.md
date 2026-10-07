@@ -76,10 +76,12 @@ The separate host-only `git-review` CLI prepares an exact staged-effect request,
 
 The [Git promotion foundations](docs/GIT_PROMOTION_FOUNDATIONS.md) provide exact candidate objects and a cooperative ownership fence. Candidate preparation permits object/scratch writes and possible unreachable objects. The fence requires private host storage, cooperative writers and trusted-host child quiescence; it is not an OS sandbox. The [prepared promotion journal](docs/GIT_PROMOTION_JOURNAL.md) permanently consumes an exact linked signed approval in the existing SQLite ledger and guards raw revocation. Prepared records and status reads grant no dispatch authority. Final authenticated ref CAS, terminal evidence, conservative recovery and promotion CLI/config integration remain follow-up work.
 
-The default server exposes exactly three tools:
+The default server exposes exactly five tools, each with an output schema and conservative annotations:
 
-- `catalog.search`
-- `action.plan`
+- `catalog.search`: names, descriptions and effects only
+- `catalog.describe`: one tool's input schema and the `schemaDigest` a plan binds
+- `action.plan`: a compact summary (`actionId`, `decision`, `reasonCodes`, `nextStep`) by default; pass `detail: "full"` for the full envelope
+- `action.inspect`: the complete persisted plan for one `actionId`
 - `policy.explain`
 
 When an executor is explicitly supplied, the server also registers `action.execute`. The CLI does this only after `serve --config <absolute-path>` successfully validates Runtime Configuration v1. See the [configuration guide](docs/CONFIGURATION.md). The included default catalog remains a deterministic, plan-only demo fixture.

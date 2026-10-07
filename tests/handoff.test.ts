@@ -628,9 +628,7 @@ test("serve shares a fresh runtime database reached through an alias and binds i
     name: "action.plan",
     arguments: { toolRef: "configured.publish", arguments: { content: "x" } },
   });
-  const actionId = (
-    planned.structuredContent as { envelope: { actionId: string } }
-  ).envelope.actionId;
+  const actionId = (planned.structuredContent as { actionId: string }).actionId;
   const update = input();
   update.actionIds.push(actionId);
   const updated = await client.callTool({

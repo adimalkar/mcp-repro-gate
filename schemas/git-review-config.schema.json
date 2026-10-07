@@ -91,7 +91,8 @@
       "properties": {
         "toolRef": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "maxLength": 256
         },
         "serverRef": {
           "type": "string",
