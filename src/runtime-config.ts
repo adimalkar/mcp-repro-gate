@@ -346,7 +346,9 @@ export async function loadImportBackend(
     .object({ backends: z.record(z.string().min(1), backendSchema) })
     .loose()
     .parse(readRuntimeConfigJson(configPath));
-  const backend = parsed.backends[serverRef];
+  const backend = Object.hasOwn(parsed.backends, serverRef)
+    ? parsed.backends[serverRef]
+    : undefined;
   if (backend === undefined)
     throw new Error(`No backend named ${serverRef} in the runtime config`);
   assertBackendFiles(serverRef, backend);

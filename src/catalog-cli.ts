@@ -2,7 +2,9 @@ import { isAbsolute } from "node:path";
 
 import {
   EFFECT_CLASSES,
+  escapeUnsafeText,
   importCatalogEntries,
+  validateImportOptions,
   type CatalogImportResult,
 } from "./catalog-import.js";
 import { StdioMcpConnector } from "./downstream.js";
@@ -30,6 +32,23 @@ export async function runCatalogImport(
   args: readonly string[],
   io: CliIo,
   environment: NodeJS.ProcessEnv = process.env,
+): Promise<CatalogImportResult> {
+  try {
+    return await importFromBackend(args, io, environment);
+  } catch (error) {
+    // Errors can carry downstream-controlled text; never let it drive the
+    // operator's terminal.
+    throw new Error(
+      escapeUnsafeText(error instanceof Error ? error.message : String(error)),
+      { cause: error },
+    );
+  }
+}
+
+async function importFromBackend(
+  args: readonly string[],
+  io: CliIo,
+  environment: NodeJS.ProcessEnv,
 ): Promise<CatalogImportResult> {
   const single = new Map<string, string>();
   const repeated: Record<"--filesystem-root" | "--scope", string[]> = {
@@ -70,19 +89,25 @@ export async function runCatalogImport(
   for (const root of repeated["--filesystem-root"])
     if (!isAbsolute(root))
       throw new Error("--filesystem-root must be an absolute path");
-
-  const backend = await loadImportBackend(configPath, serverRef, environment);
-  const listed = await new StdioMcpConnector({
-    [serverRef]: backend,
-  }).describeTools(serverRef, backend.artifact.digest);
   const tools = single.get("--tools");
-  const result = importCatalogEntries(listed, {
+  const options = {
     serverRef,
-    artifactDigest: backend.artifact.digest,
     effects: effects as EffectClass[],
     ...(tools === undefined ? {} : { tools: list(tools) }),
     filesystemRoots: repeated["--filesystem-root"],
     scopes: repeated["--scope"],
+  };
+  // Refuse bad input before any backend process starts.
+  validateImportOptions(options);
+
+  const backend = await loadImportBackend(configPath, serverRef, environment);
+  // The backend's own log lines must not interleave with the review report.
+  const listed = await new StdioMcpConnector({
+    [serverRef]: { ...backend, stderr: "ignore" },
+  }).describeTools(serverRef, backend.artifact.digest);
+  const result = importCatalogEntries(listed, {
+    ...options,
+    artifactDigest: backend.artifact.digest,
   });
   io.stdout(`${JSON.stringify(result.entries, null, 2)}\n`);
   for (const { toolRef, schemaDigest, warnings } of result.report) {
