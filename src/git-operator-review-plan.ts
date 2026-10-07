@@ -5,7 +5,11 @@ import {
   type RecordedGitOperatorReviewDecision,
   type SqliteGitApprovalStore,
 } from "./git-approval-store.js";
-import type { GitChangeProposalV1 } from "./git-change-proposal.js";
+import type {
+  GitChangeProposal,
+  GitChangeProposalV1,
+  GitChangeProposalV2,
+} from "./git-change-proposal.js";
 import {
   stageGitChangeForReview,
   type StagedGitChangeV1,
@@ -31,6 +35,19 @@ export interface GitOperatorReviewRequestV1 {
   effectDigest: Digest;
 }
 
+/** Same signed metadata as V1, for a proposal with a V2 workspace witness. */
+export interface GitOperatorReviewRequestV2 {
+  requestVersion: 2;
+  proposal: GitChangeProposalV2;
+  authority: GitApprovalAuthority;
+  staged: StagedGitChangeV1;
+  authorityDigest: Digest;
+  effectDigest: Digest;
+}
+
+export type GitOperatorReviewRequest =
+  GitOperatorReviewRequestV1 | GitOperatorReviewRequestV2;
+
 function ownedPatch(patch: unknown): Uint8Array {
   if (!(patch instanceof Uint8Array)) {
     throw new TypeError("Git change patch must be bytes");
@@ -47,8 +64,23 @@ export function prepareGitOperatorReviewFromPlan(input: {
   proposal: GitChangeProposalV1;
   patch: Uint8Array;
   context: GitPlanBindingContext;
-}): { request: GitOperatorReviewRequestV1; stagedPatch: Uint8Array } {
-  const proposal = snapshotGitChangeProposal(input.proposal);
+}): { request: GitOperatorReviewRequestV1; stagedPatch: Uint8Array };
+export function prepareGitOperatorReviewFromPlan(input: {
+  proposal: GitChangeProposalV2;
+  patch: Uint8Array;
+  context: GitPlanBindingContext;
+}): { request: GitOperatorReviewRequestV2; stagedPatch: Uint8Array };
+export function prepareGitOperatorReviewFromPlan(input: {
+  proposal: GitChangeProposal;
+  patch: Uint8Array;
+  context: GitPlanBindingContext;
+}): { request: GitOperatorReviewRequest; stagedPatch: Uint8Array };
+export function prepareGitOperatorReviewFromPlan(input: {
+  proposal: GitChangeProposal;
+  patch: Uint8Array;
+  context: GitPlanBindingContext;
+}): { request: GitOperatorReviewRequest; stagedPatch: Uint8Array } {
+  const proposal = snapshotGitChangeProposal(input.proposal, "any");
   const patch = ownedPatch(input.patch);
   const context = input.context;
   const authority = deriveGitApprovalAuthorityFromPlan(proposal, context);
@@ -62,15 +94,17 @@ export function prepareGitOperatorReviewFromPlan(input: {
   if (authorityDigest !== digestCanonical(authority)) {
     throw new Error("Trusted approval authority changed during staging");
   }
+  const common = {
+    authority: current,
+    staged,
+    authorityDigest,
+    effectDigest: digestCanonical(staged),
+  };
   return {
-    request: {
-      requestVersion: 1,
-      proposal,
-      authority: current,
-      staged,
-      authorityDigest,
-      effectDigest: digestCanonical(staged),
-    },
+    request:
+      proposal.proposalVersion === 2
+        ? { requestVersion: 2, proposal, ...common }
+        : { requestVersion: 1, proposal, ...common },
     stagedPatch,
   };
 }
@@ -84,14 +118,14 @@ export function prepareGitOperatorReviewFromPlan(input: {
 export function applyGitOperatorReviewFromPlan(
   store: SqliteGitApprovalStore,
   input: {
-    proposal: GitChangeProposalV1;
+    proposal: GitChangeProposal;
     patch: Uint8Array;
     context: GitPlanBindingContext;
     trust: GitOperatorReviewTrustV1;
     review: unknown;
   },
 ): RecordedGitOperatorReviewDecision {
-  const proposal = snapshotGitChangeProposal(input.proposal);
+  const proposal = snapshotGitChangeProposal(input.proposal, "any");
   const patch = ownedPatch(input.patch);
   const { context, trust, review } = input;
   const authority = deriveGitApprovalAuthorityFromPlan(proposal, context);
@@ -116,14 +150,14 @@ export function matchesOperatorReviewedGitApprovalFromPlan(
   store: SqliteGitApprovalStore,
   input: {
     approvalId: string;
-    proposal: GitChangeProposalV1;
+    proposal: GitChangeProposal;
     patch: Uint8Array;
     context: GitPlanBindingContext;
     trust: GitOperatorReviewTrustV1;
   },
 ): boolean {
   try {
-    const proposal = snapshotGitChangeProposal(input.proposal);
+    const proposal = snapshotGitChangeProposal(input.proposal, "any");
     const patch = ownedPatch(input.patch);
     const { approvalId, context, trust } = input;
     const authority = deriveGitApprovalAuthorityFromPlan(proposal, context);
