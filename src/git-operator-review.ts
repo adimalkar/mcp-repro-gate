@@ -6,8 +6,15 @@ import { canonicalJson } from "./canonical-json.js";
 import { digestCanonical, sha256 } from "./digest.js";
 import type { GitApprovalAuthority } from "./git-approval-store.js";
 import {
+  digestSchema,
+  identifierSchema,
+  parseGitChangeProposalStructure,
+  refSchema,
+  timestampSchema,
+} from "./git-change-contract.js";
+import {
   verifyGitChangeProposal,
-  type GitChangeProposalV1,
+  type GitChangeProposal,
 } from "./git-change-proposal.js";
 import type { Digest } from "./types.js";
 
@@ -45,33 +52,10 @@ export interface GitOperatorReviewTrustV1 {
 }
 
 const DOMAIN = "ReproGate/GitOperatorReview/v1\0";
-// The negative lookahead requires the actual end of input, not before a newline.
-const DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$(?![\s\S])/u;
-const IDENTIFIER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/@-]*$(?![\s\S])/u;
-const REF_PATTERN =
-  /^refs\/heads\/(?!.*(?:\.\.|@\{|\/\/|\/\.|\.lock(?:\/|$)|\.(?:\/|$)))(?!.*\/$)[A-Za-z0-9_+@-][A-Za-z0-9_./+@-]*$(?![\s\S])/u;
-const TIMESTAMP_PATTERN =
-  /^(?:[0-9]{4}|[+-][0-9]{6})-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$(?![\s\S])/u;
 const SIGNATURE_PATTERN = /^[A-Za-z0-9_-]{85}[AQgw]$(?![\s\S])/u;
 const PUBLIC_PEM_PATTERN =
   /^-----BEGIN PUBLIC KEY-----\r?\n(?:[A-Za-z0-9+/=]+\r?\n)+-----END PUBLIC KEY-----(?:\r?\n)?$(?![\s\S])/u;
 
-const digestSchema = z
-  .string()
-  .length(71)
-  .regex(DIGEST_PATTERN)
-  .transform((value) => value as Digest);
-const identifierSchema = z.string().min(1).max(256).regex(IDENTIFIER_PATTERN);
-const refSchema = z.string().min(12).max(1024).regex(REF_PATTERN);
-const timestampSchema = z
-  .string()
-  .min(24)
-  .max(27)
-  .regex(TIMESTAMP_PATTERN)
-  .refine((value) => {
-    const time = Date.parse(value);
-    return Number.isFinite(time) && new Date(time).toISOString() === value;
-  }, "Timestamp must be canonical UTC ISO-8601");
 const signatureSchema = z
   .string()
   .length(86)
@@ -142,32 +126,6 @@ const authoritySchema = z.strictObject({
   destinationRef: refSchema,
   maxExpiresAt: timestampSchema,
 });
-const oidSchema = z
-  .string()
-  .regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$(?![\s\S])/u);
-// The existing proposal integrity helper hashes arbitrary fields. Validate its
-// required structure here as well, without treating self-hashing as authority.
-const proposalSchema = z.strictObject({
-  proposalVersion: z.literal(1),
-  proposalId: digestSchema,
-  repositoryId: identifierSchema,
-  actionId: digestSchema,
-  policyDigest: digestSchema,
-  workspace: z.strictObject({
-    source: z.literal("git_observed"),
-    rootDigest: digestSchema,
-    headCommit: oidSchema,
-    headTree: oidSchema,
-    destinationRef: refSchema,
-    destinationOid: oidSchema,
-    status: z.literal("clean"),
-  }),
-  patchDigest: digestSchema,
-  allowedPaths: z.array(z.string().min(1).max(4096)).min(1).max(256),
-  createdAt: timestampSchema,
-  expiresAt: timestampSchema,
-});
-
 export function parseGitOperatorReviewPayload(
   value: unknown,
 ): GitOperatorReviewPayloadV1 {
@@ -281,7 +239,7 @@ export function signGitOperatorReview(
  */
 export function authenticateGitOperatorReview(
   review: unknown,
-  proposal: GitChangeProposalV1,
+  proposal: GitChangeProposal,
   authority: GitApprovalAuthority,
   expectedEffectDigest: Digest,
   hostTrust: unknown,
@@ -294,7 +252,14 @@ export function authenticateGitOperatorReview(
   try {
     const parsed = parseGitOperatorReview(review);
     const trust = parseGitOperatorReviewTrust(hostTrust);
-    const expectedProposal = proposalSchema.parse(proposal);
+    // The existing integrity helper hashes arbitrary fields. Validate the
+    // required structure of either version here as well, without treating
+    // self-hashing as authority.
+    const expectedProposal = parseGitChangeProposalStructure(
+      proposal,
+      "review",
+      "any",
+    );
     const derivedAuthority = authoritySchema.parse(authority);
     const effectDigest = digestSchema.parse(expectedEffectDigest);
     const payload = parsed.payload;
@@ -380,7 +345,7 @@ export function authenticateGitOperatorReview(
  */
 export function verifyGitOperatorReview(
   review: unknown,
-  proposal: GitChangeProposalV1,
+  proposal: GitChangeProposal,
   authority: GitApprovalAuthority,
   expectedEffectDigest: Digest,
   hostTrust: unknown,

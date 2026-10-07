@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
+import { once } from "node:events";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -195,4 +196,45 @@ test("a grant rejects unreviewed effects and mismatched authority", (context) =>
     false,
   );
   store.close();
+});
+
+test("opening waits for another process's lock before identity inspection", async (context) => {
+  const scratch = mkdtempSync(join(tmpdir(), "reprogate-approval-lock-"));
+  context.after(() => {
+    rmSync(scratch, { recursive: true, force: true });
+  });
+  const databasePath = join(scratch, "approvals.sqlite");
+  new SqliteGitApprovalStore(databasePath).close();
+  // An exclusive WAL connection blocks every reader, as WAL recovery does.
+  const holder = spawn(
+    process.execPath,
+    [
+      "-e",
+      `const { DatabaseSync } = require("node:sqlite");
+       const db = new DatabaseSync(process.argv[1]);
+       db.exec("PRAGMA locking_mode = EXCLUSIVE; BEGIN IMMEDIATE");
+       process.stdout.write("locked\\n");
+       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 750);
+       db.exec("COMMIT");
+       db.close();`,
+      databasePath,
+    ],
+    { stdio: ["ignore", "pipe", "inherit"] },
+  );
+  const exited = once(holder, "exit");
+  try {
+    await new Promise<void>((resolve, reject) => {
+      holder.stdout.once("data", () => {
+        resolve();
+      });
+      holder.once("exit", () => {
+        reject(new Error("Lock holder exited before locking"));
+      });
+    });
+    const store = new SqliteGitApprovalStore(databasePath);
+    store.close();
+  } finally {
+    holder.kill();
+    await exited;
+  }
 });
