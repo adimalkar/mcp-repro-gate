@@ -110,6 +110,37 @@ node dist/src/cli.js approve --config /absolute/path/reprogate.json '<action-id>
 node dist/src/cli.js verify-receipt --config /absolute/path/reprogate.json ./receipt.json
 ```
 
+## Host-mediated execution
+
+Most actions need a person to approve them out of band, and the model passes the resulting capability token to `action.execute`. For read-only tools that your policy already decides `allow`, add an optional `mediation` section instead:
+
+```json
+"mediation": {
+  "effects": ["local_read"],
+  "result": {
+    "maxTextBytes": 16384,
+    "redactPatterns": ["[Bb]earer [A-Za-z0-9._~+/-]+=*"]
+  }
+}
+```
+
+This registers `action.run { actionId, arguments }`. The server runs a plan only when all of these hold:
+
+- the plan's policy decision is `allow`;
+- every effect in its envelope is listed in `effects`;
+- the plan has not expired.
+
+The server then issues and consumes a one-use capability itself, so the model never handles a token. Otherwise the call is refused with `not_allowed`, `effect_not_mediated`, `expired` or `unknown_action`, and nothing runs.
+
+- `effects` may contain only `local_read` and `network_read`. Write, process, credential and destructive effects always need out-of-band approval through `action.execute`.
+- Every executor check still applies: argument digest, live schema pin, artifact digest, JSON Schema validation, the write-ahead execution record and the signed receipt. The receipt's `capabilityId` starts with `host-mediated:`, so audits can tell mediated runs from approved ones.
+- The `action.run` result is compact: `executionId`, `outcome`, `receiptDigest`, `resultDigest` and downstream text.
+  - Capability-token-shaped strings and the configured secret values are always redacted, then `redactPatterns` are applied. Patterns compile with the `gu` flags; inline flags such as `(?i)` are not supported, and a pattern must not match the empty string.
+  - The text is then cut to `maxTextBytes` (default 16384, maximum 262144) on a character boundary. Non-text items are counted in `omittedItems`.
+  - The receipt's `resultDigest` still covers the complete, unredacted downstream result.
+
+Redaction removes only what it can recognise. Treat downstream output as untrusted even after redaction.
+
 ## Filesystem observation
 
 The observer hashes regular-file contents and records file type, mode, and size. It does not retain file contents, and it records but never follows symlinks inside an observed root. Entry and byte limits fail closed.

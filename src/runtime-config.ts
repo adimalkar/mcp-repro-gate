@@ -16,6 +16,7 @@ import { ReproGateExecutor } from "./executor.js";
 import { sha256File } from "./file-digest.js";
 import { FilesystemManifestObserver } from "./filesystem-observer.js";
 import { ReproGateKernel } from "./kernel.js";
+import { HostMediator, mediationConfigSchema } from "./mediation.js";
 import type { CatalogTool, PolicyV1 } from "./types.js";
 
 const digestSchema = z.string().regex(/^sha256:[0-9a-f]{64}$/u);
@@ -124,6 +125,7 @@ const runtimeConfigSchema = z
         receiptKeyId: z.string().min(1),
       })
       .strict(),
+    mediation: mediationConfigSchema.optional(),
   })
   .strict();
 
@@ -133,6 +135,8 @@ export interface ConfiguredRuntime {
   config: RuntimeConfigV1;
   kernel: ReproGateKernel;
   executor: ReproGateExecutor;
+  /** Present only when the configuration opts in to host mediation. */
+  mediator?: HostMediator;
   store: SqliteExecutionStore;
   recoveredExecutions: number;
   close(): void;
@@ -362,6 +366,16 @@ export async function createConfiguredRuntime(
       config,
       kernel,
       executor,
+      ...(config.mediation === undefined
+        ? {}
+        : {
+            mediator: new HostMediator(
+              executor,
+              config.mediation,
+              capabilitySecret,
+              receiptSecret,
+            ),
+          }),
       store,
       recoveredExecutions,
       close: () => {

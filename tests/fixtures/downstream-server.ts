@@ -20,4 +20,16 @@ server.registerTool(
   }),
 );
 
+server.registerTool(
+  "echo",
+  {
+    description: "Test-only read-shaped downstream tool",
+    inputSchema: z.object({ text: z.string() }),
+  },
+  ({ text }) => ({
+    content: [{ type: "text", text }],
+    structuredContent: { length: text.length },
+  }),
+);
+
 serveStdio(() => server);

@@ -144,6 +144,7 @@ async function main(): Promise<void> {
           runtime?.kernel ?? createDemoKernel(),
           runtime?.executor,
           handoff,
+          runtime?.mediator,
         ),
       {
         onerror: (error) => {

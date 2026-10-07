@@ -6,6 +6,7 @@ import type { ReproGateExecutor } from "./executor.js";
 import {
   actionIdInputSchema,
   actionInspectOutputSchema,
+  actionRunOutputSchema,
   actionPlanOutputSchema,
   catalogDescribeOutputSchema,
   catalogSearchOutputSchema,
@@ -16,6 +17,7 @@ import {
   toolRefInputSchema,
 } from "./facade.js";
 import type { HandoffService } from "./handoff.js";
+import { MediationError, type HostMediator } from "./mediation.js";
 import {
   HandoffError,
   handoffStatusInputSchema,
@@ -64,6 +66,7 @@ export function createReproGateServer(
   kernel = createDemoKernel(),
   executor?: ReproGateExecutor,
   handoff?: HandoffService,
+  mediator?: HostMediator,
 ): McpServer {
   const server = new McpServer({ name: "mcp-repro-gate", version: "0.0.0" });
 
@@ -221,6 +224,43 @@ export function createReproGateServer(
             }),
             isError: true,
           };
+        }
+      },
+    );
+  }
+
+  if (executor !== undefined && mediator !== undefined) {
+    server.registerTool(
+      "action.run",
+      {
+        description:
+          "Run one previously planned action that policy allows with only host-mediated read effects; the host issues the one-use capability, so no token is passed. Returns a compact receipt summary and redacted, bounded downstream text",
+        inputSchema: z.object({
+          actionId: actionIdInputSchema,
+          arguments: z.record(z.string(), z.unknown()),
+        }),
+        outputSchema: actionRunOutputSchema,
+        annotations: {
+          readOnlyHint: false,
+          destructiveHint: false,
+          idempotentHint: false,
+          openWorldHint: mediator.mediatesNetwork,
+        },
+      },
+      async ({ actionId, arguments: toolArguments }) => {
+        try {
+          return result(
+            await mediator.run({ actionId, arguments: toolArguments }),
+          );
+        } catch (runError) {
+          // Refusals are stable codes; executor failures keep their message.
+          return error(
+            runError instanceof MediationError
+              ? runError.code
+              : runError instanceof Error
+                ? runError.message
+                : "Unknown execution error",
+          );
         }
       },
     );
