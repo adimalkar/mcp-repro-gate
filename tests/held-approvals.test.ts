@@ -8,6 +8,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { spawnSync } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
 import test, { type TestContext } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -264,7 +265,8 @@ test("tampered, transplanted, revoked and expired approvals never run", async (c
   const expired = s.plan("configured.publish", { content: "old" }, past);
   s.cli(["--config", s.configPath, expired, "--hold"], past);
   assert.equal(s.code(await s.call(expired, { content: "old" })), "expired");
-  assert.deepEqual(s.counts(), { executions: 0, tokenUses: 0 });
+  // The only token use is the revocation tombstone; nothing executed.
+  assert.deepEqual(s.counts(), { executions: 0, tokenUses: 1 });
 });
 
 test("hold refuses disabled config, expired, unknown and repeated approvals", async (context) => {
@@ -386,4 +388,172 @@ test("the JSON schema matches the held-approval configuration rules", () => {
       JSON.stringify(value),
     );
   }
+});
+
+test("revoking during a run that already verified the approval stops its execution", async (context) => {
+  const s = await setup(context, { heldApprovals: true });
+  const args = { content: "race" };
+  const actionId = s.plan("configured.publish", args);
+  s.cli(["--config", s.configPath, actionId, "--hold"]);
+  assert.ok(s.runtime.mediator);
+  // The run verifies synchronously, then awaits the backend connection;
+  // the revoke lands inside that window, before the run consumes anything.
+  const running = s.runtime.mediator.run({ actionId, arguments: args });
+  const revoked = s.cli(["--config", s.configPath, actionId, "--revoke-held"]);
+  assert.deepEqual(revoked, { revoked: true, actionId });
+  await assert.rejects(
+    running,
+    (error: unknown) =>
+      error instanceof MediationError && error.code === "approval_consumed",
+  );
+  assert.deepEqual(s.counts(), { executions: 0, tokenUses: 1 });
+});
+
+test("revoked, mismatched and malformed stored approvals never run", async (context) => {
+  const s = await setup(context, { heldApprovals: true });
+  const db = s.raw();
+  try {
+    const row = (actionId: string) =>
+      db
+        .prepare(
+          "SELECT approval_id, approval_json, created_at FROM held_approvals WHERE action_id = ?",
+        )
+        .get(actionId) as {
+        approval_id: string;
+        approval_json: string;
+        created_at: string;
+      };
+    const insert = db.prepare(
+      "INSERT INTO held_approvals (action_id, approval_id, approval_json, created_at) VALUES (?, ?, ?, ?)",
+    );
+
+    const revived = s.plan("configured.publish", { content: "revive" });
+    s.cli(["--config", s.configPath, revived, "--hold"]);
+    const saved = row(revived);
+    s.cli(["--config", s.configPath, revived, "--revoke-held"]);
+    insert.run(
+      revived,
+      saved.approval_id,
+      saved.approval_json,
+      saved.created_at,
+    );
+    assert.equal(
+      s.code(await s.call(revived, { content: "revive" })),
+      "approval_consumed",
+    );
+
+    const mismatched = s.plan("configured.publish", { content: "column" });
+    s.cli(["--config", s.configPath, mismatched, "--hold"]);
+    db.prepare(
+      "UPDATE held_approvals SET approval_id = ? WHERE action_id = ?",
+    ).run("00000000-0000-4000-8000-000000000000", mismatched);
+    assert.equal(
+      s.code(await s.call(mismatched, { content: "column" })),
+      "invalid_approval",
+    );
+
+    const malformed = s.plan("configured.publish", { content: "bad" });
+    insert.run(malformed, "x", "{not json", new Date().toISOString());
+    assert.equal(
+      s.code(await s.call(malformed, { content: "bad" })),
+      "invalid_approval",
+    );
+  } finally {
+    db.close();
+  }
+  assert.deepEqual(s.counts().executions, 0);
+});
+
+test("a held approval on an allowed plan takes precedence for one run", async (context) => {
+  const s = await setup(context, {
+    effects: ["local_read"],
+    heldApprovals: true,
+    maxRunsPerPlan: 5,
+  });
+  const args = { text: "held read" };
+  const actionId = s.plan("configured.echo", args);
+  const held = s.cli(["--config", s.configPath, actionId, "--hold"]);
+  const result = await s.call(actionId, args);
+  assert.equal(s.code(result), "succeeded");
+  assert.equal(
+    s.runtime.store.getExecution(result.structuredContent?.executionId ?? "")
+      ?.capabilityId,
+    `host-held:${held.approvalId ?? ""}`,
+  );
+  assert.equal(s.code(await s.call(actionId, args)), "approval_consumed");
+});
+
+test("hold expiry options, secret length and output hygiene", async (context) => {
+  const s = await setup(context, { heldApprovals: true });
+  const now = new Date();
+  const actionId = s.plan("configured.publish", { content: "short" }, now);
+  const out: string[] = [];
+  const io = { stdout: (text: string) => out.push(text) };
+  runHeldApproval(
+    ["--config", s.configPath, actionId, "--hold", "--expires-in", "60"],
+    io,
+    environment,
+    now,
+  );
+  const held = JSON.parse(out.join("")) as { expiresAt: string };
+  assert.equal(held.expiresAt, new Date(now.getTime() + 60_000).toISOString());
+  const printed = out.join("");
+  assert.equal(printed.includes("rg1."), false);
+  assert.equal(printed.includes("mac"), false);
+  assert.equal(printed.includes(capabilitySecret), false);
+  for (const bad of [
+    ["--hold", "--expires-in", "0"],
+    ["--hold", "--expires-in", "-5"],
+    ["--hold", "--expires-in", "1.5"],
+    ["--hold", "--expires-in", "604801"],
+    ["--hold", "--expires-in"],
+    ["--hold", "--extra"],
+    ["--revoke"],
+    ["--Hold"],
+  ])
+    assert.throws(
+      () => {
+        runHeldApproval(
+          ["--config", s.configPath, actionId, ...bad],
+          io,
+          environment,
+        );
+      },
+      /Usage/u,
+      bad.join(" "),
+    );
+  const other = s.plan("configured.publish", { content: "secret" });
+  assert.throws(() => {
+    runHeldApproval(["--config", s.configPath, other, "--hold"], io, {
+      ...environment,
+      HELD_CAPABILITY_SECRET: "too-short",
+    });
+  }, /at least 32 bytes/u);
+});
+
+test("a mistyped approve flag never prints a capability token", async (context) => {
+  const s = await setup(context, { heldApprovals: true });
+  const actionId = s.plan("configured.publish", { content: "typo" });
+  const cli = fileURLToPath(new URL("../src/cli.js", import.meta.url));
+  for (const extra of [
+    ["--revoke"],
+    ["--hold=true"],
+    ["--Hold"],
+    ["extra", "args"],
+  ]) {
+    const result = spawnSync(
+      process.execPath,
+      [cli, "approve", "--config", s.configPath, actionId, ...extra],
+      { encoding: "utf8", env: environment, timeout: 30_000 },
+    );
+    assert.notEqual(result.status, 0, extra.join(" "));
+    assert.equal(result.stdout.includes("rg1."), false, extra.join(" "));
+  }
+  const legacy = spawnSync(
+    process.execPath,
+    [cli, "approve", s.runtime.config.databasePath, actionId, "--hold"],
+    { encoding: "utf8", env: environment, timeout: 30_000 },
+  );
+  assert.notEqual(legacy.status, 0);
+  assert.equal(legacy.stdout.includes("rg1."), false);
 });

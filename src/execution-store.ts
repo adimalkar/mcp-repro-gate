@@ -587,34 +587,51 @@ export class SqliteExecutionStore implements PlanStore, TokenUseStore {
     }
   }
 
-  /** The stored held approval, parsed but not yet verified. */
+  /**
+   * The stored held approval, parsed but not yet verified. The row's ID
+   * column must agree with the signed record, whose ID is authoritative.
+   */
   getHeldApproval(actionId: string): HeldApprovalV1 | undefined {
     const row = this.#database
-      .prepare("SELECT approval_json FROM held_approvals WHERE action_id = ?")
-      .get(actionId) as { approval_json: string } | undefined;
-    return row === undefined ? undefined : parseHeldApproval(row.approval_json);
+      .prepare(
+        "SELECT approval_id, approval_json FROM held_approvals WHERE action_id = ?",
+      )
+      .get(actionId) as
+      { approval_id: string; approval_json: string } | undefined;
+    if (row === undefined) return undefined;
+    const record = parseHeldApproval(row.approval_json);
+    if (record.approvalId !== row.approval_id)
+      throw new Error("Held approval row does not match its record");
+    return record;
   }
 
   /**
-   * Remove an unused held approval. Returns "revoked", "consumed" or
-   * "missing"; the check and delete are one statement, so a concurrent run
-   * cannot use an approval this reports as revoked.
+   * Revoke an unused held approval by consuming its single-use capability
+   * ID as a tombstone, then removing the row, in one transaction. A run that
+   * already verified the approval then fails at its own atomic consume, and
+   * re-inserting the row cannot revive it. Returns "revoked", "consumed" or
+   * "missing".
    */
   revokeHeldApproval(actionId: string): "revoked" | "consumed" | "missing" {
-    const changed = this.#database
-      .prepare(
-        `DELETE FROM held_approvals
-         WHERE action_id = ?
-           AND NOT EXISTS (
-             SELECT 1 FROM token_uses
-             WHERE capability_id = 'host-held:' || held_approvals.approval_id
-           )`,
-      )
-      .run(actionId);
-    if (Number(changed.changes) === 1) return "revoked";
-    return this.getHeldApproval(actionId) === undefined
-      ? "missing"
-      : "consumed";
+    this.#database.exec("BEGIN IMMEDIATE");
+    try {
+      const record = this.getHeldApproval(actionId);
+      let outcome: "revoked" | "consumed" | "missing" = "missing";
+      if (record !== undefined) {
+        outcome = this.consume(`host-held:${record.approvalId}`)
+          ? "revoked"
+          : "consumed";
+        if (outcome === "revoked")
+          this.#database
+            .prepare("DELETE FROM held_approvals WHERE action_id = ?")
+            .run(actionId);
+      }
+      this.#database.exec("COMMIT");
+      return outcome;
+    } catch (error) {
+      this.#rollback();
+      throw error;
+    }
   }
 
   /** Consumed capabilities whose ID starts with this non-empty prefix. */
