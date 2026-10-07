@@ -19,7 +19,6 @@ export interface DownstreamToolDescription extends DownstreamTool {
 }
 
 const MAX_LISTED_TOOLS = 1024;
-const MAX_LIST_PAGES = 32;
 
 export interface DownstreamSession {
   getTool(name: string): Promise<DownstreamTool | undefined>;
@@ -39,6 +38,8 @@ export interface StdioBackendConfig {
   args?: string[];
   cwd?: string;
   env?: Record<string, string>;
+  /** Where the backend's own stderr goes; the SDK default is "inherit". */
+  stderr?: "inherit" | "ignore";
   artifact?: {
     path: string;
     digest: Digest;
@@ -57,12 +58,12 @@ class McpDownstreamSession implements DownstreamSession {
   }
 
   async listTools(): Promise<DownstreamToolDescription[]> {
+    // The SDK client follows pagination itself, with its own page limit.
+    const listed = await this.client.listTools();
+    if (listed.tools.length > MAX_LISTED_TOOLS)
+      throw new Error("Downstream lists too many tools");
     const tools: DownstreamToolDescription[] = [];
-    let cursor: string | undefined;
-    for (let page = 0; page < MAX_LIST_PAGES; page++) {
-      const listed = await this.client.listTools(
-        cursor === undefined ? undefined : { cursor },
-      );
+    {
       for (const tool of listed.tools) {
         tools.push({
           name: tool.name,
@@ -83,13 +84,9 @@ class McpDownstreamSession implements DownstreamSession {
                 },
               }),
         });
-        if (tools.length > MAX_LISTED_TOOLS)
-          throw new Error("Downstream lists too many tools");
       }
-      cursor = listed.nextCursor;
-      if (cursor === undefined) return tools;
     }
-    throw new Error("Downstream tool listing did not finish");
+    return tools;
   }
 
   async callTool(

@@ -8,6 +8,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { runArtifactDigest, runCatalogImport } from "../src/catalog-cli.js";
 import {
   MAX_IMPORTED_DESCRIPTION,
+  escapeUnsafeText,
   importCatalogEntries,
 } from "../src/catalog-import.js";
 import { demoPolicy } from "../src/demo-config.js";
@@ -91,7 +92,7 @@ test("import refuses unknown, duplicate, oversized and undeclared input", () => 
           effects: ["local_read"],
           tools: ["missing"],
         }),
-      /does not list a tool named missing/u,
+      /does not list a tool named "missing"/u,
     ],
     [
       () =>
@@ -260,7 +261,7 @@ test("catalog import refuses bad usage, unknown backends and changed artifacts",
       [...base, "--effects", "local_read", "--tools", "nope"],
       d.io,
     ),
-    /does not list a tool named nope/u,
+    /does not list a tool named "nope"/u,
   );
   await assert.rejects(
     runCatalogImport(
@@ -296,4 +297,160 @@ test("artifact digest prints the pin backends and catalogs require", async (cont
   await runArtifactDigest([d.artifactPath], d.io);
   assert.equal(d.lines.stdout, `${await sha256File(d.artifactPath)}\n`);
   await assert.rejects(runArtifactDigest(["relative"], d.io), /Usage/u);
+});
+
+test("downstream text cannot drive the terminal or the catalog", () => {
+  const esc = "\u001b]0;PWNED\u0007\u001b[2J";
+  assert.equal(
+    escapeUnsafeText(`a${esc}\u202eb`),
+    "a\\u001b]0;PWNED\\u0007\\u001b[2J\\u202eb",
+  );
+  const options = {
+    serverRef: "graph",
+    artifactDigest: digest,
+    effects: ["local_read" as const],
+  };
+  for (const operation of [
+    () =>
+      importCatalogEntries(
+        [
+          { name: `dup${esc}`, inputSchema: {} },
+          { name: `dup${esc}`, inputSchema: {} },
+        ],
+        options,
+      ),
+    () =>
+      importCatalogEntries([{ name: `bad${esc}`, inputSchema: {} }], options),
+  ])
+    assert.throws(operation, (error: unknown) => {
+      assert.ok(error instanceof Error);
+      // Scan by code unit: no raw C0 control or right-to-left override.
+      for (let index = 0; index < error.message.length; index++) {
+        const code = error.message.charCodeAt(index);
+        assert.ok(
+          code >= 0x20 && code !== 0x202e,
+          `unescaped U+${code.toString(16)}`,
+        );
+      }
+      assert.match(error.message, /\\u001b/u);
+      return true;
+    });
+  const { entries, report } = importCatalogEntries(
+    [
+      {
+        name: "deleteProject",
+        description: `line one\r\nline\ttwo ${esc} \u202espoof`,
+        inputSchema: {},
+      },
+      { name: "empty", description: "   ", inputSchema: {} },
+      { name: "emoji", description: "👍🏽".repeat(1500), inputSchema: {} },
+    ],
+    options,
+  );
+  const byName = Object.fromEntries(
+    entries.map((entry) => [entry.toolName, entry.description]),
+  );
+  assert.equal(byName.deleteProject, "line one\nline two ]0;PWNED[2J spoof");
+  assert.equal(byName.empty, "empty");
+  assert.ok((byName.emoji ?? "").length <= MAX_IMPORTED_DESCRIPTION);
+  assert.equal((byName.emoji ?? "").length % "👍🏽".length, 0);
+  assert.match(
+    report
+      .find((item) => item.toolRef === "graph.deleteProject")
+      ?.warnings.join() ?? "",
+    /name suggests/u,
+  );
+  assert.throws(
+    () =>
+      importCatalogEntries([{ name: "t".repeat(128), inputSchema: {} }], {
+        ...options,
+        serverRef: "s".repeat(128),
+      }),
+    /exceeds 256/u,
+  );
+  for (const scopes of [[""], [`x${esc}`]])
+    assert.throws(
+      () =>
+        importCatalogEntries([{ name: "a", inputSchema: {} }], {
+          ...options,
+          scopes,
+        }),
+      /non-empty plain text/u,
+    );
+});
+
+test("catalog import validates input and flags before starting a backend", async () => {
+  const io = { stdout: () => undefined, stderr: () => undefined };
+  const missing = "/nonexistent/reprogate-draft.json";
+  const cases: [string[], RegExp][] = [
+    [
+      ["--config", missing, "--backend", "bad name", "--effects", "local_read"],
+      /Backend name/u,
+    ],
+    [
+      ["--config", missing, "--backend", "graph", "--effects", ","],
+      /at least one effect/u,
+    ],
+    [
+      [
+        "--config",
+        missing,
+        "--backend",
+        "graph",
+        "--effects",
+        "local_read",
+        "--tools",
+        ",",
+      ],
+      /at least one tool/u,
+    ],
+    [
+      [
+        "--config",
+        missing,
+        "--config",
+        missing,
+        "--backend",
+        "graph",
+        "--effects",
+        "local_read",
+      ],
+      /Usage/u,
+    ],
+    [["--config", "--backend", "graph", "--effects", "local_read"], /Usage/u],
+    [
+      [
+        "--config",
+        missing,
+        "--backend",
+        "graph",
+        "--effects",
+        "local_read",
+        "--surprise",
+        "x",
+      ],
+      /Usage/u,
+    ],
+  ];
+  for (const [args, message] of cases)
+    await assert.rejects(runCatalogImport(args, io), message, args.join(" "));
+});
+
+test("inherited object keys are not backend names", async (context) => {
+  const d = await draft(context);
+  for (const name of ["constructor", "toString"])
+    await assert.rejects(
+      runCatalogImport(
+        [
+          "--config",
+          d.configPath,
+          "--backend",
+          name,
+          "--effects",
+          "local_read",
+        ],
+        d.io,
+      ),
+      new RegExp(`No backend named ${name}`, "u"),
+    );
 });
