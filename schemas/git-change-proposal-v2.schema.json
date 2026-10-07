@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://reprogate.dev/schemas/git-change-proposal-v2.json",
+  "title": "ReproGate Git Change Proposal v2",
+  "$comment": "Structural snapshot profile only; timestamps are bounded strings, not authenticated canonical UTC times. Git ref/path safety, real calendar/time and identity checks for operator review, clean source and unchecked-out direct destination observation, headRef != destinationRef, destinationOid == headCommit, and proposalId integrity require library checks.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "proposalVersion",
+    "proposalId",
+    "repositoryId",
+    "actionId",
+    "policyDigest",
+    "workspace",
+    "patchDigest",
+    "allowedPaths",
+    "createdAt",
+    "expiresAt"
+  ],
+  "properties": {
+    "proposalVersion": { "const": 2 },
+    "proposalId": { "$ref": "#/$defs/digest" },
+    "repositoryId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "actionId": { "$ref": "#/$defs/digest" },
+    "policyDigest": { "$ref": "#/$defs/digest" },
+    "workspace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "workspaceVersion",
+        "source",
+        "destinationMode",
+        "rootDigest",
+        "commonDirDigest",
+        "headRef",
+        "headCommit",
+        "headTree",
+        "destinationRef",
+        "destinationOid",
+        "status"
+      ],
+      "properties": {
+        "workspaceVersion": { "const": 2 },
+        "source": { "const": "git_observed" },
+        "destinationMode": { "const": "uncheckout_destination" },
+        "rootDigest": { "$ref": "#/$defs/digest" },
+        "commonDirDigest": { "$ref": "#/$defs/digest" },
+        "headRef": { "$ref": "#/$defs/localRef" },
+        "headCommit": { "$ref": "#/$defs/gitOid" },
+        "headTree": { "$ref": "#/$defs/gitOid" },
+        "destinationRef": { "$ref": "#/$defs/localRef" },
+        "destinationOid": { "$ref": "#/$defs/gitOid" },
+        "status": { "const": "clean" }
+      }
+    },
+    "patchDigest": { "$ref": "#/$defs/digest" },
+    "allowedPaths": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 256,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 4096
+      }
+    },
+    "createdAt": { "$ref": "#/$defs/time" },
+    "expiresAt": { "$ref": "#/$defs/time" }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "minLength": 71,
+      "maxLength": 71,
+      "pattern": "^sha256:[0-9a-f]{64}$(?![\\s\\S])"
+    },
+    "gitOid": {
+      "type": "string",
+      "minLength": 40,
+      "maxLength": 64,
+      "pattern": "^([0-9a-f]{40}|[0-9a-f]{64})$(?![\\s\\S])"
+    },
+    "localRef": {
+      "type": "string",
+      "minLength": 11,
+      "maxLength": 1024,
+      "pattern": "^refs/heads/"
+    },
+    "time": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    }
+  }
+}
