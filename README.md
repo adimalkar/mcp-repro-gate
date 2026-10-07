@@ -9,7 +9,7 @@ ReproGate is an action-contract layer for MCP tool execution. Its intended contr
 
 The goal is narrower than “another MCP gateway”: make a tool action independently inspectable and make approval invalid as soon as the proposed action changes.
 
-## Current status: Phase 2 reference path and Phase 3 authenticated-review slices
+## Current status: Phase 2 reference path and Phase 3 prepared Git promotion journal
 
 This repository contains the action-contract kernel, a plan-only MCP server by default, and the first opt-in Phase 2 execution boundary. It can:
 
@@ -29,12 +29,16 @@ This repository contains the action-contract kernel, a plan-only MCP server by d
 - stage a Git patch in a disposable index and record a host-side, revocable approval of its reviewed effect.
 - bind that approval to a persisted exact-action Git intent, current catalog, policy, and repository configuration.
 - authenticate operator-key decisions about an exact staged Git effect and atomically record linked approval evidence or a durable denial.
+- bind explicit V2 intents to a distinct unchecked-out destination without reinterpreting V1 approvals;
+- prepare exact candidate commit objects without moving protected refs, HEAD, index or worktree;
+- retain a cooperative host ownership fence across worker death, with exact-owner quiescent release.
+- permanently reserve one linked signed Git approval as immutable prepared intent in the existing SQLite ledger, with guarded raw revocation.
 
 Execution is deliberately disabled in the default server and requires explicit executor wiring. The configured path is not a sandbox or a production authorization boundary. Git review authenticates a configured signing key and exact decision, not human presence or inspection. The host owns configuration, databases and key isolation; protected-ref promotion is not implemented. See the [Git change contract and limits](docs/GIT_CHANGE_PROPOSAL.md).
 
 ## Try it
 
-Requirements: Node.js 22.13 or newer. CI tests the maintained Node.js 22 and 24 release lines on Linux, macOS, and Windows.
+Requirements: Node.js 22.13 or newer; Git workflows require Git 2.45 or newer. CI tests the maintained Node.js 22 and 24 release lines on Linux, macOS, and Windows.
 
 ```bash
 npm install
@@ -69,6 +73,8 @@ REPROGATE_RECEIPT_SECRET='<at-least-32-byte-secret>' \
 Do not treat these HMAC keys or filesystem observation as OS-level enforcement. See the threat model before enabling `action.execute`.
 
 The separate host-only `git-review` CLI prepares an exact staged-effect request, signs an explicit operator-key decision, imports linked evidence, checks current authorization, and revokes ledger approval. Signing reads a protected key file only after staging and displays the full safely escaped diff; no default MCP approval tool is added. See the [operator review guide](docs/GIT_OPERATOR_REVIEW.md) for configuration, commands, limits and deployment separation.
+
+The [Git promotion foundations](docs/GIT_PROMOTION_FOUNDATIONS.md) provide exact candidate objects and a cooperative ownership fence. Candidate preparation permits object/scratch writes and possible unreachable objects. The fence requires private host storage, cooperative writers and trusted-host child quiescence; it is not an OS sandbox. The [prepared promotion journal](docs/GIT_PROMOTION_JOURNAL.md) permanently consumes an exact linked signed approval in the existing SQLite ledger and guards raw revocation. Prepared records and status reads grant no dispatch authority. Final authenticated ref CAS, terminal evidence, conservative recovery and promotion CLI/config integration remain follow-up work.
 
 The default server exposes exactly five tools, each with an output schema and conservative annotations:
 

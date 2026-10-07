@@ -166,8 +166,9 @@ function errorCode(error: unknown): string {
 /**
  * Read at most maxBytes from one regular-file descriptor. The limit is
  * enforced while reading, so a file that grows after fstat is still refused.
- * Opening is non-blocking so FIFOs are rejected instead of hanging. This is
- * an observation, not a filesystem reservation.
+ * Opening is non-blocking so FIFOs are rejected instead of hanging. Pre/post
+ * descriptor metadata and observed byte length must agree; atime is excluded.
+ * This is an observation, not a filesystem reservation.
  */
 export function readBoundedRegularFile(
   path: string,
@@ -175,6 +176,12 @@ export function readBoundedRegularFile(
   label: string,
   options: { noFollow?: boolean; verify?: (stats: BigIntStats) => void } = {},
 ): Buffer {
+  if (
+    !Number.isSafeInteger(maxBytes) ||
+    maxBytes < 0 ||
+    !Number.isSafeInteger(maxBytes + 1)
+  )
+    throw new Error(`${label} requires a nonnegative safe byte limit`);
   let descriptor: number;
   try {
     descriptor = openSync(
@@ -188,16 +195,21 @@ export function readBoundedRegularFile(
       cause: error,
     });
   }
-  const chunk = Buffer.alloc(Math.min(maxBytes + 1, 64 * 1024));
+  let chunk: Buffer | undefined;
   const chunks: Buffer[] = [];
   let total = 0;
-  try {
-    const stats = fstatSync(descriptor, { bigint: true });
+  function verify(stats: BigIntStats): void {
     if (!stats.isFile()) throw new Error(`${label} must be a regular file`);
     options.verify?.(stats);
     if (stats.size > BigInt(maxBytes)) {
       throw new Error(`${label} exceeds the ${String(maxBytes)} byte limit`);
     }
+  }
+  try {
+    // Keep allocation failures inside descriptor cleanup too.
+    chunk = Buffer.alloc(Math.min(maxBytes + 1, 64 * 1024));
+    const before = fstatSync(descriptor, { bigint: true });
+    verify(before);
     for (;;) {
       const count = readSync(descriptor, chunk, 0, chunk.length, null);
       if (count === 0) break;
@@ -207,10 +219,32 @@ export function readBoundedRegularFile(
       }
       chunks.push(Buffer.from(chunk.subarray(0, count)));
     }
+    const after = fstatSync(descriptor, { bigint: true });
+    verify(after);
+    // atime is deliberately excluded: the read itself may update it. This
+    // rejects observable in-place changes, not mutations hidden between stats.
+    const stable = [
+      "dev",
+      "ino",
+      "size",
+      "mode",
+      "nlink",
+      "uid",
+      "gid",
+      "rdev",
+      "mtimeNs",
+      "ctimeNs",
+      "birthtimeNs",
+    ] as const;
+    if (
+      stable.some((field) => before[field] !== after[field]) ||
+      BigInt(total) !== after.size
+    )
+      throw new Error(`${label} changed while being read`);
     return Buffer.concat(chunks, total);
   } finally {
     // Intermediate copies may hold key material; the caller owns the result.
-    chunk.fill(0);
+    chunk?.fill(0);
     for (const part of chunks) part.fill(0);
     closeSync(descriptor);
   }
