@@ -225,6 +225,107 @@ function stageGitChange(
   }
 }
 
+/** Shared fixed host format; interpretation is identical for preparation/readback. */
+function fixedGitPromotionCommitBytes(
+  tree: string,
+  parent: string,
+  proposalId: Digest,
+  attemptId: string,
+  createdAt: string,
+): Buffer {
+  const seconds = Math.floor(Date.parse(createdAt) / 1000);
+  return Buffer.from(
+    `tree ${tree}\nparent ${parent}\nauthor ReproGate <reprogate@localhost> ${String(seconds)} +0000\ncommitter ReproGate <reprogate@localhost> ${String(seconds)} +0000\n\nReproGate candidate v1\nproposal ${proposalId}\nattempt ${attemptId}\ncreated ${createdAt}\n`,
+    "utf8",
+  );
+}
+
+/** Read-only verification of already imported objects; no staging/ref/index writes. */
+export function verifyInstalledGitPromotionObjects(
+  proposal: GitChangeProposalV2,
+  repositoryPath: string,
+  prepared: PreparedGitPromotionObjectsV1,
+): void {
+  const p = prepared;
+  if (
+    p.proposalId !== proposal.proposalId ||
+    p.baseCommit !== proposal.workspace.headCommit ||
+    p.expectedOldOid !== proposal.workspace.destinationOid ||
+    p.candidateTreeOid === proposal.workspace.headTree
+  )
+    throw new Error("Candidate does not bind the exact proposal base/tree");
+  const inRepository = (...args: string[]) => ["-C", repositoryPath, ...args];
+  const expected = fixedGitPromotionCommitBytes(
+    p.candidateTreeOid,
+    p.baseCommit,
+    p.proposalId,
+    p.attemptId,
+    p.createdAt,
+  );
+  const rawCommit = git(
+    inRepository("cat-file", "commit", p.candidateCommitOid),
+    undefined,
+    MAX_COMMIT_BYTES,
+  );
+  const commitOid = gitLine(
+    inRepository("hash-object", "-t", "commit", "--stdin"),
+    rawCommit,
+  );
+  const rawTree = git(inRepository("cat-file", "tree", p.candidateTreeOid));
+  const treeOid = gitLine(
+    inRepository("hash-object", "-t", "tree", "--stdin"),
+    rawTree,
+  );
+  const referencedTree = gitLine(
+    inRepository("rev-parse", "--verify", `${p.candidateCommitOid}^{tree}`),
+  );
+  const raw = git(
+    inRepository(
+      "diff",
+      "--raw",
+      "-z",
+      "--no-renames",
+      "--no-abbrev",
+      "--no-ext-diff",
+      "--no-textconv",
+      p.baseCommit,
+      p.candidateCommitOid,
+      "--",
+    ),
+  );
+  const patch = git(
+    inRepository(
+      "diff",
+      "--binary",
+      "--no-ext-diff",
+      "--no-textconv",
+      p.baseCommit,
+      p.candidateCommitOid,
+      "--",
+    ),
+  );
+  const actual: StagedGitChangeV1 = {
+    stageVersion: 1,
+    proposalId: proposal.proposalId,
+    baseCommit: proposal.workspace.headCommit,
+    candidateTreeOid: treeOid,
+    changedPaths: changedPathsFromRawDiff(raw, proposal.allowedPaths),
+    stagedPatchDigest: sha256(patch),
+  };
+  if (
+    !rawCommit.equals(expected) ||
+    commitOid !== p.candidateCommitOid ||
+    treeOid !== p.candidateTreeOid ||
+    referencedTree !== treeOid ||
+    sha256(rawCommit) !== p.hostCommitMetadataDigest ||
+    digestCanonical(actual) !== p.effectDigest ||
+    digestCanonical(actual) !== digestCanonical(p.staged)
+  )
+    throw new Error(
+      "Installed candidate differs from exact host commit/tree/effect",
+    );
+}
+
 /** Internal staging continuation, concrete only; never a caller-supplied callback. */
 function materializeStagedGitObjects(
   proposal: GitChangeProposalV2,
@@ -247,10 +348,12 @@ function materializeStagedGitObjects(
   }
   const now = Date.now();
   const createdAt = new Date(now).toISOString();
-  const seconds = Math.floor(now / 1000);
-  const rawCommit = Buffer.from(
-    `tree ${staged.candidateTreeOid}\nparent ${parent}\nauthor ReproGate <reprogate@localhost> ${String(seconds)} +0000\ncommitter ReproGate <reprogate@localhost> ${String(seconds)} +0000\n\nReproGate candidate v1\nproposal ${proposal.proposalId}\nattempt ${attemptId}\ncreated ${createdAt}\n`,
-    "utf8",
+  const rawCommit = fixedGitPromotionCommitBytes(
+    staged.candidateTreeOid,
+    parent,
+    proposal.proposalId,
+    attemptId,
+    createdAt,
   );
   if (rawCommit.length > MAX_COMMIT_BYTES)
     throw new Error("Candidate commit exceeds its bound");

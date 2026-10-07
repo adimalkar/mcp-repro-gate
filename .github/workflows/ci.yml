@@ -47,9 +47,7 @@ jobs:
   test:
     name: Test (${{ matrix.os }}, Node ${{ matrix.node }})
     runs-on: ${{ matrix.os }}
-    # Windows reached the former 15-minute budget with most Git fixtures unfinished.
-    # Keep every test and the per-command/worker deadlines while bounding the job.
-    timeout-minutes: ${{ matrix.os == 'windows-latest' && 30 || 15 }}
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -59,8 +57,6 @@ jobs:
           - os: ubuntu-latest
             node: 24
           - os: macos-latest
-            node: 24
-          - os: windows-latest
             node: 24
     steps:
       - name: Check out repository
@@ -81,3 +77,46 @@ jobs:
       - name: Verify package contents
         if: matrix.os == 'ubuntu-latest' && matrix.node == 24
         run: npm run pack:check
+
+  windows_test:
+    name: Windows tests (shard ${{ matrix.shard }}/2, Node 24)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      # Node partitions the complete compiled file list; each file runs in one
+      # shard. TAP exposes progress while the Git-heavy Windows fixtures run.
+      - name: Build
+        run: npm run build --silent
+
+      - name: Test complete file shard
+        run: node --test --test-reporter=tap --test-shard=${{ matrix.shard }}/2 "dist/tests/*.test.js"
+
+  windows_test_status:
+    # Preserve the existing required branch-protection context. A failed,
+    # cancelled or skipped shard must never produce a passing aggregate.
+    name: Test (windows-latest, Node 24)
+    if: ${{ always() }}
+    needs: [windows_test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every Windows shard to succeed
+        env:
+          WINDOWS_RESULT: ${{ needs.windows_test.result }}
+        run: test "$WINDOWS_RESULT" = "success"
