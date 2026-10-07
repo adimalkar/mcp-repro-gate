@@ -208,7 +208,7 @@ function requiredSecret(source: NodeJS.ProcessEnv, name: string): string {
   return value;
 }
 
-export function loadRuntimeConfig(path: string): RuntimeConfigV1 {
+function readRuntimeConfigJson(path: string): unknown {
   assertAbsolute(path, "Runtime config path");
   const descriptor = openSync(path, "r");
   let contents: string;
@@ -224,13 +224,15 @@ export function loadRuntimeConfig(path: string): RuntimeConfigV1 {
     throw new Error("Runtime config exceeds the 1 MiB limit");
   }
 
-  let parsed: unknown;
   try {
-    parsed = JSON.parse(contents);
+    return JSON.parse(contents);
   } catch (error) {
     throw new Error("Runtime config is not valid JSON", { cause: error });
   }
-  const config = runtimeConfigSchema.parse(parsed);
+}
+
+export function loadRuntimeConfig(path: string): RuntimeConfigV1 {
+  const config = runtimeConfigSchema.parse(readRuntimeConfigJson(path));
   validateRuntimeConfig(config);
   return config;
 }
@@ -287,16 +289,70 @@ export function validateRuntimeConfig(config: RuntimeConfigV1): void {
     );
   }
 
-  for (const [serverRef, backend] of Object.entries(config.backends)) {
-    assertAbsolute(backend.command, `command for ${serverRef}`);
-    assertRegularFile(backend.command, `command for ${serverRef}`);
-    if (backend.cwd !== undefined) {
-      assertAbsolute(backend.cwd, `cwd for ${serverRef}`);
-      assertDirectory(backend.cwd, `cwd for ${serverRef}`);
-    }
-    assertAbsolute(backend.artifact.path, `artifact path for ${serverRef}`);
-    assertRegularFile(backend.artifact.path, `artifact path for ${serverRef}`);
+  for (const [serverRef, backend] of Object.entries(config.backends))
+    assertBackendFiles(serverRef, backend);
+}
+
+type BackendConfigV1 = RuntimeConfigV1["backends"][string];
+
+function assertBackendFiles(serverRef: string, backend: BackendConfigV1): void {
+  assertAbsolute(backend.command, `command for ${serverRef}`);
+  assertRegularFile(backend.command, `command for ${serverRef}`);
+  if (backend.cwd !== undefined) {
+    assertAbsolute(backend.cwd, `cwd for ${serverRef}`);
+    assertDirectory(backend.cwd, `cwd for ${serverRef}`);
   }
+  assertAbsolute(backend.artifact.path, `artifact path for ${serverRef}`);
+  assertRegularFile(backend.artifact.path, `artifact path for ${serverRef}`);
+}
+
+// The launch configuration for one backend, after its artifact file is
+// confirmed to match the configured digest.
+type BoundBackend = StdioBackendConfig & {
+  artifact: NonNullable<StdioBackendConfig["artifact"]>;
+};
+
+async function stdioBackend(
+  serverRef: string,
+  backend: BackendConfigV1,
+  environment: NodeJS.ProcessEnv,
+): Promise<BoundBackend> {
+  const observedDigest = await sha256File(backend.artifact.path);
+  if (observedDigest !== backend.artifact.digest) {
+    throw new Error(
+      `Configured artifact digest does not match the file for ${serverRef}`,
+    );
+  }
+  return {
+    command: backend.command,
+    args: [...backend.args],
+    ...(backend.cwd === undefined ? {} : { cwd: backend.cwd }),
+    env: resolveBackendEnvironment(backend.environment, environment),
+    artifact: { path: backend.artifact.path, digest: backend.artifact.digest },
+  };
+}
+
+/**
+ * One backend from a draft runtime configuration, for host-side catalog
+ * import. Only the `backends` section is read, so the catalog may be empty;
+ * the backend gets the same validation and artifact check as `serve`.
+ */
+export async function loadImportBackend(
+  configPath: string,
+  serverRef: string,
+  environment: NodeJS.ProcessEnv = process.env,
+): Promise<BoundBackend> {
+  const parsed = z
+    .object({ backends: z.record(z.string().min(1), backendSchema) })
+    .loose()
+    .parse(readRuntimeConfigJson(configPath));
+  const backend = Object.hasOwn(parsed.backends, serverRef)
+    ? parsed.backends[serverRef]
+    : undefined;
+  if (backend === undefined)
+    throw new Error(`No backend named ${serverRef} in the runtime config`);
+  assertBackendFiles(serverRef, backend);
+  return stdioBackend(serverRef, backend, environment);
 }
 
 export async function createConfiguredRuntime(
@@ -317,24 +373,8 @@ export async function createConfiguredRuntime(
   }
 
   const backends: Record<string, StdioBackendConfig> = {};
-  for (const [serverRef, backend] of Object.entries(config.backends)) {
-    const observedDigest = await sha256File(backend.artifact.path);
-    if (observedDigest !== backend.artifact.digest) {
-      throw new Error(
-        `Configured artifact digest does not match the file for ${serverRef}`,
-      );
-    }
-    backends[serverRef] = {
-      command: backend.command,
-      args: [...backend.args],
-      ...(backend.cwd === undefined ? {} : { cwd: backend.cwd }),
-      env: resolveBackendEnvironment(backend.environment, environment),
-      artifact: {
-        path: backend.artifact.path,
-        digest: backend.artifact.digest,
-      },
-    };
-  }
+  for (const [serverRef, backend] of Object.entries(config.backends))
+    backends[serverRef] = await stdioBackend(serverRef, backend, environment);
 
   const observer = new FilesystemManifestObserver({
     roots: [...config.observer.roots],

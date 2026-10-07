@@ -142,6 +142,8 @@ The server then issues and consumes a one-use capability itself, so the model ne
   - The text is then cut to `maxTextBytes` (default 16384, maximum 262144) on a character boundary. Non-text items are counted in `omittedItems`.
   - The receipt's `resultDigest` still covers the complete, unredacted downstream result.
 
+To expose a backend's tools without copying schemas by hand, run `reprogate catalog import`. [Proxying a code graph](CODE_GRAPH.md) walks through it for codebase-memory-mcp.
+
 Redaction removes only what it can recognise. Fragments shorter than 12 characters, a secret split into pieces across separate items or calls, and other encodings (base64, hex, percent-encoding) are not detected. **A mediated tool must not be able to read the gateway's secret material**, for example the process environment, `/proc/<pid>/environ` or the secret files. Treat downstream output as untrusted even after redaction.
 
 ## Filesystem observation

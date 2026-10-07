@@ -5,6 +5,7 @@ import { serveStdio } from "@modelcontextprotocol/server/stdio";
 
 import { issueCapabilityToken } from "./capability-token.js";
 import { SqliteExecutionStore } from "./execution-store.js";
+import { runArtifactDigest, runCatalogImport } from "./catalog-cli.js";
 import { runGitReviewCli } from "./git-review-cli.js";
 import { createHandoffService, type HandoffService } from "./handoff.js";
 import {
@@ -255,6 +256,20 @@ async function main(): Promise<void> {
     verifyReceiptFile(receiptPath, "REPROGATE_RECEIPT_SECRET");
     return;
   }
+  if (command === "catalog" && process.argv[3] === "import") {
+    await runCatalogImport(process.argv.slice(4), {
+      stdout: (text) => process.stdout.write(text),
+      stderr: (text) => process.stderr.write(text),
+    });
+    return;
+  }
+  if (command === "artifact" && process.argv[3] === "digest") {
+    await runArtifactDigest(process.argv.slice(4), {
+      stdout: (text) => process.stdout.write(text),
+      stderr: (text) => process.stderr.write(text),
+    });
+    return;
+  }
   if (command === "git-review") {
     process.exitCode = runGitReviewCli(process.argv.slice(3), {
       stdout: (text) => process.stdout.write(text),
@@ -263,7 +278,7 @@ async function main(): Promise<void> {
     return;
   }
   process.stderr.write(
-    "Usage: reprogate [serve [--config <absolute-path>] [--handoff-config <absolute-path>]|demo|approve [--config <absolute-path>] <target> <action-id>|verify-receipt [--config <absolute-path>] <receipt.json>|git-review <prepare|sign|import|check|revoke> ...]\n",
+    "Usage: reprogate [serve [--config <absolute-path>] [--handoff-config <absolute-path>]|demo|approve [--config <absolute-path>] <target> <action-id>|verify-receipt [--config <absolute-path>] <receipt.json>|catalog import --config <absolute-path> --backend <name> --effects <effects> ...|artifact digest <absolute-path>|git-review <prepare|sign|import|check|revoke> ...]\n",
   );
   process.exitCode = 2;
 }
