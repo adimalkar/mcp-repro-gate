@@ -7,6 +7,7 @@ import { issueCapabilityToken } from "./capability-token.js";
 import { SqliteExecutionStore } from "./execution-store.js";
 import { runArtifactDigest, runCatalogImport } from "./catalog-cli.js";
 import { runGitReviewCli } from "./git-review-cli.js";
+import { runHeldApproval } from "./held-approval-cli.js";
 import { createHandoffService, type HandoffService } from "./handoff.js";
 import {
   loadHandoffConfig,
@@ -206,12 +207,19 @@ async function main(): Promise<void> {
     return;
   }
   if (command === "approve") {
+    const mode = process.argv[6];
+    if (mode === "--hold" || mode === "--revoke-held") {
+      runHeldApproval(process.argv.slice(3), {
+        stdout: (text) => process.stdout.write(text),
+      });
+      return;
+    }
     if (process.argv[3] === "--config") {
       const configPath = process.argv[4];
       const actionId = process.argv[5];
       if (configPath === undefined || actionId === undefined) {
         throw new Error(
-          "Usage: reprogate approve --config <absolute-path> <action-id>",
+          "Usage: reprogate approve --config <absolute-path> <action-id> [--hold|--revoke-held]",
         );
       }
       const config = loadRuntimeConfig(configPath);

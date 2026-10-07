@@ -20,6 +20,7 @@ import {
 } from "./handoff-filesystem.js";
 import { envelopeDigest, verifyActionEnvelope } from "./envelope.js";
 import type { PlanStore, PlannedAction } from "./kernel.js";
+import { parseHeldApproval, type HeldApprovalV1 } from "./held-approval.js";
 import type { ExecutionReceiptV1 } from "./receipt.js";
 import type { Digest } from "./types.js";
 
@@ -150,6 +151,14 @@ export class SqliteExecutionStore implements PlanStore, TokenUseStore {
         receipt_json TEXT,
         FOREIGN KEY (action_id) REFERENCES plans(action_id),
         FOREIGN KEY (capability_id) REFERENCES token_uses(capability_id)
+      ) STRICT;
+
+      CREATE TABLE IF NOT EXISTS held_approvals (
+        action_id TEXT PRIMARY KEY,
+        approval_id TEXT NOT NULL UNIQUE,
+        approval_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (action_id) REFERENCES plans(action_id)
       ) STRICT;
     `);
   }
@@ -554,6 +563,58 @@ export class SqliteExecutionStore implements PlanStore, TokenUseStore {
     return row === undefined
       ? undefined
       : (JSON.parse(row.plan_json) as PlannedAction);
+  }
+
+  /** Record a signed host-side approval; one per action. */
+  holdApproval(record: HeldApprovalV1): void {
+    try {
+      this.#database
+        .prepare(
+          "INSERT INTO held_approvals (action_id, approval_id, approval_json, created_at) VALUES (?, ?, ?, ?)",
+        )
+        .run(
+          record.actionId,
+          record.approvalId,
+          canonicalJson(record),
+          record.issuedAt,
+        );
+    } catch (error) {
+      if (this.#isConstraintError(error))
+        throw new Error("This action already has a held approval", {
+          cause: error,
+        });
+      throw error;
+    }
+  }
+
+  /** The stored held approval, parsed but not yet verified. */
+  getHeldApproval(actionId: string): HeldApprovalV1 | undefined {
+    const row = this.#database
+      .prepare("SELECT approval_json FROM held_approvals WHERE action_id = ?")
+      .get(actionId) as { approval_json: string } | undefined;
+    return row === undefined ? undefined : parseHeldApproval(row.approval_json);
+  }
+
+  /**
+   * Remove an unused held approval. Returns "revoked", "consumed" or
+   * "missing"; the check and delete are one statement, so a concurrent run
+   * cannot use an approval this reports as revoked.
+   */
+  revokeHeldApproval(actionId: string): "revoked" | "consumed" | "missing" {
+    const changed = this.#database
+      .prepare(
+        `DELETE FROM held_approvals
+         WHERE action_id = ?
+           AND NOT EXISTS (
+             SELECT 1 FROM token_uses
+             WHERE capability_id = 'host-held:' || held_approvals.approval_id
+           )`,
+      )
+      .run(actionId);
+    if (Number(changed.changes) === 1) return "revoked";
+    return this.getHeldApproval(actionId) === undefined
+      ? "missing"
+      : "consumed";
   }
 
   /** Consumed capabilities whose ID starts with this non-empty prefix. */

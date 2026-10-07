@@ -234,17 +234,19 @@ export function createReproGateServer(
       "action.run",
       {
         description:
-          "Run one previously planned action that policy allows with only host-mediated read effects; the host issues the one-use capability, so no token is passed. Returns a compact receipt summary and redacted, bounded downstream text",
+          "Run one previously planned action without passing a token: either a plan that policy allows with only host-mediated read effects, or, when enabled, a plan an operator approved on the host. The host issues the one-use capability. Returns a compact receipt summary and redacted, bounded downstream text",
         inputSchema: z.object({
           actionId: actionIdInputSchema,
           arguments: z.record(z.string(), z.unknown()),
         }),
         outputSchema: actionRunOutputSchema,
+        // Held approvals let operator-approved plans write, so claim
+        // nothing narrower than action.execute does.
         annotations: {
           readOnlyHint: false,
-          destructiveHint: false,
+          destructiveHint: mediator.runsApprovedPlans,
           idempotentHint: false,
-          openWorldHint: mediator.mediatesNetwork,
+          openWorldHint: mediator.mediatesNetwork || mediator.runsApprovedPlans,
         },
       },
       async ({ actionId, arguments: toolArguments }) => {
