@@ -10,7 +10,7 @@ Status: proposed implementation. This proposal completes the Phase 4 backlog ite
   - Otherwise it records a **held approval** for that exact plan: `approvalId`, `actionId`, `envelopeDigest`, `scopes`, `issuedAt` and `expiresAt` (the plan's expiry).
   - The approval is signed with HMAC-SHA256 under the configured capability secret. The signed message carries a domain prefix (`reprogate.held-approval.v1`), so it can never be read as a capability token, and the reverse holds too.
   - It prints the approval summary, never a token.
-- `reprogate approve --config <runtime.json> <action-id> --revoke-held` removes a held approval that has not been used yet.
+- `reprogate approve --config <runtime.json> <action-id> --revoke-held` revokes a held approval that has not been used yet. `--hold --expires-in <seconds>` shortens an approval's lifetime. Any other argument is rejected, so a typo never prints a token.
 - When a plan has a held approval, `action.run` runs it **exactly once**, but only when all of these hold:
   - the signature verifies;
   - the approval matches the plan's action ID, envelope digest and scopes;
@@ -27,7 +27,7 @@ Status: proposed implementation. This proposal completes the Phase 4 backlog ite
 ## Trust notes
 
 - **Approver identity:** a held approval proves possession of the capability secret on the host, the same trust as today's `approve` command. It does not authenticate an individual approver.
-- **Database access:** write access to the store alone cannot create, extend, or transplant a valid held approval. Signed approvals do live in the store, though. Someone who can read and write it can replay an approved run, or revive a revoked approval, until it expires, by deleting the `token_uses` record that enforces single use. Single use relies on store integrity, like the rest of the execution record. `--expires-in` bounds that window. (Review change: revocation now writes a `token_uses` tombstone in the same transaction, which also closes a revoke-versus-run race.)
+- **Database access:** write access to the store alone cannot create, extend, or transplant a valid held approval. Signed approvals do live in the store, though. Someone who can read and write it can replay an approved run, or revive a revoked approval, until it expires, by deleting the `token_uses` record that enforces single use. Single use relies on store integrity, like the rest of the execution record. `--expires-in` bounds that window. Revocation writes a `token_uses` tombstone in the same transaction, so a revoked approval cannot be revived by re-inserting its row, and a run that already verified it cannot execute.
 
 ## Verification
 
