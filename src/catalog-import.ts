@@ -57,6 +57,22 @@ export function escapeUnsafeText(text: string): string {
   );
 }
 
+// JSON.stringify already escapes C0 controls inside strings; these remaining
+// characters only occur inside strings too, where \u escapes are valid JSON.
+const JSON_UNSAFE_TEXT = new RegExp(
+  "[\\u007f-\\u009f\\u061c\\u200e\\u200f\\u202a-\\u202e\\u2066-\\u2069]",
+  "gu",
+);
+
+/** Serialize for a terminal: same JSON data, with DEL, C1 and bidi escaped. */
+export function terminalSafeJson(value: unknown): string {
+  return JSON.stringify(value, null, 2).replace(
+    JSON_UNSAFE_TEXT,
+    (character) =>
+      `\\u${(character.codePointAt(0) ?? 0).toString(16).padStart(4, "0")}`,
+  );
+}
+
 function writeShaped(name: string): boolean {
   return name
     .replace(/([a-z0-9])([A-Z])/gu, "$1_$2")

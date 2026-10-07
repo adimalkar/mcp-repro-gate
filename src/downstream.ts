@@ -63,28 +63,26 @@ class McpDownstreamSession implements DownstreamSession {
     if (listed.tools.length > MAX_LISTED_TOOLS)
       throw new Error("Downstream lists too many tools");
     const tools: DownstreamToolDescription[] = [];
-    {
-      for (const tool of listed.tools) {
-        tools.push({
-          name: tool.name,
-          inputSchema: tool.inputSchema,
-          ...(tool.description === undefined
-            ? {}
-            : { description: tool.description }),
-          ...(tool.annotations === undefined
-            ? {}
-            : {
-                annotations: {
-                  ...(tool.annotations.readOnlyHint === undefined
-                    ? {}
-                    : { readOnlyHint: tool.annotations.readOnlyHint }),
-                  ...(tool.annotations.destructiveHint === undefined
-                    ? {}
-                    : { destructiveHint: tool.annotations.destructiveHint }),
-                },
-              }),
-        });
-      }
+    for (const tool of listed.tools) {
+      tools.push({
+        name: tool.name,
+        inputSchema: tool.inputSchema,
+        ...(tool.description === undefined
+          ? {}
+          : { description: tool.description }),
+        ...(tool.annotations === undefined
+          ? {}
+          : {
+              annotations: {
+                ...(tool.annotations.readOnlyHint === undefined
+                  ? {}
+                  : { readOnlyHint: tool.annotations.readOnlyHint }),
+                ...(tool.annotations.destructiveHint === undefined
+                  ? {}
+                  : { destructiveHint: tool.annotations.destructiveHint }),
+              },
+            }),
+      });
     }
     return tools;
   }

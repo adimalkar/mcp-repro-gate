@@ -4,6 +4,7 @@ import {
   EFFECT_CLASSES,
   escapeUnsafeText,
   importCatalogEntries,
+  terminalSafeJson,
   validateImportOptions,
   type CatalogImportResult,
 } from "./catalog-import.js";
@@ -109,7 +110,9 @@ async function importFromBackend(
     ...options,
     artifactDigest: backend.artifact.digest,
   });
-  io.stdout(`${JSON.stringify(result.entries, null, 2)}\n`);
+  // Escapes inside JSON strings decode to the same data, so schemas and
+  // their digests are unchanged while bidi and C1 characters stay inert.
+  io.stdout(`${terminalSafeJson(result.entries)}\n`);
   for (const { toolRef, schemaDigest, warnings } of result.report) {
     io.stderr(`${toolRef} ${schemaDigest}\n`);
     for (const warning of warnings)

@@ -10,6 +10,7 @@ import {
   MAX_IMPORTED_DESCRIPTION,
   escapeUnsafeText,
   importCatalogEntries,
+  terminalSafeJson,
 } from "../src/catalog-import.js";
 import { demoPolicy } from "../src/demo-config.js";
 import { digestCanonical } from "../src/digest.js";
@@ -453,4 +454,28 @@ test("inherited object keys are not backend names", async (context) => {
       ),
       new RegExp(`No backend named ${name}`, "u"),
     );
+});
+
+test("escaped import output still decodes to the exact entries", () => {
+  const { entries } = importCatalogEntries(
+    [
+      {
+        name: "tricky",
+        description: "plain",
+        inputSchema: {
+          type: "object",
+          description: `rtl ${String.fromCharCode(0x202e)} csi ${String.fromCharCode(0x9b)}`,
+        },
+      },
+    ],
+    { serverRef: "graph", artifactDigest: digest, effects: ["local_read"] },
+  );
+  const printed = terminalSafeJson(entries);
+  for (const code of [0x202e, 0x9b])
+    assert.equal(printed.includes(String.fromCharCode(code)), false);
+  assert.deepEqual(JSON.parse(printed), entries);
+  assert.equal(
+    digestCanonical((JSON.parse(printed) as typeof entries)[0]?.inputSchema),
+    digestCanonical(entries[0]?.inputSchema),
+  );
 });
