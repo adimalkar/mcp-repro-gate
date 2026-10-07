@@ -21,6 +21,7 @@ All notable changes will be documented in this file. The project follows [Semant
 - Configuration-aware approval issuance and receipt verification.
 - Opt-in native agent handoff: host-configured `handoff_status`/`handoff_update` MCP tools, `serve --handoff-config`, Handoff Configuration v1 and Handoff v1 JSON Schemas, immutable SQLite snapshots with optimistic concurrency, and a bounded shared-protocol `.agent/handoff.md` projection with private history.
 - Schema-on-demand `catalog.describe` and full-evidence `action.inspect` MCP tools; output schemas and conservative annotations on every façade tool.
+- Host-side `reprogate catalog import` (catalog entries from a configured backend's live tool list, with operator-declared effects and review warnings), `reprogate artifact digest`, and a code graph proxy guide for codebase-memory-mcp.
 - Opt-in host-mediated execution: `mediation` runtime configuration and the `action.run` tool for allow-decided read-effect plans, with host-issued one-use capabilities (`host-mediated:` capability IDs) and redacted, bounded model-visible results.
 
 ### Changed
