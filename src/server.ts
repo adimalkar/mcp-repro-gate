@@ -254,12 +254,15 @@ export function createReproGateServer(
           );
         } catch (runError) {
           // Refusals are stable codes; executor failures keep their message.
+          // Executor and downstream messages are bounded and redacted too.
           return error(
             runError instanceof MediationError
               ? runError.code
-              : runError instanceof Error
-                ? runError.message
-                : "Unknown execution error",
+              : mediator.redactMessage(
+                  runError instanceof Error
+                    ? runError.message
+                    : "Unknown execution error",
+                ),
           );
         }
       },

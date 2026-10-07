@@ -16,6 +16,7 @@ import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 import { Ajv2020 } from "ajv/dist/2020.js";
 
 import { demoPolicy } from "../src/demo-config.js";
+import { digestCanonical } from "../src/digest.js";
 import type { ReproGateExecutor } from "../src/executor.js";
 import { actionRunOutputSchema } from "../src/facade.js";
 import { sha256File } from "../src/file-digest.js";
@@ -39,15 +40,19 @@ const textSchema = {
   required: ["text"],
 };
 
-function unitMediator(maxTextBytes = 64, redactPatterns: string[] = []) {
+function unitMediator(
+  maxTextBytes = 64,
+  redactPatterns: string[] = [],
+  secrets: [string, string] = [capabilitySecret, receiptSecret],
+) {
   return new HostMediator(
     {} as ReproGateExecutor,
+    new ReproGateKernel([], demoPolicy),
     mediationConfigSchema.parse({
       effects: ["local_read"],
       result: { maxTextBytes: Math.max(256, maxTextBytes), redactPatterns },
     }),
-    capabilitySecret,
-    receiptSecret,
+    ...secrets,
   );
 }
 
@@ -109,7 +114,12 @@ test("bounding never splits a multi-byte character and reports truncation", () =
   assert.ok(Buffer.byteLength(kept) <= 256);
 });
 
-async function configuredRuntime(context: TestContext, mediation?: unknown) {
+async function configuredRuntime(
+  context: TestContext,
+  mediation?: unknown,
+  echoEffects: string[] = ["local_read"],
+  policyDefaults: Record<string, string> = {},
+) {
   const directory = mkdtempSync(join(tmpdir(), "reprogate-mediation-"));
   const workspace = join(directory, "workspace");
   const state = join(directory, "state");
@@ -138,14 +148,17 @@ async function configuredRuntime(context: TestContext, mediation?: unknown) {
       configVersion: 1,
       databasePath: join(state, "reprogate.sqlite"),
       catalog: [
-        tool("echo", ["local_read"], textSchema),
+        tool("echo", echoEffects, textSchema),
         tool("publish", ["local_write"], {
           ...textSchema,
           properties: { content: { type: "string" } },
           required: ["content"],
         }),
       ],
-      policy: demoPolicy,
+      policy: {
+        ...demoPolicy,
+        defaults: { ...demoPolicy.defaults, ...policyDefaults },
+      },
       backends: {
         configured: {
           transport: "stdio",
@@ -372,6 +385,7 @@ test("plans without declared effects or with unlisted effects are never mediated
   } as unknown as ReproGateExecutor;
   const mediator = new HostMediator(
     executor,
+    kernel,
     mediationConfigSchema.parse({ effects: ["local_read"] }),
     capabilitySecret,
     receiptSecret,
@@ -385,4 +399,178 @@ test("plans without declared effects or with unlisted effects are never mediated
     );
   }
   assert.equal(executed, 0);
+});
+
+test("escaped, split and partial secrets are redacted wherever they appear", () => {
+  const awkward = 'cap"secret\\with-quote-and-backslash-0123456789';
+  const mediator = unitMediator(4096, [], [awkward, receiptSecret]);
+  const half = Math.floor(receiptSecret.length / 2);
+  const bounded = mediator.bound({
+    content: [
+      { type: "text", text: `tail ${receiptSecret.slice(0, half)}` },
+      { type: "text", text: `${receiptSecret.slice(half)} head` },
+      {
+        type: "text",
+        text: `nested ${receiptSecret.slice(0, 20)}x${receiptSecret.slice(5)}`,
+      },
+    ],
+    structuredContent: { value: awkward },
+  });
+  const visible = JSON.stringify(bounded.content);
+  for (const fragment of [
+    receiptSecret.slice(0, 12),
+    receiptSecret.slice(-12),
+    awkward.slice(0, 12),
+    JSON.stringify(awkward).slice(1, 13),
+    JSON.stringify(awkward).slice(-13, -1),
+  ])
+    assert.equal(visible.includes(fragment), false, fragment);
+  assert.ok(bounded.redactions >= 4);
+  assert.equal(
+    mediator
+      .redactMessage(`downstream said ${awkward} and ${receiptSecret}`)
+      .includes("secret"),
+    false,
+  );
+});
+
+test("nothing after the first cut is shown", () => {
+  const mediator = unitMediator(256);
+  const bounded = mediator.bound({
+    content: [
+      // Cut to 85 three-byte characters, leaving 1 byte that "Z" would fit.
+      { type: "text", text: "€".repeat(100) },
+      { type: "text", text: "Z" },
+    ],
+  });
+  assert.equal(bounded.truncated, true);
+  assert.deepEqual(
+    bounded.content.map((item) => item.text),
+    ["€".repeat(85)],
+  );
+});
+
+test("a policy or catalog change since planning withdraws mediation", async () => {
+  const tool = {
+    toolRef: "programmatic.read",
+    serverRef: "programmatic",
+    toolName: "read",
+    description: "Local read",
+    inputSchema: {},
+    effects: ["local_read" as const],
+  };
+  const planning = new ReproGateKernel([tool], demoPolicy);
+  const plan = planning.plan({ toolRef: tool.toolRef, arguments: {} });
+  assert.equal(plan.policy.decision, "allow");
+  const changes = [
+    new ReproGateKernel([tool], {
+      ...demoPolicy,
+      defaults: { ...demoPolicy.defaults, local_read: "approval_required" },
+    }),
+    new ReproGateKernel(
+      [{ ...tool, effects: ["local_write" as const] }],
+      demoPolicy,
+    ),
+    new ReproGateKernel(
+      [{ ...tool, inputSchema: { type: "object" } }],
+      demoPolicy,
+    ),
+    new ReproGateKernel([], demoPolicy),
+  ];
+  for (const live of changes) {
+    const executor = {
+      store: { get: () => plan, countCapabilityUses: () => 0 },
+      execute: () => Promise.reject(new Error("must not execute")),
+    } as unknown as ReproGateExecutor;
+    const mediator = new HostMediator(
+      executor,
+      live,
+      mediationConfigSchema.parse({ effects: ["local_read"] }),
+      capabilitySecret,
+      receiptSecret,
+    );
+    await assert.rejects(
+      mediator.run({ actionId: plan.envelope.actionId, arguments: {} }),
+      (error: unknown) =>
+        error instanceof MediationError && error.code === "stale_plan",
+    );
+  }
+});
+
+test("each plan runs at most maxRunsPerPlan times, even concurrently", async (context) => {
+  const { call, plan, counts } = await configuredRuntime(context, {
+    effects: ["local_read"],
+  });
+  const actionId = await plan("configured.echo", { text: "once" });
+  const runs = await Promise.all(
+    [0, 1, 2].map(() =>
+      call("action.run", { actionId, arguments: { text: "once" } }),
+    ),
+  );
+  const outcomes = runs
+    .map((run) =>
+      run.isError === true
+        ? (JSON.parse(run.content[0]?.text ?? "") as { error: string }).error
+        : "succeeded",
+    )
+    .sort();
+  assert.deepEqual(outcomes, ["run_limit", "run_limit", "succeeded"]);
+  assert.deepEqual(counts(), { executions: 1, tokenUses: 1 });
+  const again = await call("action.run", {
+    actionId,
+    arguments: { text: "once" },
+  });
+  assert.deepEqual(JSON.parse(again.content[0]?.text ?? ""), {
+    error: "run_limit",
+  });
+});
+
+test("network reads are mediated only when allowlisted, with an open-world hint", async (context) => {
+  const network = await configuredRuntime(
+    context,
+    { effects: ["network_read"], maxRunsPerPlan: 2 },
+    ["network_read"],
+    { network_read: "allow" },
+  );
+  const run = (await network.client.listTools()).tools.find(
+    (tool) => tool.name === "action.run",
+  );
+  assert.equal(run?.annotations?.openWorldHint, true);
+  const text = "remote";
+  const actionId = await network.plan("configured.echo", { text });
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const result = await network.call("action.run", {
+      actionId,
+      arguments: { text },
+    });
+    assert.equal(result.isError, undefined, JSON.stringify(result.content));
+    const summary = actionRunOutputSchema.parse(result.structuredContent);
+    const record = network.runtime.store.getExecution(summary.executionId);
+    assert.equal(
+      record?.capabilityId,
+      `host-mediated:${actionId.slice(7)}:${String(attempt + 1)}`,
+    );
+    // The receipt covers the complete downstream result, not the view.
+    assert.equal(
+      summary.resultDigest,
+      digestCanonical({
+        content: [{ type: "text", text }],
+        structuredContent: { length: text.length },
+      }),
+    );
+  }
+
+  const localOnly = await configuredRuntime(
+    context,
+    { effects: ["local_read"] },
+    ["network_read"],
+    { network_read: "allow" },
+  );
+  const refused = await localOnly.call("action.run", {
+    actionId: await localOnly.plan("configured.echo", { text }),
+    arguments: { text },
+  });
+  assert.deepEqual(JSON.parse(refused.content[0]?.text ?? ""), {
+    error: "effect_not_mediated",
+  });
 });

@@ -371,6 +371,7 @@ export async function createConfiguredRuntime(
         : {
             mediator: new HostMediator(
               executor,
+              kernel,
               config.mediation,
               capabilitySecret,
               receiptSecret,

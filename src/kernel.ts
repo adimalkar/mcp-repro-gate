@@ -6,6 +6,7 @@ import { evaluatePolicy } from "./policy.js";
 import type {
   ActionEnvelopeV1,
   CatalogTool,
+  Decision,
   PolicyDecision,
   PolicyV1,
   Principal,
@@ -136,6 +137,34 @@ export class ReproGateKernel {
     const plan = { envelope, envelopeDigest: envelopeDigest(envelope), policy };
     this.#plans.save(plan);
     return plan;
+  }
+
+  /**
+   * The decision the live catalog and policy would give this envelope now,
+   * or undefined if its tool, schema, authority or policy has changed.
+   */
+  currentDecision(envelope: ActionEnvelopeV1): Decision | undefined {
+    const tool = [...this.#catalog.values()].find(
+      (entry) =>
+        entry.serverRef === envelope.tool.serverRef &&
+        entry.toolName === envelope.tool.toolName,
+    );
+    if (
+      tool === undefined ||
+      digestCanonical(tool.inputSchema) !== envelope.tool.schemaDigest
+    )
+      return undefined;
+    const sorted = (values: string[] | undefined) =>
+      JSON.stringify([...new Set(values ?? [])].sort());
+    if (
+      sorted(tool.effects) !== sorted(envelope.authority.effects) ||
+      sorted(tool.scopes) !== sorted(envelope.authority.scopes)
+    )
+      return undefined;
+    const policy = evaluatePolicy(this.#policy, tool.toolRef, tool.effects);
+    return policy.policyDigest === envelope.authority.policyDigest
+      ? policy.decision
+      : undefined;
   }
 
   explain(actionId: string): PlannedAction | undefined {

@@ -28,7 +28,8 @@ Every downstream call needs an out-of-band capability token, and the model must 
   - issues a one-use capability bound to the exact plan, with a `jti` of `host-mediated:<uuid>` so receipts record the provenance;
   - consumes that capability through the existing executor, so every existing check still applies: argument digest, live schema pin, artifact digest, JSON Schema validation, write-ahead execution record, signed receipt.
 
-- The model-visible `action.run` result is compact: `executionId`, `outcome`, `receiptDigest`, `resultDigest`, `content`, `truncated` and `redactions`.
+- The model-visible `action.run` result is compact: `executionId`, `outcome`, `receiptDigest`, `resultDigest`, `content`, `truncated`, `redactions` and `omittedItems`.
+- Review changes: each run re-checks the live catalog and policy (`stale_plan`). An optional `maxRunsPerPlan` (default 1) is enforced atomically through numbered single-use capability IDs (`run_limit`). Redaction covers every fragment of 12 or more characters of a secret, raw or JSON-escaped. Error messages are redacted and bounded, and output stops at the first cut.
   - `content` keeps only text items.
   - Redaction runs before bounding. It always removes capability-token-shaped strings and the configured capability and receipt secret values, then applies the host patterns.
   - The total text is then cut to `maxTextBytes` on a UTF-8 boundary.
