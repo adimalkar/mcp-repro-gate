@@ -13,6 +13,7 @@ import test, { type TestContext } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
+import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import { Ajv2020 } from "ajv/dist/2020.js";
 
 import { demoPolicy } from "../src/demo-config.js";
@@ -229,7 +230,7 @@ async function configuredRuntime(
       db.close();
     }
   };
-  return { runtime, client, call, plan, counts };
+  return { runtime, client, call, plan, counts, configPath };
 }
 
 test("action.run executes an allowed read with a host-issued capability and a bounded view", async (context) => {
@@ -261,11 +262,13 @@ test("action.run executes an allowed read with a host-issued capability and a bo
   assert.equal(summary.outcome, "succeeded");
   assert.equal(summary.truncated, true);
   assert.ok(summary.redactions >= 3);
-  // The summary's JSON mirror comes first, then the bounded text once.
-  assert.deepEqual(JSON.parse(result.content[0]?.text ?? ""), summary);
+  // The summary's JSON comes first, then the bounded text, which
+  // structuredContent also carries for hosts that read only that.
+  const { content: structuredText, ...withoutText } = summary;
+  assert.equal(result.content[0]?.text, JSON.stringify(withoutText));
+  assert.deepEqual(result.content.slice(1), structuredText);
   assert.equal(result.content.length, 2);
   assert.ok(Buffer.byteLength(result.content[1]?.text ?? "") <= 256);
-  assert.equal(JSON.stringify(result.structuredContent).includes("é"), false);
   const visible = JSON.stringify(result);
   for (const hidden of ["rg1.aaa", capabilitySecret, "xyz.123"])
     assert.equal(visible.includes(hidden), false, hidden);
@@ -622,7 +625,7 @@ test("concurrent runs take the next free slot up to the limit", async (context) 
   assert.deepEqual(counts(), { executions: 3, tokenUses: 3 });
 });
 
-test("compact action.run summaries omit digests and send downstream text once", async (context) => {
+test("compact action.run summaries omit digests and reach text-only and structured-only hosts", async (context) => {
   const { call, plan } = await configuredRuntime(context, {
     effects: ["local_read"],
   });
@@ -632,6 +635,7 @@ test("compact action.run summaries omit digests and send downstream text once", 
   assert.equal(result.isError, undefined, JSON.stringify(result.content));
   const summary = actionRunOutputSchema.parse(result.structuredContent);
   assert.deepEqual(Object.keys(summary).sort(), [
+    "content",
     "detail",
     "executionId",
     "omittedItems",
@@ -640,9 +644,70 @@ test("compact action.run summaries omit digests and send downstream text once", 
     "truncated",
   ]);
   assert.equal(summary.detail, "compact");
+  const downstream = [text, JSON.stringify({ length: text.length })];
+  // Text-only hosts: the summary's JSON, then the downstream text unescaped.
+  const { content: structuredText, ...withoutText } = summary;
   assert.deepEqual(
     result.content.map((item) => item.text),
-    [JSON.stringify(summary), text, JSON.stringify({ length: text.length })],
+    [JSON.stringify(withoutText), ...downstream],
   );
-  assert.equal(JSON.stringify(result).split(text).length - 1, 1);
+  // Structured-only hosts: the same bounded text in structuredContent.
+  assert.deepEqual(
+    structuredText.map((item) => item.text),
+    downstream,
+  );
+});
+
+test("action.run works through the stdio CLI in the modern protocol era", async (context) => {
+  const { configPath } = await configuredRuntime(context, {
+    effects: ["local_read"],
+  });
+  const client = new Client(
+    { name: "modern-run", version: "1.0.0" },
+    { versionNegotiation: { mode: { pin: "2026-07-28" } } },
+  );
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [
+      fileURLToPath(new URL("../src/cli.js", import.meta.url)),
+      "serve",
+      "--config",
+      configPath,
+    ],
+    env: {
+      ...process.env,
+      MEDIATION_CAPABILITY_SECRET: capabilitySecret,
+      MEDIATION_RECEIPT_SECRET: receiptSecret,
+    },
+    stderr: "pipe",
+  });
+  context.after(async () => client.close());
+  await client.connect(transport);
+  assert.equal(client.getProtocolEra(), "modern");
+  const text = "modern era";
+  const plan = async () => {
+    const planned = await client.callTool({
+      name: "action.plan",
+      arguments: { toolRef: "configured.echo", arguments: { text } },
+    });
+    return (planned.structuredContent as { actionId: string }).actionId;
+  };
+  const compact = await client.callTool({
+    name: "action.run",
+    arguments: { actionId: await plan(), arguments: { text } },
+  });
+  assert.equal(compact.isError, undefined, JSON.stringify(compact.content));
+  const compactSummary = actionRunOutputSchema.parse(compact.structuredContent);
+  assert.equal(compactSummary.detail, "compact");
+  assert.equal(compactSummary.receiptDigest, undefined);
+  assert.equal(compactSummary.content[0]?.text, text);
+  // Each plan runs once (default run limit), so full detail needs a new plan.
+  const full = await client.callTool({
+    name: "action.run",
+    arguments: { actionId: await plan(), arguments: { text }, detail: "full" },
+  });
+  const fullSummary = actionRunOutputSchema.parse(full.structuredContent);
+  assert.equal(fullSummary.detail, "full");
+  assert.ok(fullSummary.receiptDigest);
+  assert.ok(fullSummary.resultDigest);
 });

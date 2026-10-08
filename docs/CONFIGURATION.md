@@ -125,7 +125,7 @@ Most actions need a person to approve them out of band, and the model passes the
 }
 ```
 
-This registers `action.run { actionId, arguments }`. The server runs a plan only when all of these hold:
+This registers `action.run { actionId, arguments, detail? }`. The server runs a plan only when all of these hold:
 
 - the plan's policy decision is `allow`;
 - every effect in its envelope is listed in `effects`;
@@ -138,8 +138,8 @@ The server then issues and consumes a one-use capability itself, so the model ne
 - `effects` may contain only `local_read` and `network_read`. Write, process, credential and destructive effects always need out-of-band approval through `action.execute`.
 - Every executor check still applies: argument digest, live schema pin, artifact digest, JSON Schema validation, the write-ahead execution record and the signed receipt. The receipt's `capabilityId` is `host-mediated:<action digest hex>:<run number>`, so audits can tell mediated runs from approved ones. Because the store accepts each capability ID once, the run limit holds even under concurrent calls.
 - The `action.run` result is compact:
-  - `structuredContent` holds `executionId`, `outcome`, `truncated`, `redactions` and `omittedItems`, and its JSON is also the first text block.
-  - The bounded downstream text follows as plain text content, sent once.
+  - `structuredContent` holds `detail`, `executionId`, `outcome`, `truncated`, `redactions`, `omittedItems` and the bounded downstream text as `content`.
+  - Text content starts with the summary's JSON (every field except `content`), followed by the same bounded text as plain, unescaped items. Hosts that show only text and hosts that show only `structuredContent` both see the output.
   - Pass `detail: "full"` to add `receiptDigest` and `resultDigest`. The complete receipt stays in the execution record.
   - Capability-token-shaped strings are always redacted, and so is every fragment of 12 or more characters of the configured capability and receipt secrets, in raw or JSON-escaped form and anywhere in an item. Then `redactPatterns` are applied. Executor and downstream error messages are redacted the same way and cut to 1 KiB. Patterns compile with the `gu` flags; inline flags such as `(?i)` are not supported, and a pattern must not match the empty string.
   - The text is then cut to `maxTextBytes` (default 16384, maximum 262144) on a character boundary. Non-text items are counted in `omittedItems`.

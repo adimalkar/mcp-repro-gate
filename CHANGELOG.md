@@ -30,6 +30,6 @@ All notable changes will be documented in this file. The project follows [Semant
 
 ### Changed
 
-- `action.run` returns a compact summary (`executionId`, `outcome`, `truncated`, `redactions`, `omittedItems`) as `structuredContent`, mirrored as the first text block. The bounded downstream text follows once as plain text content instead of inside `structuredContent.content`. Receipt and result digests need `detail: "full"`. All façade text mirrors are compact JSON.
+- `action.run` returns a compact summary (`detail`, `executionId`, `outcome`, `truncated`, `redactions`, `omittedItems`) with the bounded downstream text in `structuredContent.content`. Its text content is the summary's JSON followed by the same text as plain, unescaped items, so text-only and structured-only hosts both see it. Receipt and result digests need `detail: "full"`. All other façade text mirrors are compact JSON.
 - **Breaking:** `action.plan` returns a compact summary (`actionId`, `envelopeDigest`, `toolRef`, `decision`, `reasonCodes`, `expiresAt`, `nextStep`) by default. Pass `detail: "full"` or call `action.inspect` for the previous envelope and policy fields.
 - Façade error results other than `action.execute` carry a compact text block without `structuredContent`. `policy.explain` and `action.inspect` accept only `sha256:` action IDs, and tool references are capped at 256 characters.
