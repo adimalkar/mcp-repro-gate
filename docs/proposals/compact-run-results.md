@@ -26,7 +26,7 @@ Status: proposed implementation. The façade measurement in #32 found that `acti
 
 - A real MCP client checks:
   - the summary in `structuredContent` and as the first text block;
-  - the downstream text present once, redacted and bounded as before;
+  - the downstream text present once per channel (text and `structuredContent`), redacted and bounded as before;
   - `detail: "full"` digests that match the stored receipt;
   - both summaries validating against the output schema in both protocol eras.
 - `bench facade` re-run. The published numbers change and the fixture version is bumped. The small result's overhead must fall substantially. Any regression, such as a larger tool list, must be reported with its cause.
