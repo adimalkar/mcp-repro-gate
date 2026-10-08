@@ -235,7 +235,7 @@ export function createReproGateServer(
       "action.run",
       {
         description:
-          'Run one previously planned action without passing a token: either a plan that policy allows with only host-mediated read effects, or, when enabled, a plan an operator approved on the host. The host issues the one-use capability. Returns a compact summary (receipt digests with detail "full") followed by the redacted, bounded downstream text',
+          'Run one previously planned action without passing a token: either a plan that policy allows with only host-mediated read effects, or, when enabled, a plan an operator approved on the host. The host issues the one-use capability. Returns a compact summary and redacted, bounded downstream text; detail "full" adds receipt digests',
         inputSchema: z.object({
           actionId: actionIdInputSchema,
           arguments: z.record(z.string(), z.unknown()),
@@ -271,14 +271,16 @@ export function createReproGateServer(
                 }
               : {}),
           };
-          // The summary's JSON mirror first, then the bounded downstream
-          // text once; structuredContent carries only the summary.
+          // Hosts differ: some show the model only text content, others
+          // only structuredContent. Both carry the bounded text. The text
+          // side sends it unescaped after the summary's JSON, rather than
+          // inside a JSON-escaped mirror of the whole result.
           return {
             content: [
               { type: "text" as const, text: JSON.stringify(summary) },
               ...run.content,
             ],
-            structuredContent: summary,
+            structuredContent: { ...summary, content: run.content },
           };
         } catch (runError) {
           // Refusals are stable codes; executor failures keep their message.

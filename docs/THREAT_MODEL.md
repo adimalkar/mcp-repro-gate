@@ -84,6 +84,8 @@ The opt-in handoff tools store context that is caller-asserted. The host fixes t
 
 ## Host-mediated execution boundary
 
+`action.run` returns downstream text unescaped as text items after the gateway's own summary. A malicious tool can emit text that looks like that summary, so `structuredContent`, and the first text item that mirrors it, are the authoritative run status.
+
 With the opt-in `mediation` configuration, the server issues a capability itself, but only for persisted plans that policy decided `allow` and whose effects are all in a host allowlist limited to `local_read` and `network_read`. The model can trigger such a run by naming an `actionId`, so the protection rests on three things:
 
 - the operator's catalog effect declarations being accurate;

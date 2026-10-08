@@ -11,15 +11,16 @@ Status: proposed implementation. The façade measurement in #32 found that `acti
 ## Deliverable
 
 - **`action.run` returns:**
-  - **`structuredContent`:** a compact summary, `{ detail: "compact", executionId, outcome, truncated, redactions, omittedItems }`.
-  - **`content`:** first, a text block holding exactly that summary as compact JSON, which is the MCP compatibility mirror; then the redacted, bounded downstream text items, each sent once as plain text.
-- **`action.run` with `detail: "full"`** adds `receiptDigest` and `resultDigest` to the summary. Operators can always read the full receipt from the execution record by `executionId`.
+  - **`structuredContent`:** a compact summary, `{ detail: "compact", executionId, outcome, truncated, redactions, omittedItems, content }`, where `content` is the redacted, bounded downstream text.
+  - **`content`:** first, the summary's JSON without `content`; then the same bounded text as plain, unescaped text items. Some hosts show the model only `structuredContent` and others only text, so both carry the output. The text side is no longer a JSON-escaped copy of everything.
+- **`action.run` with `detail: "full"`** adds `receiptDigest` and `resultDigest`. Operators can always read the full receipt from the execution record by `executionId`.
 - **All façade tool results** mirror their `structuredContent` as compact JSON text instead of pretty-printed JSON.
-- **Output schemas:** `actionRunOutputSchema` becomes a discriminated union on `detail`. No other output schema changes.
+- **Output schema:** `actionRunOutputSchema` is a single object with optional digests. That costs less in every tool list than a compact/full union would.
+- Review change: the first version dropped the bounded text from `structuredContent`, which hides the output from hosts that read only `structuredContent`. Restoring it costs bytes, which the re-measurement reports. The façade tool list grew by 134 bytes; tool list plus finding a tool still fell by 242 bytes per session.
 
 ## Compatibility
 
-`action.run` and its schema have not been released yet (#29), but this is still a change. Clients that read the downstream text from `structuredContent.content` must read the `content` items after the first. Clients that need digests pass `detail: "full"`. The CHANGELOG records both. Text blocks of every façade tool become compact JSON with the same data.
+`action.run` and its schema have not been released yet (#29), but this is still a change. `structuredContent.content` still holds the bounded downstream text. The digests moved behind `detail: "full"`, and the text items after the first are now plain text. The CHANGELOG records both. Text blocks of every façade tool become compact JSON with the same data.
 
 ## Verification
 
@@ -28,5 +29,5 @@ Status: proposed implementation. The façade measurement in #32 found that `acti
   - the downstream text present once, redacted and bounded as before;
   - `detail: "full"` digests that match the stored receipt;
   - both summaries validating against the output schema in both protocol eras.
-- `bench facade` re-run. The published numbers change and the fixture version is bumped. The small result's overhead must fall substantially, and nothing regresses in planning or discovery.
+- `bench facade` re-run. The published numbers change and the fixture version is bumped. The small result's overhead must fall substantially. Any regression, such as a larger tool list, must be reported with its cause.
 - The existing mediation, held-approval-independent and façade tests are updated for the new shape.
