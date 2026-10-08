@@ -681,33 +681,45 @@ test("action.run works through the stdio CLI in the modern protocol era", async 
     },
     stderr: "pipe",
   });
-  context.after(async () => client.close());
-  await client.connect(transport);
-  assert.equal(client.getProtocolEra(), "modern");
-  const text = "modern era";
-  const plan = async () => {
-    const planned = await client.callTool({
-      name: "action.plan",
-      arguments: { toolRef: "configured.echo", arguments: { text } },
+  // Close the CLI child inside the test: the runtime helper's cleanup runs
+  // first and cannot remove the scratch directory on Windows while the
+  // child still holds the database open.
+  try {
+    await client.connect(transport);
+    assert.equal(client.getProtocolEra(), "modern");
+    const text = "modern era";
+    const plan = async () => {
+      const planned = await client.callTool({
+        name: "action.plan",
+        arguments: { toolRef: "configured.echo", arguments: { text } },
+      });
+      return (planned.structuredContent as { actionId: string }).actionId;
+    };
+    const compact = await client.callTool({
+      name: "action.run",
+      arguments: { actionId: await plan(), arguments: { text } },
     });
-    return (planned.structuredContent as { actionId: string }).actionId;
-  };
-  const compact = await client.callTool({
-    name: "action.run",
-    arguments: { actionId: await plan(), arguments: { text } },
-  });
-  assert.equal(compact.isError, undefined, JSON.stringify(compact.content));
-  const compactSummary = actionRunOutputSchema.parse(compact.structuredContent);
-  assert.equal(compactSummary.detail, "compact");
-  assert.equal(compactSummary.receiptDigest, undefined);
-  assert.equal(compactSummary.content[0]?.text, text);
-  // Each plan runs once (default run limit), so full detail needs a new plan.
-  const full = await client.callTool({
-    name: "action.run",
-    arguments: { actionId: await plan(), arguments: { text }, detail: "full" },
-  });
-  const fullSummary = actionRunOutputSchema.parse(full.structuredContent);
-  assert.equal(fullSummary.detail, "full");
-  assert.ok(fullSummary.receiptDigest);
-  assert.ok(fullSummary.resultDigest);
+    assert.equal(compact.isError, undefined, JSON.stringify(compact.content));
+    const compactSummary = actionRunOutputSchema.parse(
+      compact.structuredContent,
+    );
+    assert.equal(compactSummary.detail, "compact");
+    assert.equal(compactSummary.receiptDigest, undefined);
+    assert.equal(compactSummary.content[0]?.text, text);
+    // Each plan runs once (default run limit), so full detail needs a new plan.
+    const full = await client.callTool({
+      name: "action.run",
+      arguments: {
+        actionId: await plan(),
+        arguments: { text },
+        detail: "full",
+      },
+    });
+    const fullSummary = actionRunOutputSchema.parse(full.structuredContent);
+    assert.equal(fullSummary.detail, "full");
+    assert.ok(fullSummary.receiptDigest);
+    assert.ok(fullSummary.resultDigest);
+  } finally {
+    await client.close();
+  }
 });
