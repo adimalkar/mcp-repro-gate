@@ -23,8 +23,10 @@ for (const [network, prefix] of [
 ] as const)
   blocked.addSubnet(network, prefix, "ipv4");
 for (const [network, prefix] of [
-  ["::", 128],
-  ["::1", 128],
+  // ::/96 covers ::, ::1 and the deprecated IPv4-compatible ::a.b.c.d form.
+  ["::", 96],
+  // Local-use NAT64 can translate to any IPv4 address, including private.
+  ["64:ff9b:1::", 48],
   ["100::", 64],
   ["2001::", 23],
   ["2001:db8::", 32],

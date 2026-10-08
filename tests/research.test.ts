@@ -14,7 +14,12 @@ import {
   distillPlain,
   selectRelevant,
 } from "../src/research/distill.js";
-import { ResearchError, checkUrl, fetchText } from "../src/research/fetch.js";
+import {
+  ResearchError,
+  checkUrl,
+  fetchText,
+  redirectAllowed,
+} from "../src/research/fetch.js";
 import {
   createResearchServer,
   fetchDistilledOutputSchema,
@@ -370,4 +375,149 @@ test("the research-server CLI refuses loopback URLs and bad flags", async (conte
   );
   assert.notEqual(bad.status, 0);
   assert.match(bad.stderr, /Usage: reprogate research-server/u);
+});
+
+test("hostnames fetch through the all-addresses lookup and new embedded forms are blocked", async (context) => {
+  for (const address of [
+    "::127.0.0.1",
+    "::7f00:1",
+    "::a9fe:a9fe",
+    "64:ff9b:1::7f00:1",
+    "64:ff9b:1::808:808",
+  ])
+    assert.equal(isBlockedAddress(address), true, address);
+  const base = await serve(context, (_request, response) => {
+    response.setHeader("content-type", "text/plain");
+    response.end("named host works");
+  });
+  const port = new URL(base).port;
+  // Test seam: allow loopback so a real name resolves and connects.
+  const page = await fetchText(`http://localhost:${port}/`, {
+    isAllowedAddress: (address) => address === "127.0.0.1" || address === "::1",
+  });
+  assert.equal(page.body, "named host works");
+});
+
+test("refused responses are cut off instead of drained", async (context) => {
+  let written = 0;
+  let closed = false;
+  const base = await serve(context, (request, response) => {
+    const chunk = Buffer.alloc(64 * 1024, 120);
+    response.writeHead(request.url === "/missing" ? 404 : 200, {
+      "content-type": request.url === "/image" ? "image/png" : "text/plain",
+    });
+    const pump = () => {
+      while (!closed && response.write(chunk)) written += chunk.length;
+      if (!closed) response.once("drain", pump);
+    };
+    response.once("close", () => {
+      closed = true;
+    });
+    pump();
+  });
+  const options = {
+    isAllowedAddress: (address: string) => address === "127.0.0.1",
+  };
+  for (const path of ["/missing", "/image"]) {
+    written = 0;
+    closed = false;
+    await assert.rejects(fetchText(`${base}${path}`, options));
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.equal(closed, true, path);
+    assert.ok(written < 4 * 1024 * 1024, `${path}: ${String(written)} bytes`);
+  }
+});
+
+test("redirects never downgrade from https to http", () => {
+  const https = new URL("https://example.com/");
+  const http = new URL("http://example.com/");
+  assert.equal(redirectAllowed(https, http), false);
+  assert.equal(redirectAllowed(http, https), true);
+  assert.equal(redirectAllowed(https, new URL("https://example.org/")), true);
+});
+
+test("hostile pages distill in linear time", () => {
+  const size = 1024 * 1024;
+  const fence = String.fromCharCode(96).repeat(3);
+  const inputs: [string, () => unknown][] = [
+    ["many <", () => distillHtml("<".repeat(size))],
+    ["unclosed pre", () => distillHtml(`<pre>${" ".repeat(size)}x</pre`)],
+    ["unclosed tags", () => distillHtml("<p ".repeat(size / 3))],
+    ["unclosed script", () => distillHtml("<script".repeat(size / 7))],
+    ["unclosed comments", () => distillHtml("<!--".repeat(size / 4))],
+    ["fence whitespace", () => distillPlain(`${fence}\n${" ".repeat(size)}x`)],
+  ];
+  for (const [name, run] of inputs) {
+    const started = performance.now();
+    const distilled = run() as ReturnType<typeof distillHtml>;
+    selectRelevant(distilled, "socket keepAlive", 4000);
+    const elapsed = performance.now() - started;
+    assert.ok(elapsed < 3000, `${name}: ${elapsed.toFixed(0)} ms`);
+  }
+});
+
+test("large relevant code is cut, and cuts never split a character", async (context) => {
+  const code = `socket.setKeepAlive(true);\n${"line();\n".repeat(400)}`;
+  const selected = selectRelevant(
+    { title: "", blocks: [{ kind: "code", text: code }] },
+    "socket keepAlive",
+    600,
+  );
+  assert.ok(selected.text.length <= 600);
+  assert.ok(selected.text.startsWith("```\nsocket.setKeepAlive"));
+  assert.ok(selected.text.endsWith("\n```"));
+  assert.equal(selected.truncated, true);
+
+  const emoji = String.fromCodePoint(0x1f600);
+  const cut = selectRelevant(
+    {
+      title: "",
+      blocks: [{ kind: "text", text: `socket ${emoji.repeat(400)}` }],
+    },
+    "socket",
+    301,
+  );
+  for (let index = 0; index < cut.text.length; index++) {
+    const code = cut.text.charCodeAt(index);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = cut.text.charCodeAt(index + 1);
+      assert.ok(next >= 0xdc00 && next <= 0xdfff, "lone high surrogate");
+    }
+  }
+
+  const longUrl = `https://example.com/${"a".repeat(5000)}`;
+  const client = await connect(
+    context,
+    createResearchServer({
+      fetchPage: (url) =>
+        Promise.resolve({
+          url,
+          finalUrl: longUrl,
+          contentType: "text/plain",
+          body: "The socket keepAlive passage.",
+        }),
+    }),
+  );
+  const result = await client.callTool({
+    name: "fetch_distilled",
+    arguments: { url: "https://example.com/", query: "socket", maxTokens: 300 },
+  });
+  const parsed = fetchDistilledOutputSchema.parse(result.structuredContent);
+  assert.equal(parsed.finalUrl, longUrl);
+  assert.match(parsed.text, /socket keepAlive passage/u);
+  assert.ok((parsed.text.split("\n")[0] ?? "").length <= 310);
+});
+
+test("research-server rejects allow-host values that are not hostnames", async () => {
+  const { spawnSync } = await import("node:child_process");
+  const cli = fileURLToPath(new URL("../src/cli.js", import.meta.url));
+  for (const value of [".", "..", "-", "a..b", "-a.com", "a b"]) {
+    const result = spawnSync(
+      process.execPath,
+      [cli, "research-server", "--allow-host", value],
+      { encoding: "utf8", timeout: 30_000 },
+    );
+    assert.notEqual(result.status, 0, value);
+    assert.match(result.stderr, /Usage: reprogate research-server/u, value);
+  }
 });

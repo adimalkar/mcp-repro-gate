@@ -31,9 +31,9 @@ ReproGate itself never fetches anything. You configure the research server as a 
 ## Fetch limits
 
 - **URLs:** only `http:` and `https:`, with no credentials in the URL.
-- **Addresses:** every resolved address is checked when the connection is made. Loopback, private, link-local, carrier-grade NAT, benchmark, documentation, multicast, broadcast and reserved ranges are refused, in both IPv4 and IPv6. That includes IPv4-mapped and NAT64 forms of those addresses. If any address a name resolves to is blocked, the fetch is refused.
-- **Redirects:** at most 3, each checked again.
-- **Time and size:** 10 seconds total and 2 MiB of body.
+- **Addresses:** every resolved address is checked when the connection is made. Loopback, private, link-local, carrier-grade NAT, benchmark, documentation, multicast, broadcast and reserved ranges are refused, in both IPv4 and IPv6. IPv4 addresses embedded in IPv6 are judged by the embedded address when they use the IPv4-mapped (`::ffff:0:0/96`) or well-known NAT64 (`64:ff9b::/96`) prefix. The IPv4-compatible (`::/96`), local-use NAT64 (`64:ff9b:1::/48`), 6to4 and Teredo prefixes are refused outright. If any address a name resolves to is blocked, the fetch is refused.
+- **Redirects:** at most 3, each checked again. A redirect from `https` to plain `http` is refused.
+- **Time and size:** 10 seconds for the network fetch and 2 MiB of body. Refused responses (redirects, error statuses, unsupported types) are closed at once, not read to the end. Distillation runs after the fetch in a single linear pass, so a hostile page cannot stall it.
 - **Types:** only `text/html`, `application/xhtml+xml`, `text/plain` and `text/markdown`, read as UTF-8.
 - **Host allowlist:** `--allow-host docs.example.com` allows that host; `--allow-host .example.com` also allows its subdomains.
 - **Errors:** stable codes (`bad_url`, `blocked_host`, `blocked_address`, `too_large`, `unsupported_type`, `timeout`, `http_status`, `fetch_failed`) that never include the response body.
@@ -45,6 +45,7 @@ ReproGate itself never fetches anything. You configure the research server as a 
 - **Kept:** `pre` blocks become fenced code. Block elements become paragraphs. Entities are decoded.
 - **A heuristic, not a browser:** it does not run JavaScript, so pages rendered by scripts may come back nearly empty. It does not remove ads or banners marked only by class names.
 - **Relevance** is lexical. Paragraphs and code blocks are ranked by how many query terms they contain, and only matching blocks are kept, in document order. When nothing matches, the opening blocks are returned.
+- **Long blocks are cut, not dropped.** A relevant paragraph or code block bigger than the remaining room is cut, and marked with `…`, when at least 200 characters remain. Cuts never split a character. The source URL in the text is capped at 300 characters, while `finalUrl` keeps the full value.
 - **The budget is an estimate.** `maxTokens` (100–1000, default 900) is enforced as 4 characters per token. Real token counts depend on the host's tokenizer, and code or non-English text can use more tokens per character.
 
 No token reduction compared with raw HTML is claimed here. Measuring it belongs to the [benchmarks](BENCHMARKS.md).

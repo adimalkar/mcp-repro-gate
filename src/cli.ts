@@ -264,7 +264,11 @@ async function main(): Promise<void> {
       if (
         rest[index] !== "--allow-host" ||
         value === undefined ||
-        !/^\.?[A-Za-z0-9.-]{1,253}$/u.test(value)
+        // A DNS hostname with an optional leading "." for subdomains;
+        // ".", ".." and lone hyphens are refused.
+        !/^\.?(?=[A-Za-z0-9.-]{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$/u.test(
+          value,
+        )
       )
         throw new Error(
           "Usage: reprogate research-server [--allow-host <host|.domain>]...",
