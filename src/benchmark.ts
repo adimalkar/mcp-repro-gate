@@ -11,7 +11,7 @@ import { createReproGateServer } from "./server.js";
 import type { CatalogTool, Digest, PolicyV1 } from "./types.js";
 
 /** Bumped whenever the fixture changes, so reports name what they measured. */
-export const FIXTURE_VERSION = 2;
+export const FIXTURE_VERSION = 3;
 const DIGEST: Digest = `sha256:${"0".repeat(64)}`;
 
 // A synthetic code-graph-shaped catalog: deterministic, written for this

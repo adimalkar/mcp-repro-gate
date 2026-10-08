@@ -13,7 +13,7 @@ node dist/src/cli.js bench facade          # table
 node dist/src/cli.js bench facade --json   # machine-readable report
 ```
 
-The harness runs fixed operations through a real in-memory MCP client against a ReproGate server, using a published synthetic catalog of 14 code-graph-shaped tools (`src/benchmark.ts`, fixture v2). It counts UTF-8 bytes of what a host receives. For tool calls, that is the text content, `structuredContent` and `isError`, on both the measured and the baseline side. Every call must succeed; a failed call stops the run instead of being measured.
+The harness runs fixed operations through a real in-memory MCP client against a ReproGate server, using a published synthetic catalog of 14 code-graph-shaped tools (`src/benchmark.ts`, fixture v3). It counts UTF-8 bytes of what a host receives. For tool calls, that is the text content, `structuredContent` and `isError`, on both the measured and the baseline side. Every call must succeed; a failed call stops the run instead of being measured.
 
 ### Context cost
 
@@ -21,37 +21,46 @@ A host first loads tool definitions, then spends calls finding a tool:
 
 | Item                               | Bytes |
 | ---------------------------------- | ----: |
-| façade tool list                   |  9781 |
+| façade tool list                   |  9915 |
 | direct tool list                   |  4964 |
-| finding a tool (search + describe) |  2498 |
+| finding a tool (search + describe) |  2122 |
 | average downstream tool definition |   355 |
-| break-even catalog size (tools)    |    35 |
+| break-even catalog size (tools)    |    34 |
 
 - **Façade tool list:** ReproGate's own `tools/list`, including output schemas.
 - **Direct tool list:** every downstream definition, as a host would see by proxying the tools directly.
 - **Finding a tool:** one `catalog.search` with three hits plus one `catalog.describe`.
 
-The façade's own tool list is about twice the 14 downstream definitions it replaces. So on this fixture, discovery through the façade costs more context than loading the tools directly. It breaks even at about 35 downstream tools when an agent looks up one tool per session. Each further tool looked up adds another `catalog.describe` (here 1.2–1.7 KB) and raises the break-even. The façade's cost per lookup stays flat as the catalog grows, while a direct list keeps growing.
+The façade's own tool list is about twice the 14 downstream definitions it replaces. So on this fixture, discovery through the façade costs more context than loading the tools directly. It breaks even at about 34 downstream tools when an agent looks up one tool per session. Each further tool looked up adds another `catalog.describe` and raises the break-even. The façade's cost per lookup stays flat as the catalog grows, while a direct list keeps growing.
 
 ### Tool results
 
 | Tool result             | Measured                               | Baseline                            | Measured B | Baseline B | Reduction | Truncated |
 | ----------------------- | -------------------------------------- | ----------------------------------- | ---------: | ---------: | --------: | --------- |
-| planning                | `action.plan`, compact default         | `action.plan` with `detail: "full"` |        852 |       3114 |     72.6% | no        |
-| execution, large result | `action.run`, default 16384-byte limit | the unredacted downstream result    |      38064 |      51660 |     26.3% | yes       |
-| execution, small result | `action.run`, default limit            | the unredacted downstream result    |       1032 |        100 |   -932.0% | no        |
+| planning                | `action.plan`, compact default         | `action.plan` with `detail: "full"` |        800 |       2752 |     70.9% | no        |
+| execution, large result | `action.run`, default 16384-byte limit | the unredacted downstream result    |      35420 |      51660 |     31.4% | yes       |
+| execution, small result | `action.run`, default limit            | the unredacted downstream result    |        568 |        100 |   -468.0% | no        |
 
-**Median tool-result reduction on this fixture: 26.3%.** With three rows, the median is the middle row: the truncated large result. This is a fixture check, not an exit-criterion result. The roadmap criterion concerns host tokens across real tasks, which only the two-host runs below can measure.
+**Median tool-result reduction on this fixture: 31.4%.** With three rows, the median is the middle row: the truncated large result. This is a fixture check, not an exit-criterion result. The roadmap criterion concerns host tokens across real tasks, which only the two-host runs below can measure.
 
 ### What these numbers do and do not show
 
 - **Bytes, not tokens.** Hosts tokenize differently. Host token counts belong to the two-host runs.
 - **Truncation is not a free saving.** The large-result row is smaller only because `action.run` cuts the downstream text at the limit: the agent sees about 16 KiB of a much larger result and loses the rest. The `truncated` column marks it.
-- **Small results get larger.** `action.run` adds a fixed summary (execution ID, outcome, receipt and result digests, flags), and repeats the bounded text in `structuredContent`. For a small result, that overhead dominates.
+- **Small results still get larger.** `action.run` adds a compact summary (execution ID, outcome, flags), and carries the bounded text both as plain text content and in `structuredContent`. For a small result, that overhead still outweighs the downstream text.
 - **Planning** saves a roughly constant amount per call. The full baseline is today's `detail: "full"` output. It carries the envelope and policy the pre-#27 default returned, plus `detail` and `nextStep`.
-- **Text and `structuredContent` are both counted,** because ReproGate sends the same data in both. A host that shows the model only one of them sees less than measured.
+- **Text and `structuredContent` are both counted.** Hosts differ: some show the model only text content, others only `structuredContent`, so every façade tool puts its data in both. Most mirror `structuredContent` as compact JSON text. `action.run` sends the summary's JSON, then the bounded downstream text unescaped. A host that shows the model only one of the two sees about half of what is measured.
 - **This fixture only.** The catalog and results are synthetic, and execution is simulated: no backend process is spawned.
 - **Not measured here:** multi-call workflows, call counts, completion rate, and the roadmap's code-discovery-versus-grep and research-versus-HTML comparisons.
+
+### History
+
+- **v2 to v3:** compact `action.run` summaries (digests opt-in), downstream text sent unescaped instead of inside a JSON-escaped mirror, and compact JSON text mirrors.
+  - Small result: from 1032 to 568 bytes.
+  - Large result: from 38064 to 35420 bytes (reduction from 26.3% to 31.4%).
+  - Finding a tool: from 2498 to 2122 bytes.
+  - Planning: from 852 to 800 bytes. Its reduction fell from 72.6% to 70.9%, because the full baseline also shrank with compact JSON.
+  - Façade tool list: grew from 9781 to 9915 bytes. The `detail` input, the optional digest fields and the bounded text in the `action.run` output schema account for the increase. Tool list plus finding a tool fell from 12279 to 12037 bytes per session, and break-even moved from 35 to 34 tools.
 
 ## Two-host protocol (manual)
 
