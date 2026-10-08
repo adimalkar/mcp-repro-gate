@@ -34,6 +34,26 @@ ReproGate itself still makes no network requests.
 - **Result:** `structuredContent` holds `{ url, finalUrl, title, estimatedTokens, truncated, text }`. Errors are stable codes (`blocked_address`, `blocked_host`, `bad_url`, `too_large`, `unsupported_type`, `timeout`, `http_status`, `fetch_failed`) and never echo the response body.
 - **Docs:** `docs/RESEARCH.md` (setup through the catalog and mediation, limits, threat notes), plus updates to `THREAT_MODEL`, `CHANGELOG` and the README.
 
+## Review changes
+
+The independent review found:
+
+- **Hostname fetches failed:** Node's automatic family selection calls the custom `lookup` with `all: true`, which it did not handle. Fetches by hostname failed, closed rather than open.
+- **Quadratic-time distillation:** a crafted page could stall the server for minutes. Distillation is now a single linear `indexOf`-based pass.
+- **Bodies drained:** refused responses kept downloading.
+- **Missed IPv6 forms:** IPv4-compatible and local-use NAT64 addresses got through.
+
+Lower-severity fixes:
+
+- forgeable code markers (removed);
+- relevant code silently dropped (now cut);
+- surrogate-splitting cuts;
+- an unbounded URL in the header;
+- `--allow-host .` allowing every host;
+- https-to-http redirects.
+
+Tests cover each of these.
+
 ## Verification
 
 - **Address policy:** unit tests cover every blocked range and IPv6/IPv4-mapped forms. A real local HTTP server is refused as `blocked_address`. A redirect to a blocked address is refused, and so is a hostname that resolves to a blocked address.

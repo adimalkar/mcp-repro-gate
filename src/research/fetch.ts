@@ -67,7 +67,8 @@ export function checkUrl(value: string, allowHosts?: readonly string[]): URL {
   )
     throw new ResearchError("bad_url");
   if (allowHosts !== undefined && allowHosts.length > 0) {
-    const host = url.hostname.toLowerCase();
+    // "example.com." names the same host as "example.com".
+    const host = url.hostname.toLowerCase().replace(/\.$/u, "");
     const allowed = allowHosts.some((entry) => {
       const rule = entry.toLowerCase();
       return rule.startsWith(".")
@@ -80,27 +81,36 @@ export function checkUrl(value: string, allowHosts?: readonly string[]): URL {
 }
 
 // Resolve every address and refuse the connection if any is blocked, so a
-// name cannot mix a public and a private answer. Node uses the address this
-// returns for the connection itself, which closes DNS-rebinding gaps.
+// name cannot mix a public and a private answer. Node connects only to the
+// addresses returned here, which closes DNS-rebinding gaps. With automatic
+// family selection (the Node 20+ default) Node asks for every address.
 function guardedLookup(allowed: (address: string) => boolean): LookupFunction {
-  return (hostname, _options, callback) => {
+  return (hostname, options, callback) => {
     dnsLookup(hostname, { all: true, verbatim: true }, (error, addresses) => {
-      const list = addresses;
       if (error !== null) {
         callback(error, "", 4);
         return;
       }
-      const first = list[0];
+      const first = addresses[0];
       if (
         first === undefined ||
-        list.some(({ address }) => !allowed(address))
+        addresses.some(({ address }) => !allowed(address))
       ) {
         callback(new ResearchError("blocked_address"), "", 4);
+        return;
+      }
+      if (options.all === true) {
+        callback(null, addresses);
         return;
       }
       callback(null, first.address, first.family);
     });
   };
+}
+
+/** A redirect may not downgrade from https to plain http. */
+export function redirectAllowed(from: URL, to: URL): boolean {
+  return !(from.protocol === "https:" && to.protocol !== "https:");
 }
 
 function bareHost(url: URL): string {
@@ -130,7 +140,7 @@ export async function fetchText(
     const response = await open(url, allowed, deadline);
     const status = response.statusCode ?? 0;
     if (REDIRECTS.has(status)) {
-      response.resume();
+      response.destroy();
       const location = response.headers.location;
       if (location === undefined || hop >= maxRedirects)
         throw new ResearchError("http_status");
@@ -140,11 +150,14 @@ export async function fetchText(
       } catch {
         throw new ResearchError("bad_url");
       }
-      url = checkUrl(next, options.allowHosts);
+      const following = checkUrl(next, options.allowHosts);
+      if (!redirectAllowed(url, following))
+        throw new ResearchError("http_status");
+      url = following;
       continue;
     }
     if (status < 200 || status >= 300) {
-      response.resume();
+      response.destroy();
       throw new ResearchError("http_status");
     }
     const contentType = (response.headers["content-type"] ?? "")
@@ -152,7 +165,7 @@ export async function fetchText(
       ?.trim()
       .toLowerCase();
     if (contentType === undefined || !TEXT_TYPES.has(contentType)) {
-      response.resume();
+      response.destroy();
       throw new ResearchError("unsupported_type");
     }
     const declared = Number(response.headers["content-length"]);

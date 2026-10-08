@@ -3,6 +3,7 @@ import * as z from "zod/v4";
 
 import {
   CHARS_PER_TOKEN,
+  cutText,
   distillHtml,
   distillPlain,
   selectRelevant,
@@ -78,9 +79,15 @@ export function createResearchServer(
             ? distillHtml(page.body)
             : distillPlain(page.body);
         const budget = maxTokens * CHARS_PER_TOKEN;
+        // The URL is shown capped so a long one cannot crowd out content;
+        // structuredContent.finalUrl keeps it whole.
+        const shownUrl =
+          page.finalUrl.length > 300
+            ? `${cutText(page.finalUrl, 299)}…`
+            : page.finalUrl;
         const header = [
           distilled.title === "" ? undefined : `# ${distilled.title}`,
-          `Source: ${page.finalUrl}`,
+          `Source: ${shownUrl}`,
         ]
           .filter((line) => line !== undefined)
           .join("\n");
@@ -89,13 +96,14 @@ export function createResearchServer(
           query,
           Math.max(0, budget - header.length - 2),
         );
-        const text = `${header}\n\n${selected.text}`.slice(0, budget);
+        const full = `${header}\n\n${selected.text}`;
+        const text = cutText(full, budget);
         const result = {
           url,
           finalUrl: page.finalUrl,
           title: distilled.title,
           estimatedTokens: Math.ceil(text.length / CHARS_PER_TOKEN),
-          truncated: selected.truncated,
+          truncated: selected.truncated || text.length < full.length,
           text,
         };
         return {
