@@ -116,6 +116,10 @@ not sandbox a malicious binary or authorize gateway actions. The JSON report
 retains complete responses and copies of the public pinned source. See
 [measurement scope and retention](CODE_DISCOVERY_BENCHMARK.md).
 
+## Research backend boundary
+
+`reprogate research-server` is a separate stdio backend, so web fetches pass through the same catalog, policy, mediation and receipt path as other tools. ReproGate itself makes no network requests. The backend accepts only `http(s)` URLs without credentials. It checks every resolved address at connect time against loopback, private, link-local, shared, documentation, multicast and reserved ranges, including IPv4-mapped and NAT64 forms, and checks every redirect again. It bounds time, size and content type, and reports stable error codes without echoing response bodies. Fetched content is untrusted and may contain prompt-injection text; distillation does not remove it. See [RESEARCH.md](RESEARCH.md).
+
 ## Known gaps before execution is production-safe
 
 - SQLite is durable locally but has no replica lease/ownership protocol;

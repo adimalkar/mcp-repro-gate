@@ -90,6 +90,8 @@ A host can also opt in to the advisory `handoff_status` and `handoff_update` too
 
 `reprogate bench facade` measures what the façade returns, in agent-visible bytes, on a published fixture, against stated baselines. See [benchmarks](docs/BENCHMARKS.md) for the numbers, their limits, and the manual two-host protocol.
 
+`reprogate research-server` is an optional backend that fetches a public page and returns its most relevant passages within an estimated token budget, with server-side request forgery protections. You configure it like any other backend, so fetches are planned and receipted. See [research](docs/RESEARCH.md).
+
 ## Core invariant
 
 An approval is valid for one exact action, not for a server or tool name in general:
