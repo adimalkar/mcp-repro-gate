@@ -250,12 +250,22 @@ test("action.run executes an allowed read with a host-issued capability and a bo
   );
   const text = `rg1.aaa.bbb ${capabilitySecret} Bearer xyz.123 ${"é".repeat(300)}`;
   const actionId = await plan("configured.echo", { text });
-  const result = await call("action.run", { actionId, arguments: { text } });
+  const result = await call("action.run", {
+    actionId,
+    arguments: { text },
+    detail: "full",
+  });
   assert.equal(result.isError, undefined, JSON.stringify(result.content));
   const summary = actionRunOutputSchema.parse(result.structuredContent);
+  assert.equal(summary.detail, "full");
   assert.equal(summary.outcome, "succeeded");
   assert.equal(summary.truncated, true);
   assert.ok(summary.redactions >= 3);
+  // The summary's JSON mirror comes first, then the bounded text once.
+  assert.deepEqual(JSON.parse(result.content[0]?.text ?? ""), summary);
+  assert.equal(result.content.length, 2);
+  assert.ok(Buffer.byteLength(result.content[1]?.text ?? "") <= 256);
+  assert.equal(JSON.stringify(result.structuredContent).includes("é"), false);
   const visible = JSON.stringify(result);
   for (const hidden of ["rg1.aaa", capabilitySecret, "xyz.123"])
     assert.equal(visible.includes(hidden), false, hidden);
@@ -542,9 +552,11 @@ test("network reads are mediated only when allowlisted, with an open-world hint"
     const result = await network.call("action.run", {
       actionId,
       arguments: { text },
+      detail: "full",
     });
     assert.equal(result.isError, undefined, JSON.stringify(result.content));
     const summary = actionRunOutputSchema.parse(result.structuredContent);
+    assert.equal(summary.detail, "full");
     const record = network.runtime.store.getExecution(summary.executionId);
     assert.equal(
       record?.capabilityId,
@@ -608,4 +620,29 @@ test("concurrent runs take the next free slot up to the limit", async (context) 
   assert.equal(runs.filter((run) => run.isError === undefined).length, 3);
   assert.equal(runs.filter((run) => run.isError === true).length, 1);
   assert.deepEqual(counts(), { executions: 3, tokenUses: 3 });
+});
+
+test("compact action.run summaries omit digests and send downstream text once", async (context) => {
+  const { call, plan } = await configuredRuntime(context, {
+    effects: ["local_read"],
+  });
+  const text = "compact view";
+  const actionId = await plan("configured.echo", { text });
+  const result = await call("action.run", { actionId, arguments: { text } });
+  assert.equal(result.isError, undefined, JSON.stringify(result.content));
+  const summary = actionRunOutputSchema.parse(result.structuredContent);
+  assert.deepEqual(Object.keys(summary).sort(), [
+    "detail",
+    "executionId",
+    "omittedItems",
+    "outcome",
+    "redactions",
+    "truncated",
+  ]);
+  assert.equal(summary.detail, "compact");
+  assert.deepEqual(
+    result.content.map((item) => item.text),
+    [JSON.stringify(summary), text, JSON.stringify({ length: text.length })],
+  );
+  assert.equal(JSON.stringify(result).split(text).length - 1, 1);
 });

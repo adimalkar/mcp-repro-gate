@@ -36,9 +36,10 @@ function error(message: string) {
   };
 }
 
+// Compact JSON: the mirror carries the same data without indentation.
 function result(value: unknown) {
   return {
-    content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }],
+    content: [{ type: "text" as const, text: JSON.stringify(value) }],
     structuredContent: value,
   };
 }
@@ -234,10 +235,11 @@ export function createReproGateServer(
       "action.run",
       {
         description:
-          "Run one previously planned action that policy allows with only host-mediated read effects; the host issues the one-use capability, so no token is passed. Returns a compact receipt summary and redacted, bounded downstream text",
+          'Run one previously planned action that policy allows with only host-mediated read effects; the host issues the one-use capability, so no token is passed. Returns a compact summary (receipt digests with detail "full") followed by the redacted, bounded downstream text',
         inputSchema: z.object({
           actionId: actionIdInputSchema,
           arguments: z.record(z.string(), z.unknown()),
+          detail: z.enum(["compact", "full"]).default("compact"),
         }),
         outputSchema: actionRunOutputSchema,
         annotations: {
@@ -247,11 +249,35 @@ export function createReproGateServer(
           openWorldHint: mediator.mediatesNetwork,
         },
       },
-      async ({ actionId, arguments: toolArguments }) => {
+      async ({ actionId, arguments: toolArguments, detail }) => {
         try {
-          return result(
-            await mediator.run({ actionId, arguments: toolArguments }),
-          );
+          const run = await mediator.run({
+            actionId,
+            arguments: toolArguments,
+          });
+          const summary = {
+            detail,
+            executionId: run.executionId,
+            outcome: run.outcome,
+            truncated: run.truncated,
+            redactions: run.redactions,
+            omittedItems: run.omittedItems,
+            ...(detail === "full"
+              ? {
+                  receiptDigest: run.receiptDigest,
+                  resultDigest: run.resultDigest,
+                }
+              : {}),
+          };
+          // The summary's JSON mirror first, then the bounded downstream
+          // text once; structuredContent carries only the summary.
+          return {
+            content: [
+              { type: "text" as const, text: JSON.stringify(summary) },
+              ...run.content,
+            ],
+            structuredContent: summary,
+          };
         } catch (runError) {
           // Refusals are stable codes; executor failures keep their message.
           // Executor and downstream messages are bounded and redacted too.
