@@ -6,6 +6,7 @@ import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import { issueCapabilityToken } from "./capability-token.js";
 import { SqliteExecutionStore } from "./execution-store.js";
 import { runGitReviewCli } from "./git-review-cli.js";
+import { createResearchServer } from "./research/server.js";
 import { createHandoffService, type HandoffService } from "./handoff.js";
 import {
   loadHandoffConfig,
@@ -255,6 +256,24 @@ async function main(): Promise<void> {
     verifyReceiptFile(receiptPath, "REPROGATE_RECEIPT_SECRET");
     return;
   }
+  if (command === "research-server") {
+    const rest = process.argv.slice(3);
+    const allowHosts: string[] = [];
+    for (let index = 0; index < rest.length; index += 2) {
+      const value = rest[index + 1];
+      if (
+        rest[index] !== "--allow-host" ||
+        value === undefined ||
+        !/^\.?[A-Za-z0-9.-]{1,253}$/u.test(value)
+      )
+        throw new Error(
+          "Usage: reprogate research-server [--allow-host <host|.domain>]...",
+        );
+      allowHosts.push(value);
+    }
+    serveStdio(() => createResearchServer({ allowHosts }));
+    return;
+  }
   if (command === "git-review") {
     process.exitCode = runGitReviewCli(process.argv.slice(3), {
       stdout: (text) => process.stdout.write(text),
@@ -263,7 +282,7 @@ async function main(): Promise<void> {
     return;
   }
   process.stderr.write(
-    "Usage: reprogate [serve [--config <absolute-path>] [--handoff-config <absolute-path>]|demo|approve [--config <absolute-path>] <target> <action-id>|verify-receipt [--config <absolute-path>] <receipt.json>|git-review <prepare|sign|import|check|revoke> ...]\n",
+    "Usage: reprogate [serve [--config <absolute-path>] [--handoff-config <absolute-path>]|demo|approve [--config <absolute-path>] <target> <action-id>|verify-receipt [--config <absolute-path>] <receipt.json>|research-server [--allow-host <host>]...|git-review <prepare|sign|import|check|revoke> ...]\n",
   );
   process.exitCode = 2;
 }

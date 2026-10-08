@@ -6,6 +6,7 @@ All notable changes will be documented in this file. The project follows [Semant
 
 ### Added
 
+- `reprogate research-server`: a stdio research backend with `fetch_distilled`. It checks addresses at connect time to block private-network fetches, re-checks redirects, limits size, time and content type, distills HTML into the passages relevant to the query, and enforces an estimated token budget. ReproGate configures it like any other `network_read` backend.
 - Phase 1 action-contract kernel.
 - Plan-only MCP façade with catalog search and policy explanation.
 - Exact-action capability tokens and tamper-evident decision evidence.
