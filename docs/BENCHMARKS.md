@@ -13,25 +13,45 @@ node dist/src/cli.js bench facade          # table
 node dist/src/cli.js bench facade --json   # machine-readable report
 ```
 
-The harness runs four fixed operations through a real in-memory MCP client against a ReproGate server, using a published synthetic catalog of 14 code-graph-shaped tools (`src/benchmark.ts`, fixture v1). For each operation it reports the UTF-8 bytes of everything the host receives for one call: the text content, `structuredContent` and `isError`. It sets that against a stated baseline:
+The harness runs fixed operations through a real in-memory MCP client against a ReproGate server, using a published synthetic catalog of 14 code-graph-shaped tools (`src/benchmark.ts`, fixture v2). It counts UTF-8 bytes of what a host receives. For tool calls, that is the text content, `structuredContent` and `isError`, on both the measured and the baseline side. Every call must succeed; a failed call stops the run instead of being measured.
 
-| Operation      | Measured                              | Baseline                                                           | Measured B | Baseline B | Reduction |
-| -------------- | ------------------------------------- | ------------------------------------------------------------------ | ---------: | ---------: | --------: |
-| discovery      | `catalog.search` (limit 3)            | every downstream tool definition (name, description, input schema) |        420 |       4954 |     91.5% |
-| schema         | `catalog.describe`, one tool          | every downstream tool definition                                   |       1677 |       4954 |     66.1% |
-| planning       | `action.plan`, compact default        | `action.plan` with `detail: "full"` (the default before #27)       |        852 |       3114 |     72.6% |
-| execution view | `action.run` with `maxTextBytes` 4096 | the unredacted downstream result                                   |      10168 |      51660 |     80.3% |
+### Context cost
 
-**Median reduction: 76.5% on this fixture.** The exit criterion's target is 25%.
+A host first loads tool definitions, then spends calls finding a tool:
+
+| Item                               | Bytes |
+| ---------------------------------- | ----: |
+| façade tool list                   |  9781 |
+| direct tool list                   |  4964 |
+| finding a tool (search + describe) |  2498 |
+| average downstream tool definition |   355 |
+| break-even catalog size (tools)    |    35 |
+
+- **Façade tool list:** ReproGate's own `tools/list`, including output schemas.
+- **Direct tool list:** every downstream definition, as a host would see by proxying the tools directly.
+- **Finding a tool:** one `catalog.search` with three hits plus one `catalog.describe`.
+
+The façade's own tool list is about twice the 14 downstream definitions it replaces. So on this fixture, discovery through the façade costs more context than loading the tools directly. It breaks even at about 35 downstream tools; beyond that, the façade's cost stays flat while a direct list keeps growing.
+
+### Tool results
+
+| Tool result             | Measured                               | Baseline                            | Measured B | Baseline B | Reduction | Truncated |
+| ----------------------- | -------------------------------------- | ----------------------------------- | ---------: | ---------: | --------: | --------- |
+| planning                | `action.plan`, compact default         | `action.plan` with `detail: "full"` |        852 |       3114 |     72.6% | no        |
+| execution, large result | `action.run`, default 16384-byte limit | the unredacted downstream result    |      38064 |      51660 |     26.3% | yes       |
+| execution, small result | `action.run`, default limit            | the unredacted downstream result    |       1032 |        100 |   -932.0% | no        |
+
+**Median tool-result reduction on this fixture: 26.3%.** This is a fixture check, not an exit-criterion result. The roadmap criterion concerns host tokens across real tasks, which only the two-host runs below can measure.
 
 ### What these numbers do and do not show
 
-- **Bytes, not tokens.** Hosts tokenize differently, so the harness reports bytes. Host token counts belong to the two-host runs below.
-- **This fixture only.** The catalog and the downstream result are synthetic. The discovery and schema savings grow with catalog size; the planning saving is close to constant per call.
-- **Execution is simulated.** No backend process is spawned. The downstream result is a fixed object, so the execution row measures the façade's own bounding, not a real tool's output.
-- **Text and `structuredContent` are both counted.** ReproGate puts the same data in both, as MCP compatibility suggests. That is why the execution view is about twice its 4096-byte text limit. A host that shows the model only one of them sees roughly half the measured bytes.
-- **One call per operation.** Multi-call workflows, completion rate and call counts are not measured here.
-- **Code discovery versus grep, and research versus raw HTML,** are not measured. The roadmap's >90% and >95% targets for those need the two-host runs, and a research tool that doesn't exist yet.
+- **Bytes, not tokens.** Hosts tokenize differently. Host token counts belong to the two-host runs.
+- **Truncation is not a free saving.** The large-result row is smaller only because `action.run` cuts the downstream text at the limit: the agent sees about 16 KiB of a much larger result and loses the rest. The `truncated` column marks it.
+- **Small results get larger.** `action.run` adds a fixed summary (execution ID, outcome, receipt and result digests, flags), and repeats the bounded text in `structuredContent`. For a small result, that overhead dominates.
+- **Planning** saves a roughly constant amount per call. The full baseline is today's `detail: "full"` output. It carries the envelope and policy the pre-#27 default returned, plus `detail` and `nextStep`.
+- **Text and `structuredContent` are both counted,** because ReproGate sends the same data in both. A host that shows the model only one of them sees less than measured.
+- **This fixture only.** The catalog and results are synthetic, and execution is simulated: no backend process is spawned.
+- **Not measured here:** multi-call workflows, call counts, completion rate, and the roadmap's code-discovery-versus-grep and research-versus-HTML comparisons.
 
 ## Two-host protocol (manual)
 
