@@ -31,7 +31,7 @@ A host first loads tool definitions, then spends calls finding a tool:
 - **Direct tool list:** every downstream definition, as a host would see by proxying the tools directly.
 - **Finding a tool:** one `catalog.search` with three hits plus one `catalog.describe`.
 
-The façade's own tool list is about twice the 14 downstream definitions it replaces. So on this fixture, discovery through the façade costs more context than loading the tools directly. It breaks even at about 35 downstream tools; beyond that, the façade's cost stays flat while a direct list keeps growing.
+The façade's own tool list is about twice the 14 downstream definitions it replaces. So on this fixture, discovery through the façade costs more context than loading the tools directly. It breaks even at about 35 downstream tools when an agent looks up one tool per session. Each further tool looked up adds another `catalog.describe` (here 1.2–1.7 KB) and raises the break-even. The façade's cost per lookup stays flat as the catalog grows, while a direct list keeps growing.
 
 ### Tool results
 
@@ -41,7 +41,7 @@ The façade's own tool list is about twice the 14 downstream definitions it repl
 | execution, large result | `action.run`, default 16384-byte limit | the unredacted downstream result    |      38064 |      51660 |     26.3% | yes       |
 | execution, small result | `action.run`, default limit            | the unredacted downstream result    |       1032 |        100 |   -932.0% | no        |
 
-**Median tool-result reduction on this fixture: 26.3%.** This is a fixture check, not an exit-criterion result. The roadmap criterion concerns host tokens across real tasks, which only the two-host runs below can measure.
+**Median tool-result reduction on this fixture: 26.3%.** With three rows, the median is the middle row: the truncated large result. This is a fixture check, not an exit-criterion result. The roadmap criterion concerns host tokens across real tasks, which only the two-host runs below can measure.
 
 ### What these numbers do and do not show
 
