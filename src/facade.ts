@@ -83,16 +83,24 @@ export const policyExplainOutputSchema = z.object({
   policy: policySchema,
 });
 
-export const actionRunOutputSchema = z.object({
+// The run summary. Downstream text travels once, as MCP text content after
+// the summary's own JSON mirror; digests are opt-in with detail "full".
+const runSummaryFields = {
   executionId: z.string(),
   outcome: z.enum(["succeeded", "failed"]),
-  receiptDigest: digestSchema,
-  resultDigest: digestSchema,
-  content: z.array(z.object({ type: z.literal("text"), text: z.string() })),
   truncated: z.boolean(),
   redactions: z.number().int().min(0),
   omittedItems: z.number().int().min(0),
-});
+};
+export const actionRunOutputSchema = z.discriminatedUnion("detail", [
+  z.object({ detail: z.literal("compact"), ...runSummaryFields }),
+  z.object({
+    detail: z.literal("full"),
+    ...runSummaryFields,
+    receiptDigest: digestSchema,
+    resultDigest: digestSchema,
+  }),
+]);
 
 /** One catalog entry, including the schema digest a plan would bind. */
 export function describeCatalogTool(tool: CatalogTool) {
