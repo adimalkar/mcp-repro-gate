@@ -6,50 +6,72 @@ import { fileURLToPath } from "node:url";
 
 import {
   FIXTURE_VERSION,
-  TARGET_MEDIAN_REDUCTION,
   benchmarkCatalog,
   formatBenchmarkReport,
   runFacadeBenchmark,
+  succeeded,
 } from "../src/benchmark.js";
 
-test("the façade benchmark is deterministic and every operation shrinks", async () => {
+test("the façade measurement is deterministic and reports costs as well as savings", async () => {
   const first = await runFacadeBenchmark();
   const second = await runFacadeBenchmark();
   assert.deepEqual(first, second);
   assert.equal(first.fixtureVersion, FIXTURE_VERSION);
   assert.equal(first.fixtureTools, benchmarkCatalog().length);
-  assert.deepEqual(
-    first.operations.map((item) => item.name),
-    ["discovery", "schema", "planning", "execution view"],
+
+  const { context } = first;
+  assert.ok(context.facadeToolListBytes > 0);
+  assert.ok(context.discoveryCallsBytes > 0);
+  assert.equal(
+    context.averageDownstreamToolBytes,
+    Math.round(context.directToolListBytes / first.fixtureTools),
   );
-  for (const item of first.operations) {
-    assert.ok(item.measuredBytes > 0, item.name);
-    assert.ok(item.measuredBytes < item.baselineBytes, item.name);
+  assert.equal(
+    context.breakEvenCatalogTools,
+    Math.ceil(
+      (context.facadeToolListBytes + context.discoveryCallsBytes) /
+        context.averageDownstreamToolBytes,
+    ),
+  );
+
+  assert.deepEqual(
+    first.toolResults.map((item) => [item.name, item.truncated]),
+    [
+      ["planning", false],
+      ["execution, large result", true],
+      ["execution, small result", false],
+    ],
+  );
+  for (const item of first.toolResults)
     assert.equal(
       item.reduction,
       Math.round((1 - item.measuredBytes / item.baselineBytes) * 10_000) /
         10_000,
       item.name,
     );
-  }
-  const execution = first.operations.find(
-    (item) => item.name === "execution view",
-  );
-  // Text and structured content each carry the bounded view once.
-  assert.ok((execution?.measuredBytes ?? Infinity) < 3 * 4096);
-  const reductions = first.operations
+  const [planning, large, small] = first.toolResults;
+  assert.ok((planning?.reduction ?? 0) > 0);
+  assert.ok((large?.reduction ?? 0) > 0);
+  // The façade's fixed fields outweigh a tiny result; this must stay visible.
+  assert.ok((small?.reduction ?? 0) < 0);
+  const sorted = first.toolResults
     .map((item) => item.reduction)
     .sort((a, b) => a - b);
-  assert.equal(
-    first.medianReduction,
-    Math.round((((reductions[1] ?? 0) + (reductions[2] ?? 0)) / 2) * 10_000) /
-      10_000,
-  );
-  assert.equal(first.target, TARGET_MEDIAN_REDUCTION);
-  assert.equal(first.meetsTarget, first.medianReduction >= first.target);
+  assert.equal(first.medianToolResultReduction, sorted[1]);
+
   const table = formatBenchmarkReport(first);
-  for (const item of first.operations) assert.ok(table.includes(item.name));
-  assert.match(table, /Bytes, not host tokens/u);
+  for (const item of first.toolResults) assert.ok(table.includes(item.name));
+  assert.match(table, /not an exit-criterion result/u);
+  assert.match(table, /break-even at \d+ downstream tools/u);
+});
+
+test("a failed or empty call is refused rather than measured", () => {
+  assert.throws(
+    () => succeeded("x", { isError: true, content: [] }),
+    /did not succeed/u,
+  );
+  assert.throws(() => succeeded("x", { content: [] }), /did not succeed/u);
+  assert.deepEqual(succeeded("x", { structuredContent: { ok: 1 } }), { ok: 1 });
 });
 
 test("the CLI prints the same report as JSON and rejects other arguments", async () => {
@@ -65,7 +87,7 @@ test("the CLI prints the same report as JSON and rejects other arguments", async
     timeout: 60_000,
   });
   assert.equal(table.status, 0, table.stderr);
-  assert.match(table.stdout, /median reduction/u);
+  assert.match(table.stdout, /median tool-result reduction/u);
   const bad = spawnSync(process.execPath, [cli, "bench", "facade", "--csv"], {
     encoding: "utf8",
     timeout: 60_000,
@@ -80,24 +102,37 @@ test("published benchmark numbers match the harness", async () => {
     fileURLToPath(new URL("../../docs/BENCHMARKS.md", import.meta.url)),
     "utf8",
   );
-  for (const item of report.operations) {
-    // Table cells are padded by the formatter; compare trimmed cells.
-    const cells = docs
-      .split("\n")
-      .map((line) => line.split("|").map((cell) => cell.trim()))
-      .find((row) => row[0] === "" && row[1] === item.name);
-    assert.ok(cells, item.name);
-    assert.equal(cells.at(-4), String(item.measuredBytes), item.name);
-    assert.equal(cells.at(-3), String(item.baselineBytes), item.name);
+  const rows = docs
+    .split("\n")
+    .map((line) => line.split("|").map((cell) => cell.trim()));
+  const row = (name: string) => {
+    const cells = rows.find((cells) => cells[0] === "" && cells[1] === name);
+    assert.ok(cells, name);
+    return cells;
+  };
+  for (const item of report.toolResults) {
+    const cells = row(item.name);
+    assert.equal(cells.at(-5), String(item.measuredBytes), item.name);
+    assert.equal(cells.at(-4), String(item.baselineBytes), item.name);
     assert.equal(
-      cells.at(-2),
+      cells.at(-3),
       `${(item.reduction * 100).toFixed(1)}%`,
       item.name,
     );
+    assert.equal(cells.at(-2), item.truncated ? "yes" : "no", item.name);
   }
+  const { context } = report;
+  for (const [name, value] of [
+    ["façade tool list", context.facadeToolListBytes],
+    ["direct tool list", context.directToolListBytes],
+    ["finding a tool (search + describe)", context.discoveryCallsBytes],
+    ["average downstream tool definition", context.averageDownstreamToolBytes],
+    ["break-even catalog size (tools)", context.breakEvenCatalogTools],
+  ] as const)
+    assert.equal(row(name).at(-2), String(value), name);
   assert.ok(
     docs.includes(
-      `Median reduction: ${(report.medianReduction * 100).toFixed(1)}% on this fixture.`,
+      `Median tool-result reduction on this fixture: ${(report.medianToolResultReduction * 100).toFixed(1)}%.`,
     ),
   );
 });

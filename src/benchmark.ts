@@ -2,14 +2,16 @@ import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 
 import type { ReproGateExecutor } from "./executor.js";
 import { ReproGateKernel } from "./kernel.js";
-import { HostMediator, mediationConfigSchema } from "./mediation.js";
+import {
+  DEFAULT_MAX_TEXT_BYTES,
+  HostMediator,
+  mediationConfigSchema,
+} from "./mediation.js";
 import { createReproGateServer } from "./server.js";
 import type { CatalogTool, Digest, PolicyV1 } from "./types.js";
 
 /** Bumped whenever the fixture changes, so reports name what they measured. */
-export const FIXTURE_VERSION = 1;
-export const TARGET_MEDIAN_REDUCTION = 0.25;
-const MAX_TEXT_BYTES = 4096;
+export const FIXTURE_VERSION = 2;
 const DIGEST: Digest = `sha256:${"0".repeat(64)}`;
 
 // A synthetic code-graph-shaped catalog: deterministic, written for this
@@ -128,6 +130,14 @@ export function benchmarkCatalog(): CatalogTool[] {
   }));
 }
 
+// A small downstream result, where the façade's fixed fields dominate.
+function smallResult() {
+  return {
+    content: [{ type: "text", text: "app.services.module0.handler0" }],
+    structuredContent: { total: 1 },
+  };
+}
+
 // A large downstream result: a code search returning many matches.
 function downstreamResult() {
   const matches = Array.from({ length: 120 }, (_, index) => ({
@@ -156,23 +166,32 @@ const policy: PolicyV1 = {
   rules: [],
 };
 
-export interface BenchmarkOperation {
+export interface ToolResultMeasurement {
   name: string;
   measured: string;
   baseline: string;
   measuredBytes: number;
   baselineBytes: number;
   reduction: number;
+  /** True when the façade cut the downstream text to its byte limit. */
+  truncated: boolean;
 }
 
 export interface BenchmarkReport {
   fixtureVersion: number;
   fixtureTools: number;
   unit: "utf8-bytes";
-  operations: BenchmarkOperation[];
-  medianReduction: number;
-  target: number;
-  meetsTarget: boolean;
+  /** Definitions a host loads, and the calls a task spends finding a tool. */
+  context: {
+    facadeToolListBytes: number;
+    directToolListBytes: number;
+    discoveryCallsBytes: number;
+    averageDownstreamToolBytes: number;
+    breakEvenCatalogTools: number;
+  };
+  /** Tool results only; the median is a fixture check, not an exit result. */
+  toolResults: ToolResultMeasurement[];
+  medianToolResultReduction: number;
 }
 
 // Everything a host receives for one tool call: text and structured content.
@@ -185,6 +204,24 @@ function visibleBytes(result: unknown): number {
   return Buffer.byteLength(
     JSON.stringify({ content, structuredContent, isError }),
   );
+}
+
+// A failed call would look like a large "reduction"; refuse to measure it.
+export function succeeded(
+  name: string,
+  result: unknown,
+): Record<string, unknown> {
+  const { isError, structuredContent } = result as {
+    isError?: unknown;
+    structuredContent?: unknown;
+  };
+  if (
+    isError === true ||
+    structuredContent === null ||
+    typeof structuredContent !== "object"
+  )
+    throw new Error(`Benchmark call ${name} did not succeed`);
+  return structuredContent as Record<string, unknown>;
 }
 
 function round(value: number): number {
@@ -200,21 +237,26 @@ function median(values: readonly number[]): number {
 }
 
 /**
- * Measure agent-visible result sizes for fixed operations through a real
- * MCP client. Execution is simulated: the downstream result is a fixture and
- * no process is spawned, so only the façade's own output is measured.
+ * Measure agent-visible sizes for fixed operations through a real MCP
+ * client. Execution is simulated: downstream results are fixtures and no
+ * process is spawned, so only the façade's own output is measured.
  */
 export async function runFacadeBenchmark(): Promise<BenchmarkReport> {
   const catalog = benchmarkCatalog();
   const kernel = new ReproGateKernel(catalog, policy);
-  const raw = downstreamResult();
+  const results: Record<string, unknown> = {
+    "graph.search_symbols": downstreamResult(),
+    "graph.list_routes": smallResult(),
+  };
   const executor = {
     store: {
       get: (actionId: string) => kernel.explain(actionId),
       countCapabilityUses: () => 0,
     },
-    execute: ({ actionId }: { actionId: string }) =>
-      Promise.resolve({
+    execute: ({ actionId }: { actionId: string }) => {
+      const plan = kernel.explain(actionId);
+      const toolRef = `graph.${plan?.envelope.tool.toolName ?? ""}`;
+      return Promise.resolve({
         receipt: {
           executionId: "00000000-0000-4000-8000-000000000000",
           actionId,
@@ -222,16 +264,16 @@ export async function runFacadeBenchmark(): Promise<BenchmarkReport> {
           receiptDigest: DIGEST,
           resultDigest: DIGEST,
         },
-        downstreamResult: raw,
-      }),
+        downstreamResult: results[toolRef],
+      });
+    },
   } as unknown as ReproGateExecutor;
+  // The mediation default, so the bound is what an operator gets unless
+  // they choose otherwise.
   const mediator = new HostMediator(
     executor,
     kernel,
-    mediationConfigSchema.parse({
-      effects: ["local_read"],
-      result: { maxTextBytes: MAX_TEXT_BYTES },
-    }),
+    mediationConfigSchema.parse({ effects: ["local_read"] }),
     "benchmark-capability-secret-not-used-0123456789",
     "benchmark-receipt-secret-not-used-0123456789ab",
   );
@@ -245,93 +287,108 @@ export async function runFacadeBenchmark(): Promise<BenchmarkReport> {
     const call = (name: string, args: Record<string, unknown>) =>
       client.callTool({ name, arguments: args });
 
-    const allDefinitions = Buffer.byteLength(
-      JSON.stringify(
-        catalog.map(({ toolName, description, inputSchema }) => ({
-          name: toolName,
-          description,
-          inputSchema,
-        })),
-      ),
+    // Context: what a host loads up front, and what finding a tool costs.
+    const facadeToolListBytes = Buffer.byteLength(
+      JSON.stringify(await client.listTools()),
     );
-    const searched = visibleBytes(
-      await call("catalog.search", { query: "trace callers", limit: 3 }),
-    );
-    const described = visibleBytes(
-      await call("catalog.describe", { toolRef: "graph.trace_calls" }),
-    );
-    const planArgs = {
-      toolRef: "graph.search_symbols",
-      arguments: { query: "handler" },
-    };
-    const compact = await call("action.plan", planArgs);
-    const full = visibleBytes(
-      await call("action.plan", { ...planArgs, detail: "full" }),
-    );
-    const actionId = (compact.structuredContent as { actionId: string })
-      .actionId;
-    const run = visibleBytes(
-      await call("action.run", {
-        actionId,
-        arguments: { query: "handler" },
+    const directTools = catalog.map(
+      ({ toolName, description, inputSchema }) => ({
+        name: toolName,
+        description,
+        inputSchema,
       }),
     );
-
-    const operation = (
-      name: string,
-      measured: string,
-      baseline: string,
-      measuredBytes: number,
-      baselineBytes: number,
-    ): BenchmarkOperation => ({
-      name,
-      measured,
-      baseline,
-      measuredBytes,
-      baselineBytes,
-      reduction: round(1 - measuredBytes / baselineBytes),
-    });
-    const operations = [
-      operation(
-        "discovery",
-        "catalog.search (limit 3)",
-        "all downstream tool definitions",
-        searched,
-        allDefinitions,
-      ),
-      operation(
-        "schema",
-        "catalog.describe (one tool)",
-        "all downstream tool definitions",
-        described,
-        allDefinitions,
-      ),
-      operation(
-        "planning",
-        "action.plan (compact default)",
-        'action.plan detail: "full"',
-        visibleBytes(compact),
-        full,
-      ),
-      operation(
-        "execution view",
-        `action.run (maxTextBytes ${String(MAX_TEXT_BYTES)})`,
-        "unredacted downstream result",
-        run,
-        visibleBytes(raw),
-      ),
-    ];
-    const medianReduction = round(
-      median(operations.map((item) => item.reduction)),
+    const directToolListBytes = Buffer.byteLength(
+      JSON.stringify({ tools: directTools }),
     );
+    const searched = await call("catalog.search", {
+      query: "symbol",
+      limit: 3,
+    });
+    const hits = succeeded("catalog.search", searched).tools;
+    if (!Array.isArray(hits) || hits.length !== 3)
+      throw new Error("Benchmark search must return three tools");
+    const described = await call("catalog.describe", {
+      toolRef: "graph.find_references",
+    });
+    succeeded("catalog.describe", described);
+    const discoveryCallsBytes =
+      visibleBytes(searched) + visibleBytes(described);
+    const averageDownstreamToolBytes = Math.round(
+      directToolListBytes / catalog.length,
+    );
+
+    const measure = async (
+      name: string,
+      toolRef: string,
+      args: Record<string, unknown>,
+    ): Promise<ToolResultMeasurement> => {
+      const compact = await call("action.plan", { toolRef, arguments: args });
+      const actionId = succeeded("action.plan", compact).actionId;
+      if (typeof actionId !== "string")
+        throw new Error("Benchmark plan returned no actionId");
+      if (name === "planning") {
+        const full = await call("action.plan", {
+          toolRef,
+          arguments: args,
+          detail: "full",
+        });
+        succeeded("action.plan full", full);
+        const measuredBytes = visibleBytes(compact);
+        const baselineBytes = visibleBytes(full);
+        return {
+          name,
+          measured: "action.plan (compact default)",
+          baseline: 'action.plan detail: "full"',
+          measuredBytes,
+          baselineBytes,
+          reduction: round(1 - measuredBytes / baselineBytes),
+          truncated: false,
+        };
+      }
+      const run = await call("action.run", { actionId, arguments: args });
+      const view = succeeded("action.run", run);
+      const measuredBytes = visibleBytes(run);
+      const baselineBytes = visibleBytes(results[toolRef]);
+      return {
+        name,
+        measured: `action.run (default maxTextBytes ${String(DEFAULT_MAX_TEXT_BYTES)})`,
+        baseline: "unredacted downstream result",
+        measuredBytes,
+        baselineBytes,
+        reduction: round(1 - measuredBytes / baselineBytes),
+        truncated: view.truncated === true,
+      };
+    };
+    const toolResults = [
+      await measure("planning", "graph.search_symbols", { query: "handler" }),
+      await measure("execution, large result", "graph.search_symbols", {
+        query: "handler",
+      }),
+      await measure("execution, small result", "graph.list_routes", {
+        prefix: "/api",
+      }),
+    ];
     return {
       fixtureVersion: FIXTURE_VERSION,
       fixtureTools: catalog.length,
       unit: "utf8-bytes",
-      operations,
-      medianReduction,
-      target: TARGET_MEDIAN_REDUCTION,
-      meetsTarget: medianReduction >= TARGET_MEDIAN_REDUCTION,
+      context: {
+        facadeToolListBytes,
+        directToolListBytes,
+        discoveryCallsBytes,
+        averageDownstreamToolBytes,
+        // Catalog size at which loading every downstream definition costs
+        // more than the façade's own tools plus one search and describe.
+        breakEvenCatalogTools: Math.ceil(
+          (facadeToolListBytes + discoveryCallsBytes) /
+            averageDownstreamToolBytes,
+        ),
+      },
+      toolResults,
+      medianToolResultReduction: round(
+        median(toolResults.map((item) => item.reduction)),
+      ),
     };
   } finally {
     await client.close();
@@ -339,26 +396,39 @@ export async function runFacadeBenchmark(): Promise<BenchmarkReport> {
   }
 }
 
+function percent(value: number): string {
+  return `${(value * 100).toFixed(1)}%`;
+}
+
 /** A fixed-width text table for terminals. */
 export function formatBenchmarkReport(report: BenchmarkReport): string {
-  const rows = report.operations.map((item) => [
+  const { context } = report;
+  const rows = report.toolResults.map((item) => [
     item.name,
     String(item.measuredBytes),
     String(item.baselineBytes),
-    `${(item.reduction * 100).toFixed(1)}%`,
+    percent(item.reduction),
+    item.truncated ? "yes" : "no",
   ]);
-  const header = ["operation", "measured B", "baseline B", "reduction"];
+  const header = [
+    "tool result",
+    "measured B",
+    "baseline B",
+    "reduction",
+    "truncated",
+  ];
   const widths = header.map((title, column) =>
     Math.max(title.length, ...rows.map((row) => (row[column] ?? "").length)),
   );
   const line = (cells: string[]) =>
     cells.map((cell, column) => cell.padEnd(widths[column] ?? 0)).join("  ");
   return [
-    `Façade measurement, fixture v${String(report.fixtureVersion)} (${String(report.fixtureTools)} tools), UTF-8 bytes of agent-visible results`,
+    `Façade measurement, fixture v${String(report.fixtureVersion)} (${String(report.fixtureTools)} tools), UTF-8 bytes`,
+    `context: façade tool list ${String(context.facadeToolListBytes)} B vs direct tool list ${String(context.directToolListBytes)} B; finding a tool costs ${String(context.discoveryCallsBytes)} B; break-even at ${String(context.breakEvenCatalogTools)} downstream tools`,
     line(header),
     ...rows.map(line),
-    `median reduction ${(report.medianReduction * 100).toFixed(1)}% (target ${(report.target * 100).toFixed(0)}%: ${report.meetsTarget ? "met" : "not met"} on this fixture)`,
-    "Bytes, not host tokens; execution is simulated. See docs/BENCHMARKS.md.",
+    `median tool-result reduction ${percent(report.medianToolResultReduction)} (fixture check, not an exit-criterion result)`,
+    "Bytes, not host tokens; execution is simulated; truncation hides content. See docs/BENCHMARKS.md.",
     "",
   ].join("\n");
 }
