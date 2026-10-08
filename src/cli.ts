@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 
 import { serveStdio } from "@modelcontextprotocol/server/stdio";
 
+import { formatBenchmarkReport, runFacadeBenchmark } from "./benchmark.js";
 import { issueCapabilityToken } from "./capability-token.js";
 import { SqliteExecutionStore } from "./execution-store.js";
 import { runArtifactDigest, runCatalogImport } from "./catalog-cli.js";
@@ -278,6 +279,18 @@ async function main(): Promise<void> {
     });
     return;
   }
+  if (command === "bench" && process.argv[3] === "facade") {
+    const rest = process.argv.slice(4);
+    if (rest.length > 1 || (rest.length === 1 && rest[0] !== "--json"))
+      throw new Error("Usage: reprogate bench facade [--json]");
+    const report = await runFacadeBenchmark();
+    process.stdout.write(
+      rest[0] === "--json"
+        ? `${JSON.stringify(report, null, 2)}\n`
+        : formatBenchmarkReport(report),
+    );
+    return;
+  }
   if (command === "git-review") {
     process.exitCode = runGitReviewCli(process.argv.slice(3), {
       stdout: (text) => process.stdout.write(text),
@@ -286,7 +299,7 @@ async function main(): Promise<void> {
     return;
   }
   process.stderr.write(
-    "Usage: reprogate [serve [--config <absolute-path>] [--handoff-config <absolute-path>]|demo|approve [--config <absolute-path>] <target> <action-id>|verify-receipt [--config <absolute-path>] <receipt.json>|catalog import --config <absolute-path> --backend <name> --effects <effects> ...|artifact digest <absolute-path>|git-review <prepare|sign|import|check|revoke> ...]\n",
+    "Usage: reprogate [serve [--config <absolute-path>] [--handoff-config <absolute-path>]|demo|approve [--config <absolute-path>] <target> <action-id>|verify-receipt [--config <absolute-path>] <receipt.json>|catalog import --config <absolute-path> --backend <name> --effects <effects> ...|artifact digest <absolute-path>|bench facade [--json]|git-review <prepare|sign|import|check|revoke> ...]\n",
   );
   process.exitCode = 2;
 }

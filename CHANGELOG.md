@@ -21,6 +21,7 @@ All notable changes will be documented in this file. The project follows [Semant
 - Bounded, symlink-safe filesystem manifest observation.
 - Configuration-aware approval issuance and receipt verification.
 - Opt-in native agent handoff: host-configured `handoff_status`/`handoff_update` MCP tools, `serve --handoff-config`, Handoff Configuration v1 and Handoff v1 JSON Schemas, immutable SQLite snapshots with optimistic concurrency, and a bounded shared-protocol `.agent/handoff.md` projection with private history.
+- `reprogate bench facade`: a deterministic measurement of agent-visible result bytes for fixed façade operations against stated baselines, plus a manual two-host benchmark protocol.
 - Schema-on-demand `catalog.describe` and full-evidence `action.inspect` MCP tools; output schemas and conservative annotations on every façade tool.
 - Opt-in host-held approvals: `approve --hold`/`--revoke-held` record signed, single-use approvals for exact plans, so `action.run` can execute `approval_required` plans without the model handling a capability token.
 - Host-side `reprogate catalog import` (catalog entries from a configured backend's live tool list, with operator-declared effects and review warnings), `reprogate artifact digest`, and a code graph proxy guide for codebase-memory-mcp.
@@ -29,5 +30,6 @@ All notable changes will be documented in this file. The project follows [Semant
 ### Changed
 
 - `action.run` no longer repeats downstream data the text items already carry. A `structuredContent` that a text item mirrors as JSON is not appended, and top-level string fields equal to a text item become `"[text item N]"` markers. Structured content that redaction would touch, or that the bound would cut, is kept whole. `truncated` can now be `false` for results whose duplicate used to overflow the bound. The receipt still covers the complete downstream result.
+- `@modelcontextprotocol/client` is now a runtime dependency. The configured stdio downstream connector already imported it at runtime, so production installs without dev dependencies could not start configured backends.
 - **Breaking:** `action.plan` returns a compact summary (`actionId`, `envelopeDigest`, `toolRef`, `decision`, `reasonCodes`, `expiresAt`, `nextStep`) by default. Pass `detail: "full"` or call `action.inspect` for the previous envelope and policy fields.
 - Façade error results other than `action.execute` carry a compact text block without `structuredContent`. `policy.explain` and `action.inspect` accept only `sha256:` action IDs, and tool references are capped at 256 characters.

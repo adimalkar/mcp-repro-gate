@@ -88,6 +88,8 @@ When an executor is explicitly supplied, the server also registers `action.execu
 
 A host can also opt in to the advisory `handoff_status` and `handoff_update` tools with `serve --handoff-config <absolute-path>`. They keep durable, caller-asserted session context for one configured workspace and project it to `.agent/handoff.md`. They never authorize actions. See the [handoff guide](docs/HANDOFF.md).
 
+`reprogate bench facade` measures what the façade returns, in agent-visible bytes, on a published fixture, against stated baselines. See [benchmarks](docs/BENCHMARKS.md) for the numbers, their limits, and the manual two-host protocol.
+
 ## Core invariant
 
 An approval is valid for one exact action, not for a server or tool name in general:
