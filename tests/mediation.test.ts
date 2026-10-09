@@ -19,7 +19,10 @@ import { Ajv2020 } from "ajv/dist/2020.js";
 import { demoPolicy } from "../src/demo-config.js";
 import { digestCanonical } from "../src/digest.js";
 import type { ReproGateExecutor } from "../src/executor.js";
-import { actionRunOutputSchema } from "../src/facade.js";
+import {
+  actionRunOutputSchema,
+  actionRunStrikesOutputSchema,
+} from "../src/facade.js";
 import { sha256File } from "../src/file-digest.js";
 import {
   HostMediator,
@@ -150,6 +153,7 @@ async function configuredRuntime(
       databasePath: join(state, "reprogate.sqlite"),
       catalog: [
         tool("echo", echoEffects, textSchema),
+        tool("resolve", ["local_read"], textSchema),
         tool("publish", ["local_write"], {
           ...textSchema,
           properties: { content: { type: "string" } },
@@ -342,6 +346,7 @@ test("the runtime configuration schema accepts and constrains mediation", () => 
     validate({
       effects: ["local_read", "network_read"],
       result: { maxTextBytes: 4096, redactPatterns: ["secret-[0-9]+"] },
+      strikes: { resolverToolRef: "research.resolve_stuck_error", limit: 3 },
     }),
     true,
   );
@@ -349,6 +354,8 @@ test("the runtime configuration schema accepts and constrains mediation", () => 
     { effects: ["local_write"] },
     { effects: [] },
     { effects: ["local_read"], result: { maxTextBytes: 1 } },
+    { effects: ["local_read"], strikes: { resolverToolRef: "x", limit: 1 } },
+    { effects: ["local_read"], strikes: {} },
   ])
     assert.equal(validate(invalid), false, JSON.stringify(invalid));
 });
@@ -722,4 +729,256 @@ test("action.run works through the stdio CLI in the modern protocol era", async 
   } finally {
     await client.close();
   }
+});
+
+function strikeHarness(limit?: number) {
+  const tools = ["build", "test", "resolve"].map((name) => ({
+    toolRef: `strike.${name}`,
+    serverRef: "strike",
+    toolName: name,
+    description: name,
+    inputSchema: {},
+    effects: ["local_read" as const],
+  }));
+  const kernel = new ReproGateKernel(tools, demoPolicy);
+  const ids: Record<string, string> = {};
+  const plans = new Map<string, unknown>();
+  for (const tool of tools) {
+    const plan = kernel.plan({ toolRef: tool.toolRef, arguments: {} });
+    ids[tool.toolName] = plan.envelope.actionId;
+    plans.set(plan.envelope.actionId, plan);
+  }
+  // Each call consumes the next scripted step; the default is success.
+  const script: ("succeeded" | "failed" | "throw" | "consumed")[] = [];
+  let executed = 0;
+  const executor = {
+    store: {
+      get: (actionId: string) => plans.get(actionId),
+      countCapabilityUses: () => 0,
+    },
+    execute: () => {
+      const step = script.shift() ?? "succeeded";
+      if (step === "consumed")
+        return Promise.reject(
+          new Error("Capability token has already been consumed"),
+        );
+      executed++;
+      if (step === "throw")
+        return Promise.reject(
+          new Error("Execution arguments do not match the approved action"),
+        );
+      return Promise.resolve({
+        receipt: {
+          executionId: `execution-${String(executed)}`,
+          outcome: step,
+          receiptDigest: `sha256:${"a".repeat(64)}`,
+          resultDigest: `sha256:${"b".repeat(64)}`,
+        },
+        downstreamResult: {
+          content: [{ type: "text", text: step }],
+          ...(step === "failed" ? { isError: true } : {}),
+        },
+      });
+    },
+  } as unknown as ReproGateExecutor;
+  const mediator = new HostMediator(
+    executor,
+    kernel,
+    mediationConfigSchema.parse({
+      effects: ["local_read"],
+      strikes: {
+        resolverToolRef: "strike.resolve",
+        ...(limit === undefined ? {} : { limit }),
+      },
+    }),
+    capabilitySecret,
+    receiptSecret,
+  );
+  const run = (name: string) =>
+    mediator.run({ actionId: ids[name] ?? "", arguments: {} });
+  return { mediator, kernel, script, run, executed: () => executed };
+}
+
+const resolveRequired = (failures: number) => (error: unknown) =>
+  error instanceof MediationError &&
+  error.code === "resolve_required" &&
+  error.strikes?.failures === failures &&
+  error.strikes.resolverToolRef === "strike.resolve";
+
+test("two consecutive failures block a tool until the resolver succeeds", async () => {
+  const { script, run, executed } = strikeHarness();
+  script.push("failed");
+  assert.deepEqual((await run("build")).strikes, {
+    failures: 1,
+    limit: 2,
+    resolverToolRef: "strike.resolve",
+  });
+  // A success in between resets the count.
+  assert.equal((await run("build")).strikes, undefined);
+  script.push("failed", "throw");
+  assert.equal((await run("build")).strikes?.failures, 1);
+  // An executor error is a strike too.
+  await assert.rejects(run("build"), /do not match/u);
+  const before = executed();
+  await assert.rejects(run("build"), resolveRequired(2));
+  assert.equal(executed(), before, "a blocked tool runs nothing");
+  // Other tools stay usable.
+  assert.equal((await run("test")).outcome, "succeeded");
+  // The resolver is never counted or blocked; only its success unblocks.
+  script.push("failed", "failed", "failed");
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const resolver = await run("resolve");
+    assert.equal(resolver.outcome, "failed");
+    assert.equal(resolver.strikes, undefined);
+  }
+  await assert.rejects(run("build"), resolveRequired(2));
+  assert.equal((await run("resolve")).outcome, "succeeded");
+  assert.equal((await run("build")).outcome, "succeeded");
+});
+
+test("strike limits are configurable and refusals that run nothing do not count", async () => {
+  const three = strikeHarness(3);
+  three.script.push("failed", "failed", "failed");
+  for (const failures of [1, 2, 3])
+    assert.equal((await three.run("build")).strikes?.failures, failures);
+  await assert.rejects(three.run("build"), resolveRequired(3));
+
+  const { script, run } = strikeHarness();
+  script.push("failed", "consumed");
+  await run("build");
+  await assert.rejects(
+    run("build"),
+    (error: unknown) =>
+      error instanceof MediationError && error.code === "run_limit",
+  );
+  // run_limit ran nothing, so one failure still leaves the tool usable.
+  assert.equal((await run("build")).outcome, "succeeded");
+
+  for (const strikes of [
+    { resolverToolRef: "x", limit: 1 },
+    { resolverToolRef: "x", limit: 6 },
+    { resolverToolRef: "" },
+    { resolverToolRef: "x", unknown: true },
+  ])
+    assert.equal(
+      mediationConfigSchema.safeParse({ effects: ["local_read"], strikes })
+        .success,
+      false,
+      JSON.stringify(strikes),
+    );
+});
+
+test("the strike resolver must be a catalog tool with only mediated effects", () => {
+  const { kernel } = strikeHarness();
+  const network = new ReproGateKernel(
+    [
+      {
+        toolRef: "strike.web",
+        serverRef: "strike",
+        toolName: "web",
+        description: "web",
+        inputSchema: {},
+        effects: ["network_read"],
+      },
+    ],
+    demoPolicy,
+  );
+  for (const [live, resolverToolRef] of [
+    [kernel, "strike.missing"],
+    [network, "strike.web"],
+  ] as const)
+    assert.throws(
+      () =>
+        new HostMediator(
+          {} as ReproGateExecutor,
+          live,
+          mediationConfigSchema.parse({
+            effects: ["local_read"],
+            strikes: { resolverToolRef },
+          }),
+          capabilitySecret,
+          receiptSecret,
+        ),
+      /strike resolver/u,
+      resolverToolRef,
+    );
+});
+
+test("action.run reports strikes, refuses with the resolver and states the rule", async (context) => {
+  const plain = await configuredRuntime(context, { effects: ["local_read"] });
+  const plainRun = (await plain.client.listTools()).tools.find(
+    (tool) => tool.name === "action.run",
+  );
+  assert.ok(plainRun);
+  assert.equal(plainRun.description?.includes("resolve_required"), false);
+  assert.equal(
+    JSON.stringify(plainRun.outputSchema).includes("strikes"),
+    false,
+  );
+
+  const { client, call, plan, counts } = await configuredRuntime(context, {
+    effects: ["local_read"],
+    maxRunsPerPlan: 5,
+    strikes: { resolverToolRef: "configured.resolve" },
+  });
+  const run = (await client.listTools()).tools.find(
+    (tool) => tool.name === "action.run",
+  );
+  assert.match(run?.description ?? "", /After 2 consecutive failures/u);
+  assert.match(run?.description ?? "", /configured\.resolve/u);
+  assert.ok(JSON.stringify(run?.outputSchema).includes("strikes"));
+
+  for (const [text, failures] of [
+    ["fail:one", 1],
+    ["fail:two", 2],
+  ] as const) {
+    const actionId = await plan("configured.echo", { text });
+    const failed = await call("action.run", { actionId, arguments: { text } });
+    assert.equal(failed.isError, undefined, JSON.stringify(failed.content));
+    const summary = actionRunStrikesOutputSchema.parse(
+      failed.structuredContent,
+    );
+    assert.equal(summary.outcome, "failed");
+    assert.deepEqual(summary.strikes, {
+      failures,
+      limit: 2,
+      resolverToolRef: "configured.resolve",
+    });
+    assert.deepEqual(
+      (JSON.parse(failed.content[0]?.text ?? "") as { strikes?: unknown })
+        .strikes,
+      summary.strikes,
+    );
+  }
+  const fine = await plan("configured.echo", { text: "fine" });
+  const blocked = await call("action.run", {
+    actionId: fine,
+    arguments: { text: "fine" },
+  });
+  assert.equal(blocked.isError, true);
+  assert.deepEqual(JSON.parse(blocked.content[0]?.text ?? ""), {
+    error: "resolve_required",
+    resolverToolRef: "configured.resolve",
+    failures: 2,
+  });
+  assert.deepEqual(counts(), { executions: 2, tokenUses: 2 });
+
+  const resolver = await plan("configured.resolve", { text: "fail:two" });
+  const resolved = await call("action.run", {
+    actionId: resolver,
+    arguments: { text: "fail:two" },
+  });
+  const resolvedSummary = actionRunStrikesOutputSchema.parse(
+    resolved.structuredContent,
+  );
+  assert.equal(resolvedSummary.outcome, "succeeded");
+  assert.equal(resolvedSummary.strikes, undefined);
+  const retried = await call("action.run", {
+    actionId: fine,
+    arguments: { text: "fine" },
+  });
+  assert.equal(
+    actionRunStrikesOutputSchema.parse(retried.structuredContent).outcome,
+    "succeeded",
+  );
 });

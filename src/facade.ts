@@ -96,6 +96,17 @@ export const actionRunOutputSchema = z.object({
   resultDigest: digestSchema.optional(),
   content: z.array(z.object({ type: z.literal("text"), text: z.string() })),
 });
+// Only a server with the strike gate lists this field, so the gate costs
+// nothing in other tool lists. It appears on failed runs.
+export const actionRunStrikesOutputSchema = actionRunOutputSchema.extend({
+  strikes: z
+    .object({
+      failures: z.number().int().min(0),
+      limit: z.number().int().min(1),
+      resolverToolRef: z.string(),
+    })
+    .optional(),
+});
 
 /** One catalog entry, including the schema digest a plan would bind. */
 export function describeCatalogTool(tool: CatalogTool) {

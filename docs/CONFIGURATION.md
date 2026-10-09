@@ -145,6 +145,21 @@ The server then issues and consumes a one-use capability itself, so the model ne
   - The text is then cut to `maxTextBytes` (default 16384, maximum 262144) on a character boundary. Non-text items are counted in `omittedItems`.
   - The receipt's `resultDigest` still covers the complete, unredacted downstream result.
 
+### Two-strike gate
+
+Add `strikes` to `mediation` to stop an agent from retrying a failing tool in a loop:
+
+```json
+"strikes": { "resolverToolRef": "research.resolve_stuck_error", "limit": 2 }
+```
+
+- **Blocking:** after `limit` consecutive failed runs of one downstream tool (default 2, range 2–5), `action.run` refuses further runs of that tool. The refusal is `{ "error": "resolve_required", "resolverToolRef": "…", "failures": n }`, and nothing runs. Tools are counted by backend and tool name, across plans and arguments.
+- **What counts as a failure:** a run whose receipt outcome is `failed`, or an executor error during the run, such as arguments that do not match the plan. Refusals that run nothing, such as `run_limit`, `expired` or `stale_plan`, do not count.
+- **Unblocking:** a successful run of a tool resets its own count. A successful run of the resolver, through `action.run`, resets every count. The resolver itself is never counted or blocked.
+- **Agent feedback:** a failed `action.run` result carries `strikes: { failures, limit, resolverToolRef }`, and the `action.run` description states the rule.
+- **Startup checks:** `resolverToolRef` must name a catalog tool whose effects are all listed in `effects`, or the server refuses to start. Your policy must also decide `allow` for the resolver, or a blocked tool stays blocked until restart.
+- **Scope:** counts live in memory for one server process, so each stdio session has its own and a restart clears them. `action.execute` with an approved capability is not gated. The gate is guidance for agents, not a security control.
+
 Redaction removes only what it can recognise. Fragments shorter than 12 characters, a secret split into pieces across separate items or calls, and other encodings (base64, hex, percent-encoding) are not detected. **A mediated tool must not be able to read the gateway's secret material**, for example the process environment, `/proc/<pid>/environ` or the secret files. Treat downstream output as untrusted even after redaction.
 
 ## Filesystem observation

@@ -13,10 +13,11 @@ Status: proposed implementation. This covers the Phase 4 item "active tool-calli
   - `resolverToolRef` must name a catalog tool whose effects are all listed in `mediation.effects`. Otherwise the configuration is refused at startup, because an agent could never unlock a blocked tool.
   - `limit` is the number of consecutive failures that blocks a tool: default 2, minimum 2, maximum 5.
   - The policy must also allow the resolver. The documentation says so, because policy is evaluated per plan and cannot be checked at startup.
+
 - **What counts as a failure:** a mediated run whose receipt outcome is `failed`, or an executor error during a mediated run, such as an argument mismatch or a schema violation. Refusals such as `run_limit`, `expired` or `stale_plan` run nothing and do not count.
 - **Counting:** per downstream tool (`serverRef` and `toolName` of the plan's envelope), across plans and arguments, because a different argument is often the same loop. A successful run of the tool resets its count. A successful run of the resolver resets every count. The resolver itself is never counted or blocked.
 - **Refusal:** a blocked tool's `action.run` returns the error `{ "error": "resolve_required", "resolverToolRef": "…", "failures": n }` and runs nothing: no execution record, no capability use, no receipt.
-- **Results:** when the gate is configured, a failed `action.run` result adds `strikes: { failures, limit, resolverToolRef }`, so the agent can see that the next failure will block. Successful results stay unchanged.
+- **Results:** when the gate is configured, a failed `action.run` result adds `strikes: { failures, limit, resolverToolRef }`, so the agent can see that the next failure will block. Successful results stay unchanged. The field is in the `action.run` output schema only when the gate is configured, so servers without it list no extra bytes and the published façade numbers do not change.
 - **Tool description:** with the gate configured, the `action.run` description states the rule in one sentence, so the agent learns it before it is refused.
 - **Scope of the state:** the counts live in memory, in the mediator of one server process. One stdio session therefore has its own counts, and a restart clears them. `action.execute` with an approved capability is not gated, because a person has approved that exact action.
 - **Docs:** CONFIGURATION.md (the section, its rules and its limits), THREAT_MODEL.md (guidance, not a boundary) and CHANGELOG.

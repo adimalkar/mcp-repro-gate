@@ -60,6 +60,20 @@
               "items": { "type": "string", "minLength": 1, "maxLength": 256 }
             }
           }
+        },
+        "strikes": {
+          "description": "Opt-in two-strike gate: after limit consecutive failures of one downstream tool, action.run refuses it with resolve_required until the resolver tool succeeds through action.run. The resolver must be a catalog tool whose effects are all mediated.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["resolverToolRef"],
+          "properties": {
+            "resolverToolRef": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "limit": { "type": "integer", "minimum": 2, "maximum": 5 }
+          }
         }
       }
     },
