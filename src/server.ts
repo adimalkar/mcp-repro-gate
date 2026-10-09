@@ -18,7 +18,11 @@ import {
   toolRefInputSchema,
 } from "./facade.js";
 import type { HandoffService } from "./handoff.js";
-import { MediationError, type HostMediator } from "./mediation.js";
+import {
+  MediationError,
+  StrikeCountedError,
+  type HostMediator,
+} from "./mediation.js";
 import {
   HandoffError,
   handoffStatusInputSchema,
@@ -304,6 +308,12 @@ export function createReproGateServer(
               error: runError.code,
               resolverToolRef: runError.strikes.resolverToolRef,
               failures: runError.strikes.failures,
+            });
+          // A counted executor error tells the agent how close it is.
+          if (runError instanceof StrikeCountedError)
+            return errorResult({
+              error: mediator.redactMessage(runError.message),
+              strikes: runError.strikes,
             });
           return error(
             runError instanceof MediationError
