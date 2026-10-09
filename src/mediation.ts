@@ -90,6 +90,22 @@ export class MediationError extends Error {
   }
 }
 
+/**
+ * An executor error during a gated run, with the strike count it caused.
+ * The message is the executor's own, so callers redact it as before.
+ */
+export class StrikeCountedError extends Error {
+  constructor(
+    readonly error: unknown,
+    readonly strikes: StrikeState,
+  ) {
+    super(error instanceof Error ? error.message : "Unknown execution error", {
+      cause: error,
+    });
+    this.name = "StrikeCountedError";
+  }
+}
+
 export interface BoundedContent {
   content: { type: "text"; text: string }[];
   truncated: boolean;
@@ -158,6 +174,9 @@ export class HostMediator {
   readonly #strikeLimit: number;
   // In memory, per server process: guidance for agents, not authority.
   readonly #failures = new Map<string, number>();
+  // Bumped by each resolver success, so a failure that started before it
+  // does not count against the fresh period.
+  #generation = 0;
 
   constructor(
     readonly executor: ReproGateExecutor,
@@ -215,10 +234,15 @@ export class HostMediator {
   }
 
   // A tool's success clears its own count; the resolver's clears them all.
-  #record(key: string, succeeded: boolean): void {
+  #record(key: string, succeeded: boolean, generation: number): void {
     if (this.#resolverKey === undefined) return;
     if (key === this.#resolverKey) {
-      if (succeeded) this.#failures.clear();
+      if (succeeded) {
+        this.#failures.clear();
+        this.#generation++;
+      }
+    } else if (generation !== this.#generation) {
+      return;
     } else if (succeeded) {
       this.#failures.delete(key);
     } else {
@@ -254,6 +278,7 @@ export class HostMediator {
       throw new MediationError("expired");
     // A tool that failed `limit` times in a row waits for the resolver.
     const key = toolKey(plan.envelope.tool);
+    const generation = this.#generation;
     const before = this.#strikes(key);
     if (before !== undefined && before.failures >= before.limit)
       throw new MediationError("resolve_required", before);
@@ -290,15 +315,20 @@ export class HostMediator {
           error instanceof Error &&
           error.message === "Capability token has already been consumed"
         )) {
-          // An executor error, such as an argument mismatch, is a strike.
-          this.#record(key, false);
-          throw error;
+          // Any executor error is a strike: an argument mismatch, but also
+          // a downstream or store fault, since neither can be told apart
+          // reliably from the agent's side.
+          this.#record(key, false, generation);
+          const strikes = this.#strikes(key);
+          throw strikes === undefined
+            ? error
+            : new StrikeCountedError(error, strikes);
         }
       }
     }
     if (executed === undefined) throw new MediationError("run_limit");
     const { receipt, downstreamResult } = executed;
-    this.#record(key, receipt.outcome === "succeeded");
+    this.#record(key, receipt.outcome === "succeeded", generation);
     const strikes =
       receipt.outcome === "failed" ? this.#strikes(key) : undefined;
     return {

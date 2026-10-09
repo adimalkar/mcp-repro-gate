@@ -41,3 +41,12 @@ Status: proposed implementation. This covers the Phase 4 item "active tool-calli
   - refusals that run nothing do not count.
 - **Config tests:** a missing resolver, a resolver with unmediated effects and an out-of-range `limit` are each refused.
 - **MCP test with a real client:** the `strikes` field on failed results validates against the output schema, the `resolve_required` error carries the resolver, and the description mentions the rule only when the gate is configured.
+
+## Review changes
+
+The independent review approved the slice with these findings, now addressed:
+
+- **Medium: executor-error strikes were invisible.** Every executor error counts, including downstream, observer and store faults that are not the agent's, but the error result did not say so. It now carries `strikes` next to the redacted message. The documentation states that infrastructure faults count.
+- **Low: a failure in flight during a resolver success counted afterwards.** Each resolver success starts a new period, and a failure from an earlier period is ignored. Concurrent runs can still overshoot the limit, which the documentation now says.
+- **Low: a resolver that keeps failing leaves tools blocked until restart.** Documented.
+- **Nits:** `resolve_required` is listed with the other refusal codes, `strikes` is described as present for gated tools only, `action.execute` neither counts nor resets, and the schema's `limit` minimum matches the config. New tests cover startup refusal through the runtime configuration, the refusal order while a tool is blocked, executor errors resetting on success, and the in-flight case.

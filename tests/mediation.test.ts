@@ -28,6 +28,7 @@ import {
   HostMediator,
   MediationError,
   REDACTED,
+  StrikeCountedError,
   mediationConfigSchema,
 } from "../src/mediation.js";
 import { ReproGateKernel } from "../src/kernel.js";
@@ -183,11 +184,17 @@ async function configuredRuntime(
       ...(mediation === undefined ? {} : { mediation }),
     }),
   );
-  const runtime = await createConfiguredRuntime(configPath, {
-    ...process.env,
-    MEDIATION_CAPABILITY_SECRET: capabilitySecret,
-    MEDIATION_RECEIPT_SECRET: receiptSecret,
-  });
+  let runtime: Awaited<ReturnType<typeof createConfiguredRuntime>>;
+  try {
+    runtime = await createConfiguredRuntime(configPath, {
+      ...process.env,
+      MEDIATION_CAPABILITY_SECRET: capabilitySecret,
+      MEDIATION_RECEIPT_SECRET: receiptSecret,
+    });
+  } catch (startError) {
+    rmSync(directory, { recursive: true, force: true });
+    throw startError;
+  }
   const [clientTransport, serverTransport] =
     InMemoryTransport.createLinkedPair();
   const server = createReproGateServer(
@@ -751,23 +758,33 @@ function strikeHarness(limit?: number) {
   // Each call consumes the next scripted step; the default is success.
   const script: ("succeeded" | "failed" | "throw" | "consumed")[] = [];
   let executed = 0;
+  // A held run waits for release() before it finishes.
+  let held: Promise<undefined> | undefined;
+  const hold = () => {
+    let release: ((value: undefined) => void) | undefined;
+    held = new Promise<undefined>((resolve) => {
+      release = resolve;
+    });
+    return () => {
+      release?.(undefined);
+    };
+  };
   const executor = {
     store: {
       get: (actionId: string) => plans.get(actionId),
       countCapabilityUses: () => 0,
     },
-    execute: () => {
+    execute: async () => {
       const step = script.shift() ?? "succeeded";
+      const wait = held;
+      held = undefined;
+      await wait;
       if (step === "consumed")
-        return Promise.reject(
-          new Error("Capability token has already been consumed"),
-        );
+        throw new Error("Capability token has already been consumed");
       executed++;
       if (step === "throw")
-        return Promise.reject(
-          new Error("Execution arguments do not match the approved action"),
-        );
-      return Promise.resolve({
+        throw new Error("Execution arguments do not match the approved action");
+      return {
         receipt: {
           executionId: `execution-${String(executed)}`,
           outcome: step,
@@ -778,7 +795,7 @@ function strikeHarness(limit?: number) {
           content: [{ type: "text", text: step }],
           ...(step === "failed" ? { isError: true } : {}),
         },
-      });
+      };
     },
   } as unknown as ReproGateExecutor;
   const mediator = new HostMediator(
@@ -796,7 +813,7 @@ function strikeHarness(limit?: number) {
   );
   const run = (name: string) =>
     mediator.run({ actionId: ids[name] ?? "", arguments: {} });
-  return { mediator, kernel, script, run, executed: () => executed };
+  return { mediator, kernel, script, run, hold, executed: () => executed };
 }
 
 const resolveRequired = (failures: number) => (error: unknown) =>
@@ -817,8 +834,14 @@ test("two consecutive failures block a tool until the resolver succeeds", async 
   assert.equal((await run("build")).strikes, undefined);
   script.push("failed", "throw");
   assert.equal((await run("build")).strikes?.failures, 1);
-  // An executor error is a strike too.
-  await assert.rejects(run("build"), /do not match/u);
+  // An executor error is a strike too, and reports its count.
+  await assert.rejects(
+    run("build"),
+    (error: unknown) =>
+      error instanceof StrikeCountedError &&
+      error.message.includes("do not match") &&
+      error.strikes.failures === 2,
+  );
   const before = executed();
   await assert.rejects(run("build"), resolveRequired(2));
   assert.equal(executed(), before, "a blocked tool runs nothing");
@@ -834,6 +857,25 @@ test("two consecutive failures block a tool until the resolver succeeds", async 
   await assert.rejects(run("build"), resolveRequired(2));
   assert.equal((await run("resolve")).outcome, "succeeded");
   assert.equal((await run("build")).outcome, "succeeded");
+});
+
+test("executor errors reset on success and stale failures miss a fresh period", async () => {
+  const { script, run, hold } = strikeHarness();
+  script.push("throw");
+  await assert.rejects(run("build"), StrikeCountedError);
+  assert.equal((await run("build")).outcome, "succeeded");
+  script.push("failed");
+  assert.equal((await run("build")).strikes?.failures, 1);
+
+  // A failure in flight when the resolver succeeds does not count after it.
+  script.push("failed");
+  const release = hold();
+  const slow = run("build");
+  assert.equal((await run("resolve")).outcome, "succeeded");
+  release();
+  assert.equal((await slow).strikes?.failures, 0);
+  script.push("failed");
+  assert.equal((await run("build")).strikes?.failures, 1);
 });
 
 test("strike limits are configurable and refusals that run nothing do not count", async () => {
@@ -916,11 +958,23 @@ test("action.run reports strikes, refuses with the resolver and states the rule"
     false,
   );
 
-  const { client, call, plan, counts } = await configuredRuntime(context, {
-    effects: ["local_read"],
-    maxRunsPerPlan: 5,
-    strikes: { resolverToolRef: "configured.resolve" },
-  });
+  // A resolver the agent could never run stops startup.
+  await assert.rejects(
+    configuredRuntime(context, {
+      effects: ["local_read"],
+      strikes: { resolverToolRef: "configured.publish" },
+    }),
+    /strike resolver/u,
+  );
+
+  const { runtime, client, call, plan, counts } = await configuredRuntime(
+    context,
+    {
+      effects: ["local_read"],
+      maxRunsPerPlan: 5,
+      strikes: { resolverToolRef: "configured.resolve" },
+    },
+  );
   const run = (await client.listTools()).tools.find(
     (tool) => tool.name === "action.run",
   );
@@ -962,6 +1016,23 @@ test("action.run reports strikes, refuses with the resolver and states the rule"
     failures: 2,
   });
   assert.deepEqual(counts(), { executions: 2, tokenUses: 2 });
+  // Earlier refusals keep their own codes while a tool is blocked.
+  const expired = runtime.kernel.plan({
+    toolRef: "configured.echo",
+    arguments: { text: "old" },
+    now: new Date(Date.now() - 60 * 60 * 1000),
+  }).envelope.actionId;
+  assert.deepEqual(
+    JSON.parse(
+      (
+        await call("action.run", {
+          actionId: expired,
+          arguments: { text: "old" },
+        })
+      ).content[0]?.text ?? "",
+    ),
+    { error: "expired" },
+  );
 
   const resolver = await plan("configured.resolve", { text: "fail:two" });
   const resolved = await call("action.run", {
@@ -981,4 +1052,20 @@ test("action.run reports strikes, refuses with the resolver and states the rule"
     actionRunStrikesOutputSchema.parse(retried.structuredContent).outcome,
     "succeeded",
   );
+  // An executor error reports the strike it caused.
+  const mismatch = await call("action.run", {
+    actionId: fine,
+    arguments: { text: "other" },
+  });
+  assert.equal(mismatch.isError, true);
+  const reported = JSON.parse(mismatch.content[0]?.text ?? "") as {
+    error: string;
+    strikes: unknown;
+  };
+  assert.match(reported.error, /do not match the approved action/u);
+  assert.deepEqual(reported.strikes, {
+    failures: 1,
+    limit: 2,
+    resolverToolRef: "configured.resolve",
+  });
 });

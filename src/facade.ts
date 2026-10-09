@@ -102,7 +102,7 @@ export const actionRunStrikesOutputSchema = actionRunOutputSchema.extend({
   strikes: z
     .object({
       failures: z.number().int().min(0),
-      limit: z.number().int().min(1),
+      limit: z.number().int().min(2),
       resolverToolRef: z.string(),
     })
     .optional(),
