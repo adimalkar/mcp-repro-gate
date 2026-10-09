@@ -12,6 +12,8 @@ export const MAX_RUNS_PER_PLAN = 1000;
 export const REDACTED = "[REDACTED]";
 /** Secret fragments at least this long are redacted wherever they appear. */
 export const SECRET_FRAGMENT_LENGTH = 12;
+export const DEFAULT_STRIKE_LIMIT = 2;
+export const MAX_STRIKE_LIMIT = 5;
 const MAX_ERROR_BYTES = 1024;
 
 // Capability tokens have this shape; a downstream echo must never reach
@@ -45,6 +47,18 @@ export const mediationConfigSchema = z
       })
       .strict()
       .optional(),
+    strikes: z
+      .object({
+        resolverToolRef: z.string().min(1).max(256),
+        limit: z
+          .number()
+          .int()
+          .min(DEFAULT_STRIKE_LIMIT)
+          .max(MAX_STRIKE_LIMIT)
+          .optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 
@@ -56,12 +70,39 @@ export type MediationRefusal =
   | "effect_not_mediated"
   | "stale_plan"
   | "expired"
-  | "run_limit";
+  | "run_limit"
+  | "resolve_required";
+
+/** Consecutive failures of one tool, and how to unblock it. */
+export interface StrikeState {
+  failures: number;
+  limit: number;
+  resolverToolRef: string;
+}
 
 export class MediationError extends Error {
-  constructor(readonly code: MediationRefusal) {
+  constructor(
+    readonly code: MediationRefusal,
+    readonly strikes?: StrikeState,
+  ) {
     super(`Host mediation refused: ${code}`);
     this.name = "MediationError";
+  }
+}
+
+/**
+ * An executor error during a gated run, with the strike count it caused.
+ * The message is the executor's own, so callers redact it as before.
+ */
+export class StrikeCountedError extends Error {
+  constructor(
+    readonly error: unknown,
+    readonly strikes: StrikeState,
+  ) {
+    super(error instanceof Error ? error.message : "Unknown execution error", {
+      cause: error,
+    });
+    this.name = "StrikeCountedError";
   }
 }
 
@@ -77,6 +118,13 @@ export interface MediatedRunResult extends BoundedContent {
   outcome: "succeeded" | "failed";
   receiptDigest: string;
   resultDigest: string;
+  /** Present on failed runs when the strike gate is configured. */
+  strikes?: StrikeState;
+}
+
+// One downstream tool, whichever plan or arguments ran it.
+function toolKey(tool: { serverRef: string; toolName: string }): string {
+  return `${tool.serverRef}\u0000${tool.toolName}`;
 }
 
 // Cut at a UTF-8 boundary so the bound never splits a character.
@@ -122,6 +170,13 @@ export class HostMediator {
   readonly #patterns: RegExp[];
   readonly #fragments: string[];
   readonly #slack: number;
+  readonly #resolverKey: string | undefined;
+  readonly #strikeLimit: number;
+  // In memory, per server process: guidance for agents, not authority.
+  readonly #failures = new Map<string, number>();
+  // Bumped by each resolver success, so a failure that started before it
+  // does not count against the fresh period.
+  #generation = 0;
 
   constructor(
     readonly executor: ReproGateExecutor,
@@ -144,6 +199,55 @@ export class HostMediator {
     this.#slack =
       512 +
       2 * Math.max(...secrets.map((secret) => JSON.stringify(secret).length));
+    this.#strikeLimit = config.strikes?.limit ?? DEFAULT_STRIKE_LIMIT;
+    if (config.strikes === undefined) {
+      this.#resolverKey = undefined;
+    } else {
+      // A resolver the agent cannot run would block a tool for good.
+      const resolver = kernel.describe(config.strikes.resolverToolRef);
+      if (
+        resolver === undefined ||
+        resolver.effects.length === 0 ||
+        !resolver.effects.every((effect) => this.#effects.has(effect))
+      )
+        throw new Error(
+          "The strike resolver must be a catalog tool with only mediated effects",
+        );
+      this.#resolverKey = toolKey(resolver);
+    }
+  }
+
+  /** The configured strike gate, for tool descriptions. */
+  get strikeGate(): { limit: number; resolverToolRef: string } | undefined {
+    return this.config.strikes === undefined
+      ? undefined
+      : {
+          limit: this.#strikeLimit,
+          resolverToolRef: this.config.strikes.resolverToolRef,
+        };
+  }
+
+  #strikes(key: string): StrikeState | undefined {
+    const gate = this.strikeGate;
+    if (gate === undefined || key === this.#resolverKey) return undefined;
+    return { failures: this.#failures.get(key) ?? 0, ...gate };
+  }
+
+  // A tool's success clears its own count; the resolver's clears them all.
+  #record(key: string, succeeded: boolean, generation: number): void {
+    if (this.#resolverKey === undefined) return;
+    if (key === this.#resolverKey) {
+      if (succeeded) {
+        this.#failures.clear();
+        this.#generation++;
+      }
+    } else if (succeeded) {
+      this.#failures.delete(key);
+    } else {
+      // Only failures from before the last resolver success are stale.
+      if (generation === this.#generation)
+        this.#failures.set(key, (this.#failures.get(key) ?? 0) + 1);
+    }
   }
 
   get mediatesNetwork(): boolean {
@@ -172,6 +276,12 @@ export class HostMediator {
     const now = input.now ?? this.clock();
     if (Date.parse(plan.envelope.expiresAt) <= now.getTime())
       throw new MediationError("expired");
+    // A tool that failed `limit` times in a row waits for the resolver.
+    const key = toolKey(plan.envelope.tool);
+    const generation = this.#generation;
+    const before = this.#strikes(key);
+    if (before !== undefined && before.failures >= before.limit)
+      throw new MediationError("resolve_required", before);
     // Run numbers make the limit atomic: the store accepts each capability
     // ID once, so concurrent runs cannot both take the same slot.
     const prefix = `host-mediated:${plan.envelope.actionId.slice(7)}:`;
@@ -204,18 +314,30 @@ export class HostMediator {
         if (!(
           error instanceof Error &&
           error.message === "Capability token has already been consumed"
-        ))
-          throw error;
+        )) {
+          // Any executor error is a strike: an argument mismatch, but also
+          // a downstream or store fault, since neither can be told apart
+          // reliably from the agent's side.
+          this.#record(key, false, generation);
+          const strikes = this.#strikes(key);
+          throw strikes === undefined
+            ? error
+            : new StrikeCountedError(error, strikes);
+        }
       }
     }
     if (executed === undefined) throw new MediationError("run_limit");
     const { receipt, downstreamResult } = executed;
+    this.#record(key, receipt.outcome === "succeeded", generation);
+    const strikes =
+      receipt.outcome === "failed" ? this.#strikes(key) : undefined;
     return {
       executionId: receipt.executionId,
       outcome: receipt.outcome,
       receiptDigest: receipt.receiptDigest,
       resultDigest: receipt.resultDigest,
       ...this.bound(downstreamResult),
+      ...(strikes === undefined ? {} : { strikes }),
     };
   }
 

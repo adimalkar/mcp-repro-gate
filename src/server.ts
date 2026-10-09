@@ -7,6 +7,7 @@ import {
   actionIdInputSchema,
   actionInspectOutputSchema,
   actionRunOutputSchema,
+  actionRunStrikesOutputSchema,
   actionPlanOutputSchema,
   catalogDescribeOutputSchema,
   catalogSearchOutputSchema,
@@ -17,7 +18,11 @@ import {
   toolRefInputSchema,
 } from "./facade.js";
 import type { HandoffService } from "./handoff.js";
-import { MediationError, type HostMediator } from "./mediation.js";
+import {
+  MediationError,
+  StrikeCountedError,
+  type HostMediator,
+} from "./mediation.js";
 import {
   HandoffError,
   handoffStatusInputSchema,
@@ -27,13 +32,15 @@ import {
 import { ReproGateKernel } from "./kernel.js";
 
 // Error results carry text only, so they never have to satisfy outputSchema.
-function error(message: string) {
+function errorResult(value: { error: string } & Record<string, unknown>) {
   return {
-    content: [
-      { type: "text" as const, text: JSON.stringify({ error: message }) },
-    ],
+    content: [{ type: "text" as const, text: JSON.stringify(value) }],
     isError: true,
   };
+}
+
+function error(message: string) {
+  return errorResult({ error: message });
 }
 
 // Compact JSON: the mirror carries the same data without indentation.
@@ -231,17 +238,24 @@ export function createReproGateServer(
   }
 
   if (executor !== undefined && mediator !== undefined) {
+    const gate = mediator.strikeGate;
     server.registerTool(
       "action.run",
       {
-        description:
-          'Run one previously planned action that policy allows with only host-mediated read effects; the host issues the one-use capability, so no token is passed. Returns a compact summary and redacted, bounded downstream text; detail "full" adds receipt digests',
+        description: `Run one previously planned action that policy allows with only host-mediated read effects; the host issues the one-use capability, so no token is passed. Returns a compact summary and redacted, bounded downstream text; detail "full" adds receipt digests${
+          gate === undefined
+            ? ""
+            : `. After ${String(gate.limit)} consecutive failures of one tool, its runs are refused with resolve_required until ${gate.resolverToolRef} succeeds through action.run: plan and run it with the error before retrying`
+        }`,
         inputSchema: z.object({
           actionId: actionIdInputSchema,
           arguments: z.record(z.string(), z.unknown()),
           detail: z.enum(["compact", "full"]).default("compact"),
         }),
-        outputSchema: actionRunOutputSchema,
+        outputSchema:
+          gate === undefined
+            ? actionRunOutputSchema
+            : actionRunStrikesOutputSchema,
         annotations: {
           readOnlyHint: false,
           destructiveHint: false,
@@ -262,6 +276,7 @@ export function createReproGateServer(
             truncated: run.truncated,
             redactions: run.redactions,
             omittedItems: run.omittedItems,
+            ...(run.strikes === undefined ? {} : { strikes: run.strikes }),
             ...(detail === "full"
               ? {
                   receiptDigest: run.receiptDigest,
@@ -283,6 +298,21 @@ export function createReproGateServer(
         } catch (runError) {
           // Refusals are stable codes; executor failures keep their message.
           // Executor and downstream messages are bounded and redacted too.
+          if (
+            runError instanceof MediationError &&
+            runError.strikes !== undefined
+          )
+            return errorResult({
+              error: runError.code,
+              resolverToolRef: runError.strikes.resolverToolRef,
+              failures: runError.strikes.failures,
+            });
+          // A counted executor error tells the agent how close it is.
+          if (runError instanceof StrikeCountedError)
+            return errorResult({
+              error: mediator.redactMessage(runError.message),
+              strikes: runError.strikes,
+            });
           return error(
             runError instanceof MediationError
               ? runError.code

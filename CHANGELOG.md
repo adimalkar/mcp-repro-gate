@@ -22,6 +22,7 @@ All notable changes will be documented in this file. The project follows [Semant
 - Opt-in native agent handoff: host-configured `handoff_status`/`handoff_update` MCP tools, `serve --handoff-config`, Handoff Configuration v1 and Handoff v1 JSON Schemas, immutable SQLite snapshots with optimistic concurrency, and a bounded shared-protocol `.agent/handoff.md` projection with private history.
 - `reprogate bench facade`: a deterministic measurement of agent-visible bytes on a published fixture. It covers context cost and break-even catalog size, plus tool results for planning, and for truncated and small execution results. It comes with a manual two-host benchmark protocol.
 - Schema-on-demand `catalog.describe` and full-evidence `action.inspect` MCP tools; output schemas and conservative annotations on every façade tool.
+- Opt-in two-strike gate for mediated runs (`mediation.strikes`): after consecutive failures of one tool, `action.run` refuses it with `resolve_required` until a configured resolver tool succeeds. Failed results report `strikes`, and the `action.run` description states the rule.
 - Opt-in host-mediated execution: `mediation` runtime configuration and the `action.run` tool for allow-decided read-effect plans, with host-issued one-use capabilities (`host-mediated:` capability IDs) and redacted, bounded model-visible results.
 
 ### Fixed
