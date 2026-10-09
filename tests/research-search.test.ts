@@ -83,6 +83,8 @@ test("error queries keep the message and drop paths, addresses and positions", (
   for (const error of [
     `SyntaxError: Unexpected token '<', "<!DOCTYPE "... is not valid JSON`,
     'password authentication failed for user "postgres"',
+    "JsonWebTokenError: invalid signature",
+    "TokenExpiredError: jwt expired",
   ])
     assert.equal(errorQuery(error), error);
   // Code paths and invisible characters.
