@@ -13,7 +13,9 @@ export type ResearchErrorCode =
   | "unsupported_type"
   | "timeout"
   | "http_status"
-  | "fetch_failed";
+  | "fetch_failed"
+  | "search_failed"
+  | "no_results";
 
 /** A refusal with a stable code; it never carries response content. */
 export class ResearchError extends Error {
@@ -29,9 +31,12 @@ export interface FetchOptions {
   timeoutMs?: number;
   maxBytes?: number;
   maxRedirects?: number;
+  /** Accepted content types; defaults to the readable text types. */
+  contentTypes?: ReadonlySet<string>;
   /**
-   * Test seam only: decides which resolved addresses may be connected to.
-   * The CLI never sets it, so production always uses the blocked ranges.
+   * Decides which resolved addresses may be connected to. Production sets
+   * it only for the operator's --search-endpoint-private exemption, where no
+   * redirect is followed; tests use it to reach a local server.
    */
   isAllowedAddress?: (address: string) => boolean;
 }
@@ -164,7 +169,10 @@ export async function fetchText(
       .split(";")[0]
       ?.trim()
       .toLowerCase();
-    if (contentType === undefined || !TEXT_TYPES.has(contentType)) {
+    if (
+      contentType === undefined ||
+      !(options.contentTypes ?? TEXT_TYPES).has(contentType)
+    ) {
       response.destroy();
       throw new ResearchError("unsupported_type");
     }
