@@ -28,6 +28,29 @@ ReproGate itself never fetches anything. You configure the research server as a 
    - To let an agent fetch without one, set `network_read: allow` for this tool in policy, add `network_read` to `mediation.effects`, and keep `maxRunsPerPlan` small. See [host mediation](CONFIGURATION.md#host-mediated-execution).
    - Consider `--allow-host` to limit fetches to documentation sites you trust.
 
+## Search and error resolution
+
+With `--search-endpoint`, the server also offers two search tools. Each is catalogued and approved like `fetch_distilled`:
+
+- **`web_search { query, maxResults? }`** (1–10, default 5) returns titles (at most 200 characters), URLs and snippets (at most 300 characters). Control and bidirectional characters are removed. Results without a plain `http(s)` URL are dropped.
+- **`resolve_stuck_error { error, context?, maxTokens? }`** builds a search query from the error and returns the most relevant passages and code within one budget, with each source named. It:
+  1. keeps the first meaningful lines, minus stack frames, paths, URLs, hex addresses, line and column numbers, UUIDs and long numbers;
+  2. searches;
+  3. fetches the top 3 results in parallel under the same limits as `fetch_distilled`;
+  4. distills each page against the error and `context`.
+
+  Pages that cannot be read are skipped and counted. When no source can be read, the result is `no_results`.
+
+```sh
+reprogate research-server --search-endpoint 'https://search.example/search?q={query}&format=json'
+```
+
+- **Endpoint:** any SearXNG-compatible JSON API that returns `{ "results": [{ "url", "title", "content" }] }`. `{query}` is replaced by the percent-encoded query. ReproGate has no built-in provider and sends nothing anywhere without one.
+- **Endpoint requests:** answers must be `application/json`, at most 1 MiB, and are never redirected.
+- **Self-hosted engines:** for a search engine on a private network or localhost, add `--search-endpoint-private`. It exempts only that endpoint's origin from the address policy. Every result URL is still checked in full, so a search result pointing at a private address is refused.
+- **What leaves your machine:** the search query goes to the provider. For `resolve_stuck_error`, that is the cleaned first lines of the error message, which can still contain names from your code or environment. Choose a provider you trust with that.
+- **Search results are untrusted.** Anyone can publish a page that ranks for an error message and carries misleading fixes or prompt-injection text. Review suggested fixes before applying them.
+
 ## Fetch limits
 
 - **URLs:** only `http:` and `https:`, with no credentials in the URL.
@@ -36,7 +59,7 @@ ReproGate itself never fetches anything. You configure the research server as a 
 - **Time and size:** 10 seconds for the network fetch and 2 MiB of body. Refused responses (redirects, error statuses, unsupported types) are closed at once, not read to the end. Distillation runs after the fetch in a single linear pass, so a hostile page cannot stall it.
 - **Types:** only `text/html`, `application/xhtml+xml`, `text/plain` and `text/markdown`, read as UTF-8.
 - **Host allowlist:** `--allow-host docs.example.com` allows that host; `--allow-host .example.com` also allows its subdomains.
-- **Errors:** stable codes (`bad_url`, `blocked_host`, `blocked_address`, `too_large`, `unsupported_type`, `timeout`, `http_status`, `fetch_failed`) that never include the response body.
+- **Errors:** stable codes (`bad_url`, `blocked_host`, `blocked_address`, `too_large`, `unsupported_type`, `timeout`, `http_status`, `fetch_failed`, `search_failed`, `no_results`) that never include the response body.
 - **Proxies:** the backend makes direct connections and ignores proxy environment variables.
 
 ## What distillation does and does not do

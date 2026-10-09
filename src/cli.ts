@@ -6,6 +6,7 @@ import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import { issueCapabilityToken } from "./capability-token.js";
 import { SqliteExecutionStore } from "./execution-store.js";
 import { runGitReviewCli } from "./git-review-cli.js";
+import { createEndpointSearch } from "./research/search.js";
 import { createResearchServer } from "./research/server.js";
 import { createHandoffService, type HandoffService } from "./handoff.js";
 import {
@@ -257,12 +258,29 @@ async function main(): Promise<void> {
     return;
   }
   if (command === "research-server") {
+    const usage =
+      "Usage: reprogate research-server [--allow-host <host|.domain>]... [--search-endpoint <url-with-{query}> [--search-endpoint-private]]";
     const rest = process.argv.slice(3);
     const allowHosts: string[] = [];
-    for (let index = 0; index < rest.length; index += 2) {
-      const value = rest[index + 1];
+    let searchEndpoint: string | undefined;
+    let privateEndpoint = false;
+    for (let index = 0; index < rest.length; index++) {
+      const option = rest[index];
+      if (option === "--search-endpoint-private" && !privateEndpoint) {
+        privateEndpoint = true;
+        continue;
+      }
+      const value = rest[++index];
       if (
-        rest[index] !== "--allow-host" ||
+        option === "--search-endpoint" &&
+        value !== undefined &&
+        searchEndpoint === undefined
+      ) {
+        searchEndpoint = value;
+        continue;
+      }
+      if (
+        option !== "--allow-host" ||
         value === undefined ||
         // A DNS hostname with an optional leading "." for subdomains;
         // ".", ".." and lone hyphens are refused.
@@ -270,12 +288,23 @@ async function main(): Promise<void> {
           value,
         )
       )
-        throw new Error(
-          "Usage: reprogate research-server [--allow-host <host|.domain>]...",
-        );
+        throw new Error(usage);
       allowHosts.push(value);
     }
-    serveStdio(() => createResearchServer({ allowHosts }));
+    if (privateEndpoint && searchEndpoint === undefined) throw new Error(usage);
+    const search =
+      searchEndpoint === undefined
+        ? undefined
+        : createEndpointSearch({
+            endpoint: searchEndpoint,
+            allowPrivateEndpoint: privateEndpoint,
+          });
+    serveStdio(() =>
+      createResearchServer({
+        allowHosts,
+        ...(search === undefined ? {} : { search }),
+      }),
+    );
     return;
   }
   if (command === "git-review") {
@@ -286,7 +315,7 @@ async function main(): Promise<void> {
     return;
   }
   process.stderr.write(
-    "Usage: reprogate [serve [--config <absolute-path>] [--handoff-config <absolute-path>]|demo|approve [--config <absolute-path>] <target> <action-id>|verify-receipt [--config <absolute-path>] <receipt.json>|research-server [--allow-host <host>]...|git-review <prepare|sign|import|check|revoke> ...]\n",
+    "Usage: reprogate [serve [--config <absolute-path>] [--handoff-config <absolute-path>]|demo|approve [--config <absolute-path>] <target> <action-id>|verify-receipt [--config <absolute-path>] <receipt.json>|research-server [--allow-host <host>]... [--search-endpoint <url> [--search-endpoint-private]]|git-review <prepare|sign|import|check|revoke> ...]\n",
   );
   process.exitCode = 2;
 }
