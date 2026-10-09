@@ -173,10 +173,12 @@ export function errorQuery(error: string): string {
     )
     .replace(/\b(bearer|basic)\s+[^\s"',;]{8,}/giu, "$1")
     // Secrets written as KEY=value or "key": "value", including prefixed
-    // names such as GITHUB_TOKEN or client_secret, keep the key.
+    // names such as GITHUB_TOKEN or client_secret, keep the key. Error
+    // class names (JsonWebTokenError: ...) are messages, not secrets.
     .replace(
       /(?<![A-Za-z0-9])([\w-]{0,40}?(?:api[-_ ]?key|access[-_ ]?key|secret|token|password|passwd|pwd|session|cookie)[\w-]{0,40})["']?\s*[:=]\s*["']?[^\s"',;]+["']?/giu,
-      "$1",
+      (whole, key: string) =>
+        /(?:error|exception)$/iu.test(key) ? whole : key,
     )
     // "token abc123..." without a separator: only values that look secret,
     // so phrases such as "Unexpected token '<'" stay searchable.
