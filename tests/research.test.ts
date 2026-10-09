@@ -521,3 +521,14 @@ test("research-server rejects allow-host values that are not hostnames", async (
     assert.match(result.stderr, /Usage: reprogate research-server/u, value);
   }
 });
+
+test("declarations and reserved IPv6 space are handled", () => {
+  const distilled = distillHtml(
+    '<?xml version="1.0"?><!DOCTYPE html><html><body><![CDATA[x]]><p>hi</p></body></html>',
+  );
+  assert.deepEqual(distilled.blocks, [{ kind: "text", text: "hi" }]);
+  for (const address of ["::1:0:0:1", "::ffff:0:a00:1"])
+    assert.equal(isBlockedAddress(address), true, address);
+  for (const address of ["::ffff:8.8.8.8", "64:ff9b::808:808"])
+    assert.equal(isBlockedAddress(address), false, address);
+});

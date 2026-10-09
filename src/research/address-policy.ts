@@ -3,7 +3,10 @@ import { BlockList, isIP } from "node:net";
 // Addresses a research fetch must never reach: loopback, private and
 // link-local networks, shared and benchmark space, documentation ranges,
 // multicast, broadcast, and reserved or transition ranges.
-const blocked = new BlockList();
+// Separate lists per family: a single BlockList also matches IPv4 addresses
+// against IPv6 subnets in mapped form, so ::/8 would block all of IPv4.
+const blockedV4 = new BlockList();
+const blockedV6 = new BlockList();
 for (const [network, prefix] of [
   ["0.0.0.0", 8],
   ["10.0.0.0", 8],
@@ -21,10 +24,11 @@ for (const [network, prefix] of [
   ["224.0.0.0", 4],
   ["240.0.0.0", 4],
 ] as const)
-  blocked.addSubnet(network, prefix, "ipv4");
+  blockedV4.addSubnet(network, prefix, "ipv4");
 for (const [network, prefix] of [
-  // ::/96 covers ::, ::1 and the deprecated IPv4-compatible ::a.b.c.d form.
-  ["::", 96],
+  // Reserved ::/8: ::, ::1 and the deprecated IPv4-compatible ::a.b.c.d form.
+  // Mapped and NAT64 addresses inside it are judged by their IPv4 first.
+  ["::", 8],
   // Local-use NAT64 can translate to any IPv4 address, including private.
   ["64:ff9b:1::", 48],
   ["100::", 64],
@@ -36,7 +40,7 @@ for (const [network, prefix] of [
   ["fec0::", 10],
   ["ff00::", 8],
 ] as const)
-  blocked.addSubnet(network, prefix, "ipv6");
+  blockedV6.addSubnet(network, prefix, "ipv6");
 
 // IPv4 carried inside IPv6 (mapped ::ffff:a.b.c.d and NAT64 64:ff9b::/96)
 // is judged by its embedded IPv4 address.
@@ -60,11 +64,11 @@ function embeddedIpv4(address: string): string | undefined {
 export function isBlockedAddress(address: string): boolean {
   const family = isIP(address);
   if (family === 0) return true;
-  if (family === 4) return blocked.check(address, "ipv4");
+  if (family === 4) return blockedV4.check(address, "ipv4");
   const embedded = embeddedIpv4(address);
-  if (embedded !== undefined) return blocked.check(embedded, "ipv4");
+  if (embedded !== undefined) return blockedV4.check(embedded, "ipv4");
   // Any other address inside the mapped or NAT64 prefixes is malformed.
   const lower = address.toLowerCase();
   if (lower.startsWith("::ffff:") || lower.startsWith("64:ff9b::")) return true;
-  return blocked.check(address, "ipv6");
+  return blockedV6.check(address, "ipv6");
 }

@@ -209,6 +209,14 @@ export function distillHtml(html: string): Distilled {
       index = close === -1 ? html.length : close + 3;
       continue;
     }
+    // Declarations (<!DOCTYPE>), CDATA and processing instructions (<?xml?>)
+    // carry no reading content.
+    const next = html.charCodeAt(open + 1);
+    if (next === 33 || next === 63) {
+      const close = html.indexOf(">", open + 2);
+      index = close === -1 ? html.length : close + 1;
+      continue;
+    }
     const tag = readTag(html, open);
     if (tag === undefined) {
       // Not a tag ("a < b"): keep the character as text.

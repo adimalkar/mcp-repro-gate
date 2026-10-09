@@ -31,7 +31,7 @@ ReproGate itself never fetches anything. You configure the research server as a 
 ## Fetch limits
 
 - **URLs:** only `http:` and `https:`, with no credentials in the URL.
-- **Addresses:** every resolved address is checked when the connection is made. Loopback, private, link-local, carrier-grade NAT, benchmark, documentation, multicast, broadcast and reserved ranges are refused, in both IPv4 and IPv6. IPv4 addresses embedded in IPv6 are judged by the embedded address when they use the IPv4-mapped (`::ffff:0:0/96`) or well-known NAT64 (`64:ff9b::/96`) prefix. The IPv4-compatible (`::/96`), local-use NAT64 (`64:ff9b:1::/48`), 6to4 and Teredo prefixes are refused outright. If any address a name resolves to is blocked, the fetch is refused.
+- **Addresses:** every resolved address is checked when the connection is made. Loopback, private, link-local, carrier-grade NAT, benchmark, documentation, multicast, broadcast and reserved ranges are refused, in both IPv4 and IPv6. IPv4 addresses embedded in IPv6 are judged by the embedded address when they use the IPv4-mapped (`::ffff:0:0/96`) or well-known NAT64 (`64:ff9b::/96`) prefix. The rest of the reserved `::/8` range (including IPv4-compatible `::a.b.c.d`), local-use NAT64 (`64:ff9b:1::/48`), 6to4 and Teredo prefixes are refused outright. If any address a name resolves to is blocked, the fetch is refused.
 - **Redirects:** at most 3, each checked again. A redirect from `https` to plain `http` is refused.
 - **Time and size:** 10 seconds for the network fetch and 2 MiB of body. Refused responses (redirects, error statuses, unsupported types) are closed at once, not read to the end. Distillation runs after the fetch in a single linear pass, so a hostile page cannot stall it.
 - **Types:** only `text/html`, `application/xhtml+xml`, `text/plain` and `text/markdown`, read as UTF-8.
@@ -43,6 +43,7 @@ ReproGate itself never fetches anything. You configure the research server as a 
 
 - **Removed:** comments, scripts, styles, `noscript`, `template`, `svg`, `iframe`, forms, buttons, `nav`, `header`, `footer` and `aside`.
 - **Kept:** `pre` blocks become fenced code. Block elements become paragraphs. Entities are decoded.
+- **One unclosed tag ends the page.** Text after a `<` that starts a tag but never reaches `>` is dropped. This fails safe, but a malformed page can come back shorter than it looks in a browser.
 - **A heuristic, not a browser:** it does not run JavaScript, so pages rendered by scripts may come back nearly empty. It does not remove ads or banners marked only by class names.
 - **Relevance** is lexical. Paragraphs and code blocks are ranked by how many query terms they contain, and only matching blocks are kept, in document order. When nothing matches, the opening blocks are returned.
 - **Long blocks are cut, not dropped.** A relevant paragraph or code block bigger than the remaining room is cut, and marked with `…`, when at least 200 characters remain. Cuts never split a character. The source URL in the text is capped at 300 characters, while `finalUrl` keeps the full value.
