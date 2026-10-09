@@ -47,15 +47,55 @@ test("error queries keep the message and drop paths, addresses and positions", (
   assert.match(npm, /ERESOLVE/u);
   assert.equal(errorQuery("/a/b C:\\d\n   at x (y)"), "");
   assert.ok(errorQuery("word ".repeat(200)).length <= 200);
+
+  // Secrets and addresses are redacted on a best-effort basis.
+  for (const [error, expected] of [
+    [
+      "Error: connect ECONNREFUSED 10.0.0.5:5432",
+      "Error: connect ECONNREFUSED",
+    ],
+    ["ENOTFOUND fe80::1%eth0 and 2001:db8::1", "ENOTFOUND and"],
+    ["Invalid API key: sk-abcdefghijklmnop1234", "Invalid API key"],
+    [
+      "Error: jwt expired eyJhbGciOi.eyJzdWIiOi.c2lnbmF0dXJl",
+      "Error: jwt expired",
+    ],
+    ["Unauthorized token=ghp_abcdefghijklmnop for", "Unauthorized token for"],
+    ["AWS AKIAABCDEFGHIJKLMNOP denied", "AWS denied"],
+    ["mail admin@corp.internal now", "mail now"],
+    ["password: hunter2 rejected", "password rejected"],
+    ["opaque Zm9vYmFyYmF6cXV4MTIzNDU2Nzg5MA== trailing", "opaque trailing"],
+  ] as const)
+    assert.equal(errorQuery(error), expected, error);
+  // Code paths and invisible characters.
+  assert.equal(
+    errorQuery("the trait `serde::Deserialize` is not implemented"),
+    "the trait `serde::Deserialize` is not implemented",
+  );
+  assert.equal(errorQuery("Type\u200bError:\u202e bad"), "Type Error: bad");
 });
 
 test("search endpoints and results are validated and cleaned", () => {
-  checkSearchEndpoint("https://search.example/search?q={query}&format=json");
+  assert.equal(
+    checkSearchEndpoint("https://search.example/search?q={query}&format=json"),
+    "https://search.example",
+  );
+  assert.equal(checkSearchEndpoint("http://x/{query}"), "http://x");
+  assert.equal(checkSearchEndpoint("http://x#{query}"), "http://x");
+  assert.equal(
+    checkSearchEndpoint("https://search.example?{query}"),
+    "https://search.example",
+  );
   for (const template of [
     "https://search.example/search?q=static",
     "ftp://search.example/?q={query}",
     "https://user:pw@search.example/?q={query}",
     "not a url {query}",
+    // The query must never choose the host, port or credentials.
+    "http://{query}:9/s",
+    "http://127.0.0.{query}/",
+    "http://h{query}st/",
+    "http://u:{query}@h/",
   ])
     assert.throws(
       () => checkSearchEndpoint(template),
@@ -89,6 +129,22 @@ test("search endpoints and results are validated and cleaned", () => {
   assert.equal(results[0]?.title, "A [2J");
   assert.equal(results[0].snippet.length, 300);
   assert.equal(results[1]?.title.length, 200);
+  // Fragment variants are duplicates; only the first 50 items are examined.
+  const many = parseSearchResults(
+    JSON.stringify({
+      results: [
+        { url: "https://e.example/p#one", title: "E", content: "" },
+        { url: "https://e.example/p#two", title: "E2", content: "" },
+        ...Array.from({ length: 48 }, () => ({ url: 1 })),
+        { url: "https://late.example/", title: "late", content: "" },
+      ],
+    }),
+    10,
+  );
+  assert.deepEqual(
+    many.map((item) => item.url),
+    ["https://e.example/p#one"],
+  );
   for (const body of ["not json", "{}", '{"results":"x"}'])
     assert.throws(
       () => parseSearchResults(body, 5),
@@ -317,6 +373,35 @@ test("resolve_stuck_error combines readable sources within one budget", async (c
   });
 });
 
+test("resolver output carries no control or bidi characters", async (context) => {
+  const hidden = "\u202e\u200b\u2066" + String.fromCharCode(27);
+  const client = await connect(
+    context,
+    createResearchServer({
+      search: () =>
+        Promise.resolve([
+          { title: "T", url: "https://a.example/", snippet: "" },
+        ]),
+      fetchPage: (url) =>
+        Promise.resolve({
+          url,
+          finalUrl: url,
+          contentType: "text/html",
+          body: `<title>Fix${hidden}ed</title><p>ECONNRESET${hidden} handled</p><pre>retry${hidden}()</pre>`,
+        }),
+    }),
+  );
+  const result = await client.callTool({
+    name: "resolve_stuck_error",
+    arguments: { error: "Error: read ECONNRESET" },
+  });
+  const parsed = resolveStuckErrorOutputSchema.parse(result.structuredContent);
+  const text = JSON.stringify(parsed);
+  for (const code of [0x202e, 0x200b, 0x2066, 27])
+    assert.equal(text.includes(String.fromCharCode(code)), false, String(code));
+  assert.match(parsed.text, /ECONNRESET handled/u);
+});
+
 test("the CLI serves search through a private endpoint but not private results", async (context) => {
   const base = await searchServer(context);
   const cli = fileURLToPath(new URL("../src/cli.js", import.meta.url));
@@ -368,5 +453,17 @@ test("the CLI serves search through a private endpoint but not private results",
       },
     );
     assert.notEqual(result.status, 0, args.join(" "));
+  }
+  for (const args of [
+    ["--search-endpoint", "http://{query}:9/s"],
+    ["--search-endpoint", "--search-endpoint-private"],
+  ]) {
+    const result = spawnSync(
+      process.execPath,
+      [cli, "research-server", ...args],
+      { encoding: "utf8", timeout: 30_000 },
+    );
+    assert.notEqual(result.status, 0, args.join(" "));
+    assert.match(result.stderr, /Usage: reprogate research-server/u);
   }
 });

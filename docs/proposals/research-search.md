@@ -28,3 +28,12 @@ Status: proposed implementation. This completes the Phase 4 item "token-budgeted
 - **Search client:** tested against a real local endpoint through the private exemption. It covers JSON parsing, bounds, filtering of unsafe URLs and control characters, size limits, refusal to follow redirects, the content-type check, and that the exemption does not apply to other origins or to result URLs.
 - **Resolver:** combines several sources within budget, skips failed pages, and returns `no_results` and `search_failed` with stable codes. Result URLs pointing at private addresses are skipped as `blocked_address`, even when the endpoint is private.
 - **MCP:** the tools appear only when search is configured. The spawned CLI is checked with a local endpoint and the private flag.
+
+## Review changes
+
+An independent review of the first implementation found these issues, now fixed:
+
+- **High: host chosen by the query.** A template such as `http://{query}:9/s` let the query pick the host, so with `--search-endpoint-private` it could reach any private address. `{query}` must now come after the authority. Two different substitutions must give the same `http(s)` origin without credentials, and each request is checked against that origin before it is sent.
+- **Medium: secrets sent to the provider.** Error text can hold tokens, keys and addresses. The query builder now redacts `key=value` secrets, bearer tokens, JWTs, well-known API key prefixes, email addresses, IPv4 and IPv6 addresses and long opaque strings. The docs describe this as best-effort.
+- **Low: invisible characters in resolver output.** Distillation now removes control, zero-width and bidirectional characters from page text, titles and code.
+- **Smaller fixes:** at most 50 search items are examined, fragment-only variants of a URL count as duplicates, endpoint requests send `Accept: application/json`, and the CLI reports an invalid endpoint template with its usage message.

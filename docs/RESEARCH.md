@@ -34,7 +34,7 @@ With `--search-endpoint`, the server also offers two search tools. Each is catal
 
 - **`web_search { query, maxResults? }`** (1–10, default 5) returns titles (at most 200 characters), URLs and snippets (at most 300 characters). Control and bidirectional characters are removed. Results without a plain `http(s)` URL are dropped.
 - **`resolve_stuck_error { error, context?, maxTokens? }`** builds a search query from the error and returns the most relevant passages and code within one budget, with each source named. It:
-  1. keeps the first meaningful lines, minus stack frames, paths, URLs, hex addresses, line and column numbers, UUIDs and long numbers;
+  1. keeps the first meaningful lines, minus stack frames, paths, URLs, IP and hex addresses, line and column numbers, UUIDs, long numbers and opaque strings, and redacts common secret forms (`key=value` secrets, bearer tokens, JWTs, well-known API key prefixes, email addresses);
   2. searches;
   3. fetches the top 3 results in parallel under the same limits as `fetch_distilled`;
   4. distills each page against the error and `context`.
@@ -45,10 +45,10 @@ With `--search-endpoint`, the server also offers two search tools. Each is catal
 reprogate research-server --search-endpoint 'https://search.example/search?q={query}&format=json'
 ```
 
-- **Endpoint:** any SearXNG-compatible JSON API that returns `{ "results": [{ "url", "title", "content" }] }`. `{query}` is replaced by the percent-encoded query. ReproGate has no built-in provider and sends nothing anywhere without one.
+- **Endpoint:** any SearXNG-compatible JSON API that returns `{ "results": [{ "url", "title", "content" }] }`. `{query}` is replaced by the percent-encoded query and must come after the host, in the path, query or fragment, so a query can never choose the host, port or credentials. A template that breaks this rule is refused at startup. ReproGate has no built-in provider and sends nothing anywhere without one.
 - **Endpoint requests:** answers must be `application/json`, at most 1 MiB, and are never redirected.
 - **Self-hosted engines:** for a search engine on a private network or localhost, add `--search-endpoint-private`. It exempts only that endpoint's origin from the address policy. Every result URL is still checked in full, so a search result pointing at a private address is refused.
-- **What leaves your machine:** the search query goes to the provider. For `resolve_stuck_error`, that is the cleaned first lines of the error message, which can still contain names from your code or environment. Choose a provider you trust with that.
+- **What leaves your machine:** the search query goes to the provider. For `resolve_stuck_error`, that is the cleaned first lines of the error message. Redaction is best-effort and pattern-based: internal host names, identifiers from your code and secrets in unusual formats can still remain. Choose a provider you trust with that, and do not pass errors that contain credentials.
 - **Search results are untrusted.** Anyone can publish a page that ranks for an error message and carries misleading fixes or prompt-injection text. Review suggested fixes before applying them.
 
 ## Fetch limits
