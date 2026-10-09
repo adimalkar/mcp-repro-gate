@@ -241,12 +241,12 @@ export class HostMediator {
         this.#failures.clear();
         this.#generation++;
       }
-    } else if (generation !== this.#generation) {
-      return;
     } else if (succeeded) {
       this.#failures.delete(key);
     } else {
-      this.#failures.set(key, (this.#failures.get(key) ?? 0) + 1);
+      // Only failures from before the last resolver success are stale.
+      if (generation === this.#generation)
+        this.#failures.set(key, (this.#failures.get(key) ?? 0) + 1);
     }
   }
 
