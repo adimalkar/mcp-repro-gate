@@ -92,6 +92,10 @@ With the opt-in `mediation` configuration, the server issues a capability itself
 
 A plan row edited directly in the store could claim an `allow` decision, but write access to the store is already outside this boundary. Each run re-checks the envelope against the live catalog and policy, so tightening either withdraws mediation for existing plans immediately. A run limit per plan (default 1) is enforced atomically through single-use capability IDs. Mediated results and error messages are redacted and bounded before the model sees them: token shapes, every fragment of 12 or more characters of the configured secrets (raw or JSON-escaped), and host patterns. Mediation removes the human review of arguments, though, and redaction cannot stop a tool that can read the gateway's own secrets from leaking them in short or encoded pieces. Operators must not mediate any tool that can reach gateway secret material. In a shared store, `action.run` error codes also reveal whether an action ID exists.
 
+## Research backend boundary
+
+`reprogate research-server` is a separate stdio backend, so web fetches pass through the same catalog, policy, mediation and receipt path as other tools. ReproGate itself makes no network requests. The backend accepts only `http(s)` URLs without credentials. It checks every resolved address at connect time against loopback, private, link-local, shared, documentation, multicast and reserved ranges. It judges IPv4-mapped and well-known NAT64 addresses by their embedded IPv4 address, and refuses the IPv4-compatible, local-use NAT64, 6to4 and Teredo prefixes outright. It checks every redirect again and refuses https-to-http downgrades. Distillation is a single linear pass, so a hostile page cannot stall the backend. It bounds time, size and content type, and reports stable error codes without echoing response bodies. Fetched content is untrusted and may contain prompt-injection text; distillation does not remove it. See [RESEARCH.md](RESEARCH.md).
+
 ## Known gaps before execution is production-safe
 
 - SQLite is durable locally but has no replica lease/ownership protocol;

@@ -88,6 +88,8 @@ When an executor is explicitly supplied, the server also registers `action.execu
 
 A host can also opt in to the advisory `handoff_status` and `handoff_update` tools with `serve --handoff-config <absolute-path>`. They keep durable, caller-asserted session context for one configured workspace and project it to `.agent/handoff.md`. They never authorize actions. See the [handoff guide](docs/HANDOFF.md).
 
+`reprogate research-server` is an optional backend that fetches a public page and returns its most relevant passages within an estimated token budget, with server-side request forgery protections. You configure it like any other backend, so fetches are planned and receipted. See [research](docs/RESEARCH.md).
+
 ## Core invariant
 
 An approval is valid for one exact action, not for a server or tool name in general:
