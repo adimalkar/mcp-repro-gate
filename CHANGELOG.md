@@ -6,7 +6,7 @@ All notable changes will be documented in this file. The project follows [Semant
 
 ### Added
 
-- Research search: `--search-endpoint` (SearXNG-compatible JSON, with an optional `--search-endpoint-private` exemption for that origin only) enables `web_search` and `resolve_stuck_error`. These clean error text into a query, read the top results under the same fetch protections, and return the relevant passages and code with sources within one estimated budget.
+- Research search: `--search-endpoint` (SearXNG-compatible JSON, with an optional `--search-endpoint-private` exemption for that origin only) enables `web_search` and `resolve_stuck_error`. The endpoint's origin is fixed by its template (`{query}` only after the host). These clean error text into a query with best-effort secret redaction, read the top results under the same fetch protections, and return the relevant passages and code with sources within one estimated budget.
 - `reprogate research-server`: a stdio research backend with `fetch_distilled`. It checks addresses at connect time to block private-network fetches, re-checks redirects, limits size, time and content type, distills HTML into the passages relevant to the query, and enforces an estimated token budget. ReproGate configures it like any other `network_read` backend.
 - Phase 1 action-contract kernel.
 - Plan-only MCP façade with catalog search and policy explanation.

@@ -6,7 +6,10 @@ import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import { issueCapabilityToken } from "./capability-token.js";
 import { SqliteExecutionStore } from "./execution-store.js";
 import { runGitReviewCli } from "./git-review-cli.js";
-import { createEndpointSearch } from "./research/search.js";
+import {
+  type SearchFunction,
+  createEndpointSearch,
+} from "./research/search.js";
 import { createResearchServer } from "./research/server.js";
 import { createHandoffService, type HandoffService } from "./handoff.js";
 import {
@@ -274,6 +277,7 @@ async function main(): Promise<void> {
       if (
         option === "--search-endpoint" &&
         value !== undefined &&
+        !value.startsWith("--") &&
         searchEndpoint === undefined
       ) {
         searchEndpoint = value;
@@ -292,13 +296,19 @@ async function main(): Promise<void> {
       allowHosts.push(value);
     }
     if (privateEndpoint && searchEndpoint === undefined) throw new Error(usage);
-    const search =
-      searchEndpoint === undefined
-        ? undefined
-        : createEndpointSearch({
-            endpoint: searchEndpoint,
-            allowPrivateEndpoint: privateEndpoint,
-          });
+    let search: SearchFunction | undefined;
+    if (searchEndpoint !== undefined) {
+      try {
+        search = createEndpointSearch({
+          endpoint: searchEndpoint,
+          allowPrivateEndpoint: privateEndpoint,
+        });
+      } catch {
+        throw new Error(
+          `${usage}\nThe search endpoint must be an http(s) URL without credentials, with {query} after the host.`,
+        );
+      }
+    }
     serveStdio(() =>
       createResearchServer({
         allowHosts,

@@ -109,8 +109,16 @@ export function cutText(text: string, length: number): string {
   return text.slice(0, end);
 }
 
+// Control, bidirectional and zero-width characters could rewrite what a
+// terminal shows or reorder text a model reads; extracted text drops them.
+export const INVISIBLE_TEXT = new RegExp(
+  // eslint-disable-next-line no-control-regex -- Matching control characters is the purpose.
+  "[\\u0000-\\u0008\\u000b\\u000c\\u000e-\\u001f\\u007f-\\u009f\\u061c\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2069\\ufeff]",
+  "gu",
+);
+
 function collapse(text: string): string {
-  return text.replace(/\s+/gu, " ").trim();
+  return text.replace(INVISIBLE_TEXT, " ").replace(/\s+/gu, " ").trim();
 }
 
 // ASCII-only lowering keeps every index aligned with the original string.
@@ -172,7 +180,10 @@ function textOf(fragment: string): string {
 }
 
 function trimCode(code: string): string {
-  const text = code.replace(/\r\n?/gu, "\n").trimEnd();
+  const text = code
+    .replace(/\r\n?/gu, "\n")
+    .replace(INVISIBLE_TEXT, "")
+    .trimEnd();
   let start = 0;
   while (text.charCodeAt(start) === 10) start++;
   return text.slice(start);

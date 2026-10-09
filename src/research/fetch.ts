@@ -33,6 +33,8 @@ export interface FetchOptions {
   maxRedirects?: number;
   /** Accepted content types; defaults to the readable text types. */
   contentTypes?: ReadonlySet<string>;
+  /** The Accept header to send with those content types. */
+  accept?: string;
   /**
    * Decides which resolved addresses may be connected to. Production sets
    * it only for the operator's --search-endpoint-private exemption, where no
@@ -142,7 +144,12 @@ export async function fetchText(
     const host = bareHost(url);
     if (isIP(host) !== 0 && !allowed(host))
       throw new ResearchError("blocked_address");
-    const response = await open(url, allowed, deadline);
+    const response = await open(
+      url,
+      allowed,
+      deadline,
+      options.accept ?? "text/html, text/plain;q=0.9, text/markdown;q=0.9",
+    );
     const status = response.statusCode ?? 0;
     if (REDIRECTS.has(status)) {
       response.destroy();
@@ -190,6 +197,7 @@ function open(
   url: URL,
   allowed: (address: string) => boolean,
   deadline: number,
+  accept: string,
 ): Promise<IncomingMessage> {
   return new Promise((resolve, reject) => {
     const remaining = deadline - Date.now();
@@ -204,7 +212,7 @@ function open(
         agent: false,
         lookup: guardedLookup(allowed),
         headers: {
-          accept: "text/html, text/plain;q=0.9, text/markdown;q=0.9",
+          accept,
           "user-agent": "reprogate-research/1",
         },
         timeout: remaining,
