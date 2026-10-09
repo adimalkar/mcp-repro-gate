@@ -27,10 +27,23 @@ server.registerTool(
     inputSchema: z.object({ text: z.string() }),
     annotations: { readOnlyHint: true },
   },
-  ({ text }) => ({
-    content: [{ type: "text", text }],
-    structuredContent: { length: text.length },
-  }),
+  ({ text }) =>
+    // "fail:" models a failing command for the strike gate.
+    text.startsWith("fail:")
+      ? { content: [{ type: "text", text }], isError: true }
+      : {
+          content: [{ type: "text", text }],
+          structuredContent: { length: text.length },
+        },
+);
+
+server.registerTool(
+  "resolve",
+  {
+    description: "Test-only resolver for the strike gate",
+    inputSchema: z.object({ text: z.string() }),
+  },
+  ({ text }) => ({ content: [{ type: "text", text: `resolved:${text}` }] }),
 );
 
 serveStdio(() => server);

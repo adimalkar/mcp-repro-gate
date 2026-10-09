@@ -7,6 +7,7 @@ import {
   actionIdInputSchema,
   actionInspectOutputSchema,
   actionRunOutputSchema,
+  actionRunStrikesOutputSchema,
   actionPlanOutputSchema,
   catalogDescribeOutputSchema,
   catalogSearchOutputSchema,
@@ -27,13 +28,15 @@ import {
 import { ReproGateKernel } from "./kernel.js";
 
 // Error results carry text only, so they never have to satisfy outputSchema.
-function error(message: string) {
+function errorResult(value: { error: string } & Record<string, unknown>) {
   return {
-    content: [
-      { type: "text" as const, text: JSON.stringify({ error: message }) },
-    ],
+    content: [{ type: "text" as const, text: JSON.stringify(value) }],
     isError: true,
   };
+}
+
+function error(message: string) {
+  return errorResult({ error: message });
 }
 
 // Compact JSON: the mirror carries the same data without indentation.
@@ -231,17 +234,24 @@ export function createReproGateServer(
   }
 
   if (executor !== undefined && mediator !== undefined) {
+    const gate = mediator.strikeGate;
     server.registerTool(
       "action.run",
       {
-        description:
-          'Run one previously planned action without passing a token: either a plan that policy allows with only host-mediated read effects, or, when enabled, a plan an operator approved on the host. The host issues the one-use capability. Returns a compact summary and redacted, bounded downstream text; detail "full" adds receipt digests',
+        description: `Run one previously planned action without passing a token: either a plan that policy allows with only host-mediated read effects, or, when enabled, a plan an operator approved on the host. The host issues the one-use capability. Returns a compact summary and redacted, bounded downstream text; detail "full" adds receipt digests${
+          gate === undefined
+            ? ""
+            : `. After ${String(gate.limit)} consecutive failures of one tool, its runs are refused with resolve_required until ${gate.resolverToolRef} succeeds through action.run: plan and run it with the error before retrying`
+        }`,
         inputSchema: z.object({
           actionId: actionIdInputSchema,
           arguments: z.record(z.string(), z.unknown()),
           detail: z.enum(["compact", "full"]).default("compact"),
         }),
-        outputSchema: actionRunOutputSchema,
+        outputSchema:
+          gate === undefined
+            ? actionRunOutputSchema
+            : actionRunStrikesOutputSchema,
         // Held approvals let operator-approved plans write, so claim
         // nothing narrower than action.execute does.
         annotations: {
@@ -264,6 +274,7 @@ export function createReproGateServer(
             truncated: run.truncated,
             redactions: run.redactions,
             omittedItems: run.omittedItems,
+            ...(run.strikes === undefined ? {} : { strikes: run.strikes }),
             ...(detail === "full"
               ? {
                   receiptDigest: run.receiptDigest,
@@ -285,6 +296,15 @@ export function createReproGateServer(
         } catch (runError) {
           // Refusals are stable codes; executor failures keep their message.
           // Executor and downstream messages are bounded and redacted too.
+          if (
+            runError instanceof MediationError &&
+            runError.strikes !== undefined
+          )
+            return errorResult({
+              error: runError.code,
+              resolverToolRef: runError.strikes.resolverToolRef,
+              failures: runError.strikes.failures,
+            });
           return error(
             runError instanceof MediationError
               ? runError.code

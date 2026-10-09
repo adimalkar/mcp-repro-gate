@@ -162,6 +162,20 @@ node dist/src/cli.js approve --config /absolute/path/reprogate.json '<action-id>
 A held run is refused with `invalid_approval` if the signature or plan binding fails, `stale_plan` if the live catalog or policy no longer gives the same decision, `expired` once the plan expires, and `approval_consumed` once the approval has been used or revoked. Without a held approval, an `approval_required` plan gets `awaiting_approval`. `--revoke-held` succeeds only while the approval is unused. It consumes the approval's single-use ID as a tombstone in the same transaction, so a run already in progress fails instead of executing. A held approval takes precedence for its plan, even one that policy allows. After that run, the plan returns `approval_consumed` rather than falling back to auto-mediation. With held approvals enabled, `effects` is optional, and `action.run` is annotated as possibly destructive and open-world.
 
 A held approval proves possession of the capability secret on the host, the same trust as `approve`. It does not authenticate an individual approver. Signed approvals are stored in the database, so anyone who can both read and write the store can replay an approved run until it expires. Protect the store, and use `--expires-in` to keep that window short.
+### Two-strike gate
+
+Add `strikes` to `mediation` to stop an agent from retrying a failing tool in a loop:
+
+```json
+"strikes": { "resolverToolRef": "research.resolve_stuck_error", "limit": 2 }
+```
+
+- **Blocking:** after `limit` consecutive failed runs of one downstream tool (default 2, range 2–5), `action.run` refuses further runs of that tool. The refusal is `{ "error": "resolve_required", "resolverToolRef": "…", "failures": n }`, and nothing runs. Tools are counted by backend and tool name, across plans and arguments.
+- **What counts as a failure:** a run whose receipt outcome is `failed`, or an executor error during the run, such as arguments that do not match the plan. Refusals that run nothing, such as `run_limit`, `expired` or `stale_plan`, do not count.
+- **Unblocking:** a successful run of a tool resets its own count. A successful run of the resolver, through `action.run`, resets every count. The resolver itself is never counted or blocked.
+- **Agent feedback:** a failed `action.run` result carries `strikes: { failures, limit, resolverToolRef }`, and the `action.run` description states the rule.
+- **Startup checks:** `resolverToolRef` must name a catalog tool whose effects are all listed in `effects`, or the server refuses to start. Your policy must also decide `allow` for the resolver, or a blocked tool stays blocked until restart.
+- **Scope:** counts live in memory for one server process, so each stdio session has its own and a restart clears them. `action.execute` with an approved capability is not gated. The gate is guidance for agents, not a security control.
 
 Redaction removes only what it can recognise. Fragments shorter than 12 characters, a secret split into pieces across separate items or calls, and other encodings (base64, hex, percent-encoding) are not detected. **A mediated tool must not be able to read the gateway's secret material**, for example the process environment, `/proc/<pid>/environ` or the secret files. Treat downstream output as untrusted even after redaction.
 
