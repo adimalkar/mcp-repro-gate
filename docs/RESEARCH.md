@@ -34,7 +34,7 @@ With `--search-endpoint`, the server also offers two search tools. Each is catal
 
 - **`web_search { query, maxResults? }`** (1–10, default 5) returns titles (at most 200 characters), URLs and snippets (at most 300 characters). Control and bidirectional characters are removed. Results without a plain `http(s)` URL are dropped.
 - **`resolve_stuck_error { error, context?, maxTokens? }`** builds a search query from the error and returns the most relevant passages and code within one budget, with each source named. It:
-  1. keeps the first meaningful lines, minus stack frames, paths, URLs, IP and hex addresses, line and column numbers, UUIDs, long numbers and opaque strings, and redacts common secret forms (`key=value` secrets, bearer tokens, JWTs, well-known API key prefixes, email addresses);
+  1. keeps the first meaningful lines, minus stack frames, paths, URLs, IP and hex addresses, line and column numbers, UUIDs, long numbers and opaque strings, and redacts common secret forms: values after names such as `GITHUB_TOKEN=`, `client_secret:` or JSON `"password":`, `Authorization` and bearer credentials, JWTs, well-known API key prefixes and email addresses;
   2. searches;
   3. fetches the top 3 results in parallel under the same limits as `fetch_distilled`;
   4. distills each page against the error and `context`.

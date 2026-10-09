@@ -166,9 +166,22 @@ export function errorQuery(error: string): string {
     .slice(0, 3);
   const query = lines
     .join(" ")
-    // Secrets written as key=value, key: value or "key value" keep the key.
+    // Authorization values, with or without a scheme, keep only the key.
     .replace(
-      /\b(api[-_ ]?key|access[-_ ]?key|secret|token|password|passwd|pwd|authorization|bearer|session|cookie)(\s*[:=]\s*|\s+)\S+/giu,
+      /(?<![A-Za-z0-9])(authorization)["']?\s*[:=]\s*["']?(?:(?:bearer|basic|digest|token)\s+)?[^\s"',;]+/giu,
+      "$1",
+    )
+    .replace(/\b(bearer|basic)\s+[^\s"',;]{8,}/giu, "$1")
+    // Secrets written as KEY=value or "key": "value", including prefixed
+    // names such as GITHUB_TOKEN or client_secret, keep the key.
+    .replace(
+      /(?<![A-Za-z0-9])([\w-]{0,40}?(?:api[-_ ]?key|access[-_ ]?key|secret|token|password|passwd|pwd|session|cookie)[\w-]{0,40})["']?\s*[:=]\s*["']?[^\s"',;]+["']?/giu,
+      "$1",
+    )
+    // "token abc123..." without a separator: only values that look secret,
+    // so phrases such as "Unexpected token '<'" stay searchable.
+    .replace(
+      /\b(api[-_ ]?key|secret|token|password|passwd|session|cookie)\s+(?=\S*\d)(?=\S*[A-Za-z])[^\s"',;]{8,}/giu,
       "$1",
     )
     // JSON Web Tokens and well-known credential prefixes.

@@ -67,6 +67,24 @@ test("error queries keep the message and drop paths, addresses and positions", (
     ["opaque Zm9vYmFyYmF6cXV4MTIzNDU2Nzg5MA== trailing", "opaque trailing"],
   ] as const)
     assert.equal(errorQuery(error), expected, error);
+  // Prefixed names, JSON keys and authorization schemes.
+  for (const [error, expected] of [
+    [
+      "GITHUB_TOKEN=ghx_short1 DB_PASSWORD=hunter2 client_secret=abc123 access_token=zzz9",
+      "GITHUB_TOKEN DB_PASSWORD client_secret access_token",
+    ],
+    ['{"password":"hunter2","apiKey":"k1"}', '{"password,"apiKey}'],
+    ["Authorization: Bearer abc123def", "Authorization"],
+    ["Bearer abc123def456 rejected", "Bearer rejected"],
+    ["token abc123def456 expired", "token expired"],
+  ] as const)
+    assert.equal(errorQuery(error), expected, error);
+  // Ordinary words after a key name stay searchable.
+  for (const error of [
+    `SyntaxError: Unexpected token '<', "<!DOCTYPE "... is not valid JSON`,
+    'password authentication failed for user "postgres"',
+  ])
+    assert.equal(errorQuery(error), error);
   // Code paths and invisible characters.
   assert.equal(
     errorQuery("the trait `serde::Deserialize` is not implemented"),

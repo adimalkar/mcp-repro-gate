@@ -113,7 +113,7 @@ export function cutText(text: string, length: number): string {
 // terminal shows or reorder text a model reads; extracted text drops them.
 export const INVISIBLE_TEXT = new RegExp(
   // eslint-disable-next-line no-control-regex -- Matching control characters is the purpose.
-  "[\\u0000-\\u0008\\u000b\\u000c\\u000e-\\u001f\\u007f-\\u009f\\u061c\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2069\\ufeff]",
+  "[\\u0000-\\u0008\\u000b\\u000c\\u000e-\\u001f\\u007f-\\u009f\\u061c\\u200b-\\u200f\\u2028-\\u202e\\u2060-\\u2069\\ufeff]",
   "gu",
 );
 
