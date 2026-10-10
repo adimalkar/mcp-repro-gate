@@ -38,3 +38,13 @@ Status: proposed implementation. The Phase 4 exit criteria ask for a ">95% reduc
   - `--html` measures a local file and rejects missing arguments.
 - The published-numbers test compares the tables in `docs/RESEARCH.md` with the harness.
 - The CLI prints the same JSON as the library.
+
+## Review changes
+
+The independent review reproduced every published number exactly, both the fixture and the manual run, and asked for these changes:
+
+- **Docs (medium):** "every page above 100 KB saves 95.7–99.5%" claimed more than the data shows. The reduction against raw HTML is capped by the budget, so it passes 95% only for pages above roughly 150 KB. The docs now say so, and point to the page-text column as the one that reflects distillation. The plain-page explanation was wrong: the result drops most of the page, and the per-call overhead and duplicate copy outweigh that. The stale "no reduction is claimed" line was replaced.
+- **Page-text baseline (low):** `</head` matched `</header`, and an omitted `</head>` dropped the whole page. A name boundary is now required, and the head ends at `<body>` as in a browser. An empty baseline reports `n/a` instead of an infinite ratio.
+- **Resolver baseline (low):** the harness now refuses to measure unless every source was read, so a failed fetch cannot inflate the reduction.
+- **Tests (low):** the published-numbers test now covers the Truncated column, the answers sentence and the more-than-95% claim. Prose that repeated fixture-derived ranges now points to the table instead.
+- **Generator (nit):** the multiply now uses `Math.imul`, so the generator stays exact in 32 bits. This changed the fixture slightly before its first publication.
