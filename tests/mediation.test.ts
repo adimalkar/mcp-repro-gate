@@ -114,6 +114,111 @@ test("bounding never splits a multi-byte character and reports truncation", () =
   assert.ok(Buffer.byteLength(kept) <= 256);
 });
 
+test("bounded results skip structured mirrors the text items already show", () => {
+  const mediator = unitMediator(65536);
+  const texts = (result: unknown) =>
+    mediator.bound(result).content.map((item) => item.text);
+  const structured = { items: [{ id: 1, name: "a" }], total: 1 };
+  for (const mirror of [
+    JSON.stringify(structured),
+    JSON.stringify(structured, null, 2),
+  ])
+    assert.deepEqual(
+      texts({
+        content: [{ type: "text", text: mirror }],
+        structuredContent: structured,
+      }),
+      [mirror],
+    );
+
+  // A research-shaped result: readable text plus the same string as a field.
+  const page = `# Title\nSource: https://example.test/\n\n${"passage ".repeat(450)}`;
+  const research = {
+    content: [{ type: "text", text: page }],
+    structuredContent: {
+      url: "https://example.test/",
+      finalUrl: "https://example.test/",
+      title: "Title",
+      estimatedTokens: 900,
+      truncated: false,
+      text: page,
+    },
+  };
+  const view = texts(research);
+  assert.deepEqual(view, [
+    page,
+    JSON.stringify({
+      url: "https://example.test/",
+      finalUrl: "https://example.test/",
+      title: "Title",
+      estimatedTokens: 900,
+      truncated: false,
+    }),
+  ]);
+  const before =
+    Buffer.byteLength(page) +
+    Buffer.byteLength(JSON.stringify(research.structuredContent));
+  const after = view.reduce((sum, text) => sum + Buffer.byteLength(text), 0);
+  assert.ok(after * 2 <= before + 400, `${String(after)} of ${String(before)}`);
+
+  // Only fields mirrored: nothing new is left.
+  assert.deepEqual(
+    texts({
+      content: [{ type: "text", text: "x" }],
+      structuredContent: { text: "x" },
+    }),
+    ["x"],
+  );
+
+  // Near misses are still appended whole.
+  for (const structuredContent of [
+    { items: [{ id: 1, name: "b" }], total: 1 },
+    { nested: { text: "hello" } },
+    { text: "hello world" },
+    ["hello"],
+    {},
+  ])
+    assert.deepEqual(
+      texts({
+        content: [{ type: "text", text: "hello" }],
+        structuredContent,
+      }),
+      ["hello", JSON.stringify(structuredContent)],
+      JSON.stringify(structuredContent),
+    );
+  assert.deepEqual(
+    texts({
+      content: [{ type: "text", text: "{not json" }],
+      structuredContent: { a: 1 },
+    }),
+    ["{not json", '{"a":1}'],
+  );
+});
+
+test("skipping a mirror keeps redaction and truncation", () => {
+  const mediator = unitMediator(256);
+  const secretText = `key ${capabilitySecret}`;
+  const redacted = mediator.bound({
+    content: [{ type: "text", text: secretText }],
+    structuredContent: { text: secretText, leaked: capabilitySecret },
+  });
+  const visible = JSON.stringify(redacted.content);
+  assert.equal(visible.includes(capabilitySecret.slice(0, 12)), false);
+  assert.equal(redacted.content.length, 2);
+  assert.equal(redacted.content[1]?.text.includes('"text"'), false);
+
+  const long = "y".repeat(300);
+  const cut = mediator.bound({
+    content: [{ type: "text", text: long }],
+    structuredContent: { text: long, extra: "shown only if room" },
+  });
+  assert.equal(cut.truncated, true);
+  assert.deepEqual(
+    cut.content.map((item) => item.text),
+    ["y".repeat(256)],
+  );
+});
+
 async function configuredRuntime(
   context: TestContext,
   mediation?: unknown,
@@ -266,6 +371,22 @@ test("action.run executes an allowed read with a host-issued capability and a bo
   assert.equal(record.receipt.receiptDigest, summary.receiptDigest);
   assert.equal(record.receipt.resultDigest, summary.resultDigest);
   assert.equal(verifyExecutionReceipt(record.receipt, receiptSecret), true);
+});
+
+test("action.run shows a downstream result that mirrors itself once", async (context) => {
+  const { call, plan } = await configuredRuntime(context, {
+    effects: ["local_read"],
+  });
+  // The echo fixture returns { length } as structuredContent; this text is
+  // its own exact JSON mirror.
+  const text = '{"length":13}';
+  assert.equal(text.length, 13);
+  const actionId = await plan("configured.echo", { text });
+  const result = await call("action.run", { actionId, arguments: { text } });
+  assert.equal(result.isError, undefined, JSON.stringify(result.content));
+  const summary = actionRunOutputSchema.parse(result.structuredContent);
+  assert.deepEqual(summary.content, [{ type: "text", text }]);
+  assert.equal(summary.truncated, false);
 });
 
 test("action.run refuses plans outside mediation without executing", async (context) => {

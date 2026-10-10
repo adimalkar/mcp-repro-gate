@@ -110,6 +110,40 @@ function secretFragments(secrets: readonly string[]): string[] {
   return [...fragments];
 }
 
+// The JSON of structuredContent, minus what the text items already show
+// verbatim: a whole mirror (as the MCP specification asks servers to send,
+// possibly pretty-printed) or top-level string fields equal to a text item.
+// Undefined when nothing new is left.
+function structuredMirror(
+  structured: unknown,
+  texts: readonly string[],
+): string | undefined {
+  const whole = JSON.stringify(structured);
+  for (const text of texts) {
+    if (!/^\s*[[{]/u.test(text)) continue;
+    try {
+      if (JSON.stringify(JSON.parse(text)) === whole) return undefined;
+    } catch {
+      // Not JSON, so not a mirror.
+    }
+  }
+  if (
+    structured === null ||
+    typeof structured !== "object" ||
+    Array.isArray(structured)
+  )
+    return whole;
+  const shown = new Set(texts);
+  const entries = Object.entries(structured);
+  const kept = entries.filter(
+    ([, value]) => typeof value !== "string" || !shown.has(value),
+  );
+  if (kept.length === entries.length) return whole;
+  return kept.length === 0
+    ? undefined
+    : JSON.stringify(Object.fromEntries(kept));
+}
+
 /**
  * Executes allow-decided, read-effect plans with a host-issued capability,
  * so the model never handles a token. Every executor check, the write-ahead
@@ -285,8 +319,10 @@ export class HostMediator {
       if (
         "structuredContent" in result &&
         result.structuredContent !== undefined
-      )
-        texts.push(JSON.stringify(result.structuredContent));
+      ) {
+        const mirror = structuredMirror(result.structuredContent, texts);
+        if (mirror !== undefined) texts.push(mirror);
+      }
     } else if (result !== undefined) {
       texts.push(JSON.stringify(result));
     }
