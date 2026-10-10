@@ -12,37 +12,52 @@ Status: proposed implementation. The research measurement in #37 found that rank
 
 ## Deliverable
 
-`selectRelevant` changes in three ways. Distillation, budgets and output format stay the same.
+`selectRelevant` changes as follows. Distillation, budgets and the output format stay the same.
 
 - **Weight terms by rarity on the page.** Each matched term contributes `idf × (10 + hits)`, with hits still capped at 5 and `idf = ln(1 + (N − df + 0.5) / (df + 0.5))` over the page's N blocks. Matching code still gets a small bonus. A term in most blocks weighs little, and a term in a handful of blocks dominates.
-- **Drop blocks that match only common terms.** A term is common on the page when its weight is less than half the weight of the rarest query term found there. A block whose matched terms are all common, such as a paragraph that only says "socket" on a socket API page, is not selected. So results get smaller rather than padded. When every matched term is equally common, nothing is dropped. If no block matches, the existing fallback (the opening blocks, in page order) is unchanged.
-- **Drop exact repeats.** A block whose text, minus a trailing `#` or `¶`, equals an earlier selected block is skipped.
-
-Two alternatives were tried and rejected:
-
-- **Standard BM25 length normalisation** favours the very short table-of-contents lines.
-- **A cutoff at a quarter of the best block's score** dropped the fix code on the issue-tracker fixture. The best block there is the one that echoes the whole error message, so solution blocks matching only one or two terms fell below the cutoff. Long error queries, which `resolve_stuck_error` sends, make this worse.
+- **Demote blocks that match only common terms.** A term is common on the page when its weight is less than half that of the rarest query term found there. Blocks whose matched terms are all common rank after every other match. They fill in only when the other matches use less than half the budget. When everything else is thin, recall wins.
+- **Keep one copy of repeated text blocks.** Blocks are repeats when their text matches apart from a trailing `#` or `¶`. The copy kept is the higher-scored one, then the later one, which is usually the section heading rather than its contents entry. Code blocks are never treated as repeats.
+- **Bound the work.** A query keeps its first 64 distinct terms. Per-block hits are stored sparsely (only the terms a block contains), and document frequency is counted in the same pass.
 
 ## Measurement
 
-Fixture (`bench research`, fixture v1): the median reduction rose from 98.1% to 99.5% against raw HTML, and from 65.5% to 91.9% against page text. All 6 answers are still kept. The Q&A and issue-tracker rows shrink most, because filler blocks that matched only common terms are no longer selected.
+- **Fixture** (`bench research`, fixture v1): the median reduction is 98.1% against raw HTML (unchanged) and 65.1% against page text (65.5% before). All 6 answers are still kept.
+  - The Q&A row's selection changed slightly: 3600 text bytes, up from 3545.
+  - On the Q&A and issue rows, the answer passages alone use less than half the budget, so filler blocks that match only common terms still fill in.
+- **Saved real pages from #37** (`--html`):
 
-Saved real pages from #37, measured with `--html`:
+| Page and query                                    | Measured B before | After | What changed                                                               |
+| ------------------------------------------------- | ----------------: | ----: | -------------------------------------------------------------------------- |
+| Node.js `net`, "socket setKeepAlive initialDelay" |              7590 |  4736 | only keep-alive passages remain; section headings replace contents entries |
+| MDN AbortController, "abort fetch request signal" |              2082 |  2082 | unchanged                                                                  |
+| Python asyncio, "gather return_exceptions"        |              7654 |  7654 | unchanged                                                                  |
+| Docker startup order, "depends_on condition …"    |              2773 |  2773 | unchanged                                                                  |
 
-| Page and query                                    | Measured B before | After | What changed                    |
-| ------------------------------------------------- | ----------------: | ----: | ------------------------------- |
-| Node.js `net`, "socket setKeepAlive initialDelay" |              7590 |  4730 | only keep-alive passages remain |
-| MDN AbortController, "abort fetch request signal" |              2082 |  1786 | heading lines dropped           |
-| Python asyncio, "gather return_exceptions"        |              7654 |  7654 | unchanged                       |
-| Docker startup order, "depends_on condition …"    |              2773 |  2773 | unchanged                       |
+The gain is narrow. It removes padding when the distinctive passages already fill at least half the budget, and it removes repeated headings. It does not reduce filler on thin results.
 
 ## Verification
 
 - Unit tests:
-  - a long block with one common term ranks below a short block with a rare term;
-  - weak matches are dropped;
-  - repeats differing only by a permalink character are dropped;
-  - the no-match fallback is unchanged.
-- `bench research` keeps 6/6 answers. Its published numbers are updated, and any change is explained.
-- The existing hostile-input test caught a quadratic regex in the first version of the repeat check (`/\s*[#¶]$/` on a 1 MB whitespace block). The check now uses `endsWith` and `trimEnd`.
-- The saved real pages are re-measured with `--html`, and docs/RESEARCH.md drops or rewrites the "Ranking is lexical" caveat.
+  - under budget pressure, a short rare-term passage beats a long common-term block;
+  - common-only blocks are left out when the rest fills half the budget;
+  - repeats keep the section heading, and code blocks are never treated as repeats;
+  - common-only blocks fill in on an MDN-style page where "method" matches only a heading;
+  - the same holds on an issue thread where the error term is in every block and "read" only in the title, and on a four-block page;
+  - the no-match fallback is unchanged;
+  - 200,000 tiny blocks with a 170-term query finish well within the limit.
+- `bench research` keeps 6/6 answers. The published numbers are updated, and the real pages were re-measured and read by hand.
+
+## Review
+
+- **First draft (rejected): a cutoff at a quarter of the best block's score.** It dropped the fix code on the issue-tracker fixture, whose best block echoes the error message.
+- **Second draft, HIGH (fixed): dropping common-only blocks outright.**
+  - One incidental rare hit hid the answer:
+    - on the real MDN page, "AbortController abort method" returned only "Instance methods";
+    - on an issue thread, "read ECONNRESET" returned only the title;
+    - on a four-block page, the fix was dropped.
+  - Fix: such blocks are now demoted and fill in when the rest is thin.
+- **Second draft, HIGH (fixed): memory and CPU on many-block pages.** Dense per-block count arrays took 1950 ms and 439 MB for 233,000 blocks and 170 terms, against 211 ms and 120 MB before. Fix: sparse hits and a 64-term cap bring this to about 120 ms and 185 MB.
+- **Second draft, MEDIUM (fixed): overclaiming docs.** The docs now state the remaining limits: substring matching, thin results that still carry filler, and leftover chrome that holds a unique term. The MDN page no longer changes.
+- **Second draft, LOW (fixed): repeats kept the contents entry.** They now keep the section heading. The tests now cover budget pressure, small pages and the repeat choice.
+- **Not fixed: unique terms in leftover chrome.** On the Docker page, the query "service_healthy method" ranks a leftover inline script first, because "method" occurs only there. A density rule (hits per character) was tried, but it made the Node.js and Python results worse. The limit is documented instead.
+- **Caught by an existing test:** the first repeat check used a quadratic regex. The hostile-input test caught it, and the check now uses `endsWith` and `trimEnd`.
