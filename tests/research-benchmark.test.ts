@@ -59,6 +59,15 @@ test("the page-text baseline drops scripts and styles but keeps page chrome", ()
   );
   // Many heads without a body stay linear (this took seconds when the
   // body was searched from scratch for every head).
+  for (const input of [
+    "<head><body>x".repeat(40_000),
+    "<head><body></headx>".repeat(20_000),
+    "<head><title>t</title><body><p>b</p>".repeat(15_000),
+  ]) {
+    const started = performance.now();
+    pageText(input);
+    assert.ok(performance.now() - started < 1000, input.slice(0, 20));
+  }
   for (const tail of ["", "<body><p>end</p>"]) {
     const started = performance.now();
     assert.equal(
