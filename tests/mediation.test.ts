@@ -271,8 +271,7 @@ test("structured mirrors are kept whole when redaction or the bound could differ
   assert.equal(both.redactions, 2);
   assert.equal(JSON.stringify(both.content).includes(capabilitySecret), false);
 
-  // An item longer than the bound plus slack is always cut; the structured
-  // JSON is left alone (and never parsed).
+  // A cut text item stops the view before the structured JSON.
   const small = unitMediator(256);
   const huge = `[${"0,".repeat(5000)}0]`;
   const cut = small.bound({

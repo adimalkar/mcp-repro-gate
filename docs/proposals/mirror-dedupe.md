@@ -19,7 +19,8 @@ When building the view, `bound` compares `structuredContent` with the downstream
 - **Mark mirrored fields.** Otherwise, if `structuredContent` is an object, a top-level string field whose value equals a text item is replaced by the marker `"[text item N]"`, where N is the first equal item. Field names and order are kept. Values no longer than the marker, including empty strings, are kept as they are.
 - **Keep everything else whole.** The structured JSON is appended unchanged when:
   - redacting it would find anything (token shapes, secret fragments or host patterns), because removing text could break a host pattern that spans fields, and skipping a copy would lower the redaction count;
-  - it, or any text item, is longer than `maxTextBytes` plus the redaction slack. Such an item is always cut, so either the structured JSON is never reached or only a prefix of it is shown. This also caps the parsing and redaction work at `bound`'s own window.
+  - it is longer than `maxTextBytes` plus the redaction slack. It would be cut, and only a prefix of it shown.
+- **Build it only when it can be shown.** The comparison runs only after every text item has been shown whole with budget left over, since the structured JSON comes last. A cut view does no extra work, and each compared item is within the bound's window.
 - Redaction, the byte bound, the stop-at-first-cut rule, `omittedItems` and the receipt's `resultDigest` are unchanged. `resultDigest` still covers the complete downstream result.
 
 What the model loses is a second copy. Every removed value is shown in an earlier text item under the same bound, and a marker names that item. `structuredContent` was always appended last.
@@ -47,6 +48,8 @@ The model-visible text of `action.run` changes for downstream tools that mirror.
 
 - **High (fixed): redaction.** Removing fields could break a host pattern match spanning fields, such as a PEM block, and expose the parts left in place. Fix: deduplication now applies only when redacting the structured JSON finds nothing.
 - **Medium (fixed): the redaction count.** Skipping a copy could hide that count. The gate above fixes this as well.
-- **Medium (fixed): parsing cost.** Every JSON-looking text item was parsed in full before the bound applied. Parsing is now capped at the bound's window.
+- **Medium (fixed): parsing cost.** Every JSON-looking text item was parsed in full before the bound applied. Fix: the comparison now runs only after the text items are shown whole.
+- **Medium (fixed, round 2): field lookup.** Each field searched every text item, so a result with many tiny text items could block the event loop for seconds. Fix: one map from text to its first item number.
+- **Accepted (round 2):** host patterns are checked on the whole structured JSON, while the old view checked the part that fit. Only end-anchored, `\b` or lookahead patterns can differ, and only at a cut point that already moved with the bound. A downstream value that is literally `"[text item 2]"` looks like a marker, but it gains nothing a matching text item would not.
 - **Medium (fixed): field names.** Deleted fields lost their names. Fields now keep their names and point to the text item with a marker.
 - **Low (fixed): claims and tests.** The docs claimed unchanged truncation, and the tests did not check redaction counts. Both are corrected.

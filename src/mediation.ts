@@ -276,12 +276,10 @@ export class HostMediator {
     texts: readonly string[],
   ): string | undefined {
     const whole = JSON.stringify(structured);
-    // Past this length an item is always cut, so either the structured JSON
-    // is never reached or only a prefix of it is shown: keep it unchanged.
-    // This also bounds the parsing and redaction work below.
-    const limit = this.#maxTextBytes + this.#slack;
-    if (whole.length > limit || texts.some((text) => text.length > limit))
-      return whole;
+    // Past this length it is always cut and only a prefix is shown: keep it
+    // unchanged. The text items were all shown whole, so each is within the
+    // same limit, which bounds the parsing and redaction work below.
+    if (whole.length > this.#maxTextBytes + this.#slack) return whole;
     // Removing text could split a match a host pattern makes across fields,
     // and skipping a copy would hide the redaction count.
     if (this.#redact(whole).count > 0) return whole;
@@ -300,13 +298,17 @@ export class HostMediator {
       Array.isArray(structured)
     )
       return whole;
+    const first = new Map<string, number>();
+    texts.forEach((text, index) => {
+      if (!first.has(text)) first.set(text, index + 1);
+    });
     let replaced = 0;
     const fields: [string, unknown][] = [];
     for (const [key, value] of Object.entries(structured)) {
-      const index = typeof value === "string" ? texts.indexOf(value) : -1;
-      const marker = `[text item ${String(index + 1)}]`;
+      const item = typeof value === "string" ? first.get(value) : undefined;
+      const marker = `[text item ${String(item)}]`;
       // Short values cost less than the marker; keep them.
-      if (index !== -1 && (value as string).length > marker.length) {
+      if (item !== undefined && (value as string).length > marker.length) {
         fields.push([key, marker]);
         replaced++;
       } else fields.push([key, value]);
@@ -318,6 +320,7 @@ export class HostMediator {
   /** Redact, then bound, the model-visible view of a downstream result. */
   bound(result: unknown): BoundedContent {
     const texts: string[] = [];
+    let structured: unknown;
     let omittedItems = 0;
     const shaped =
       result !== null && typeof result === "object" && "content" in result;
@@ -334,13 +337,7 @@ export class HostMediator {
           texts.push(item.text);
         else omittedItems++;
       }
-      if (
-        "structuredContent" in result &&
-        result.structuredContent !== undefined
-      ) {
-        const mirror = this.#structuredMirror(result.structuredContent, texts);
-        if (mirror !== undefined) texts.push(mirror);
-      }
+      if ("structuredContent" in result) structured = result.structuredContent;
     } else if (result !== undefined) {
       texts.push(JSON.stringify(result));
     }
@@ -349,10 +346,11 @@ export class HostMediator {
     let truncated = false;
     let redactions = 0;
     const content: { type: "text"; text: string }[] = [];
-    for (const text of texts) {
+    // Shows one item; false once the view is cut.
+    const show = (text: string): boolean => {
       if (remaining <= 0) {
         truncated = true;
-        break;
+        return false;
       }
       // Characters past remaining + slack can never be shown.
       const window = text.slice(0, remaining + this.#slack);
@@ -370,7 +368,18 @@ export class HostMediator {
       // Stop at the first cut so the model never sees a gapped view.
       if (window.length !== text.length || bounded !== shown) {
         truncated = true;
-        break;
+        return false;
+      }
+      return true;
+    };
+    const uncut = texts.every(show);
+    // The structured JSON comes last, so it is only worth building once
+    // every text item has been shown whole.
+    if (uncut && structured !== undefined) {
+      if (remaining <= 0) truncated = true;
+      else {
+        const mirror = this.#structuredMirror(structured, texts);
+        if (mirror !== undefined) show(mirror);
       }
     }
     return { content, truncated, redactions, omittedItems };
