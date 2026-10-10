@@ -409,8 +409,26 @@ export function pageText(html: string): string {
   const lower = html.replace(/[A-Z]+/gu, (run) => run.toLowerCase());
   let out = "";
   let index = 0;
-  // Where the next "<body" is; -2 means not looked up yet.
-  let bodyAt = -2;
+  // The scan only moves forward, so each search below is cached and only
+  // repeated once the scan has passed its result; every search starts
+  // beyond the last one, which keeps the whole pass linear. -1 means none
+  // is left.
+  const found = new Map<string, number>();
+  const next = (key: string, find: (from: number) => number): number => {
+    const cached = found.get(key);
+    if (cached !== undefined && (cached === -1 || cached >= index))
+      return cached;
+    const position = find(Math.max(index, (cached ?? -1) + 1));
+    found.set(key, position);
+    return position;
+  };
+  // A real closing tag: "</head" must not match "</header".
+  const closing = (name: string) => (from: number) => {
+    let end = lower.indexOf(`</${name}`, from);
+    while (end !== -1 && /[a-z0-9-]/u.test(lower.charAt(end + 2 + name.length)))
+      end = lower.indexOf(`</${name}`, end + 1);
+    return end;
+  };
   while (index < html.length) {
     const open = html.indexOf("<", index);
     if (open === -1) {
@@ -428,19 +446,12 @@ export function pageText(html: string): string {
     const name = /^<([a-z][a-z0-9]*)/u.exec(lower.slice(open, open + 20))?.[1];
     index = close + 1;
     if (name !== undefined && HIDDEN.has(name)) {
-      // "</head" must not match "</header": a name boundary must follow.
-      let end = lower.indexOf(`</${name}`, index);
-      while (
-        end !== -1 &&
-        /[a-z0-9-]/u.test(lower.charAt(end + 2 + name.length))
-      )
-        end = lower.indexOf(`</${name}`, end + 1);
+      const end = next(name, closing(name));
       // An omitted </head> ends at <body>, as in a browser.
-      // Index only moves forward, so a cached position (or its absence)
-      // stays valid until the scan passes it; the pass stays linear.
-      if (name === "head" && bodyAt !== -1 && bodyAt < index)
-        bodyAt = lower.indexOf("<body", index);
-      const body = name === "head" ? bodyAt : -1;
+      const body =
+        name === "head"
+          ? next("<body", (from) => lower.indexOf("<body", from))
+          : -1;
       if (body !== -1 && (end === -1 || body < end)) {
         index = body;
         continue;
