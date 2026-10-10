@@ -15,23 +15,38 @@ Dropping the text from one channel in the research server was rejected: #33's re
 
 When building the view, `bound` compares `structuredContent` with the downstream text items:
 
-- **Skip a full mirror.** If a text item that parses as JSON holds the same value as `structuredContent` (compared through `JSON.stringify` after parsing, so pretty-printing does not matter), nothing is appended.
-- **Omit mirrored fields.** Otherwise, if `structuredContent` is an object, top-level string fields whose value equals a text item exactly are left out of the appended JSON. If no fields are left, nothing is appended.
-- Everything else is unchanged: redaction, the byte bound, the stop-at-first-cut rule, `omittedItems`, and the receipt's `resultDigest`, which still covers the complete downstream result.
+- **Skip a full mirror.** Nothing is appended if a text item is the same JSON as `structuredContent`. The test re-serialises the text item after parsing it, so pretty-printing and other JSON-equivalent spellings match; a different key order does not.
+- **Mark mirrored fields.** Otherwise, if `structuredContent` is an object, a top-level string field whose value equals a text item is replaced by the marker `"[text item N]"`, where N is the first equal item. Field names and order are kept. Values no longer than the marker, including empty strings, are kept as they are.
+- **Keep everything else whole.** The structured JSON is appended unchanged when:
+  - redacting it would find anything (token shapes, secret fragments or host patterns), because removing text could break a host pattern that spans fields, and skipping a copy would lower the redaction count;
+  - it, or any text item, is longer than `maxTextBytes` plus the redaction slack. Such an item is always cut, so either the structured JSON is never reached or only a prefix of it is shown. This also caps the parsing and redaction work at `bound`'s own window.
+- Redaction, the byte bound, the stop-at-first-cut rule, `omittedItems` and the receipt's `resultDigest` are unchanged. `resultDigest` still covers the complete downstream result.
 
-Nothing visible is lost. Every omitted value is already shown, verbatim, in an earlier text item under the same bound, and `structuredContent` was always appended last.
+What the model loses is a second copy. Every removed value is shown in an earlier text item under the same bound, and a marker names that item. `structuredContent` was always appended last.
+
+- **Changed results:** `truncated` can be `false` where the duplicate used to overflow the bound, and more of the result fits.
+- **Unchanged counts:** whenever deduplication applies, the structured copy had no redactions, so `redactions` stays the same.
 
 ## Compatibility
 
-The model-visible text of `action.run` changes for downstream tools that mirror. Hosts parsing that text as "text items, then structured JSON" may see one item fewer or an object without the mirrored fields. `action.run` has not been released yet (#29). The CHANGELOG records the change.
+The model-visible text of `action.run` changes for downstream tools that mirror. Hosts that parse it as "text items, then structured JSON" may get one item fewer, or an object with marker values. `action.run` has not been released yet (#29). The CHANGELOG records the change.
 
 ## Verification
 
 - Unit tests on `bound`:
-  - a compact and a pretty-printed full mirror both produce one item;
-  - a research-shaped result keeps its metadata and drops only `text`;
-  - a non-mirroring `structuredContent` is appended unchanged;
-  - near misses (different value, nested string, array) are still appended;
-  - redaction counts and truncation are unchanged.
-- An end-to-end `action.run` through the stdio fixture shows a mirrored result once.
-- The research-shaped unit test checks that the view at the default research budget is at most about half its former size.
+  - compact and pretty-printed full mirrors, first or later in the text items, produce no structured copy;
+  - a research-shaped result keeps its metadata and marks only `text`, and its view at the default research budget is at most about half its former size;
+  - markers name the first equal item, duplicate fields share it, short and empty values are kept, and a `__proto__` key survives;
+  - near misses (a different value, a nested string, an array, `{}`, non-JSON text) are appended whole;
+  - a host pattern spanning fields still redacts, and a `\u`-escaped secret mirror keeps its redaction count;
+  - an item longer than the bound leaves the structured JSON alone;
+  - `truncated` can become `false` while `redactions` is unchanged.
+- An end-to-end `action.run` through the stdio fixture shows a self-mirroring result once.
+
+## Review
+
+- **High (fixed): redaction.** Removing fields could break a host pattern match spanning fields, such as a PEM block, and expose the parts left in place. Fix: deduplication now applies only when redacting the structured JSON finds nothing.
+- **Medium (fixed): the redaction count.** Skipping a copy could hide that count. The gate above fixes this as well.
+- **Medium (fixed): parsing cost.** Every JSON-looking text item was parsed in full before the bound applied. Parsing is now capped at the bound's window.
+- **Medium (fixed): field names.** Deleted fields lost their names. Fields now keep their names and point to the text item with a marker.
+- **Low (fixed): claims and tests.** The docs claimed unchanged truncation, and the tests did not check redaction counts. Both are corrected.

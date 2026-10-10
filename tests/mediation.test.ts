@@ -122,7 +122,7 @@ test("bounded results skip structured mirrors the text items already show", () =
   for (const mirror of [
     JSON.stringify(structured),
     JSON.stringify(structured, null, 2),
-  ])
+  ]) {
     assert.deepEqual(
       texts({
         content: [{ type: "text", text: mirror }],
@@ -130,6 +130,18 @@ test("bounded results skip structured mirrors the text items already show", () =
       }),
       [mirror],
     );
+    // The mirror need not be the first text item.
+    assert.deepEqual(
+      texts({
+        content: [
+          { type: "text", text: "summary" },
+          { type: "text", text: mirror },
+        ],
+        structuredContent: structured,
+      }),
+      ["summary", mirror],
+    );
+  }
 
   // A research-shaped result: readable text plus the same string as a field.
   const page = `# Title\nSource: https://example.test/\n\n${"passage ".repeat(450)}`;
@@ -148,11 +160,8 @@ test("bounded results skip structured mirrors the text items already show", () =
   assert.deepEqual(view, [
     page,
     JSON.stringify({
-      url: "https://example.test/",
-      finalUrl: "https://example.test/",
-      title: "Title",
-      estimatedTokens: 900,
-      truncated: false,
+      ...research.structuredContent,
+      text: "[text item 1]",
     }),
   ]);
   const before =
@@ -161,29 +170,57 @@ test("bounded results skip structured mirrors the text items already show", () =
   const after = view.reduce((sum, text) => sum + Buffer.byteLength(text), 0);
   assert.ok(after * 2 <= before + 400, `${String(after)} of ${String(before)}`);
 
-  // Only fields mirrored: nothing new is left.
+  // Fields keep their names; each marker names the first equal text item.
+  const long = "a value longer than its marker";
   assert.deepEqual(
     texts({
-      content: [{ type: "text", text: "x" }],
-      structuredContent: { text: "x" },
+      content: [
+        { type: "text", text: "other text item" },
+        { type: "text", text: long },
+        { type: "text", text: long },
+      ],
+      structuredContent: { stdout: long, stderr: long, short: "", code: 0 },
+    }).at(-1),
+    JSON.stringify({
+      stdout: "[text item 2]",
+      stderr: "[text item 2]",
+      short: "",
+      code: 0,
     }),
-    ["x"],
   );
+  // Values shorter than the marker, and empty strings, are kept.
+  assert.deepEqual(
+    texts({
+      content: [
+        { type: "text", text: "ok" },
+        { type: "text", text: "" },
+      ],
+      structuredContent: { stdout: "ok", stderr: "" },
+    }),
+    ["ok", "", '{"stdout":"ok","stderr":""}'],
+  );
+  const proto = texts({
+    content: [{ type: "text", text: long }],
+    structuredContent: JSON.parse(
+      `{"__proto__":${JSON.stringify(long)},"n":1}`,
+    ) as unknown,
+  });
+  assert.deepEqual(proto, [long, '{"__proto__":"[text item 1]","n":1}']);
 
   // Near misses are still appended whole.
   for (const structuredContent of [
     { items: [{ id: 1, name: "b" }], total: 1 },
-    { nested: { text: "hello" } },
-    { text: "hello world" },
-    ["hello"],
+    { nested: { text: long } },
+    { text: `${long}!` },
+    [long],
     {},
   ])
     assert.deepEqual(
       texts({
-        content: [{ type: "text", text: "hello" }],
+        content: [{ type: "text", text: long }],
         structuredContent,
       }),
-      ["hello", JSON.stringify(structuredContent)],
+      [long, JSON.stringify(structuredContent)],
       JSON.stringify(structuredContent),
     );
   assert.deepEqual(
@@ -195,28 +232,71 @@ test("bounded results skip structured mirrors the text items already show", () =
   );
 });
 
-test("skipping a mirror keeps redaction and truncation", () => {
-  const mediator = unitMediator(256);
-  const secretText = `key ${capabilitySecret}`;
-  const redacted = mediator.bound({
-    content: [{ type: "text", text: secretText }],
-    structuredContent: { text: secretText, leaked: capabilitySecret },
+test("structured mirrors are kept whole when redaction or the bound could differ", () => {
+  // A host pattern spanning fields must still match after deduplication.
+  const pem = unitMediator(4096, [
+    "-----BEGIN [A-Z ]+-----[\\s\\S]*?-----END [A-Z ]+-----",
+  ]);
+  const footer = "-----END PRIVATE KEY-----";
+  const key = pem.bound({
+    content: [{ type: "text", text: footer }],
+    structuredContent: {
+      head: "-----BEGIN PRIVATE KEY-----",
+      body: "MIIEvQIBADANBgkqhkiG9w0BAQEFAASC",
+      foot: footer,
+    },
   });
-  const visible = JSON.stringify(redacted.content);
-  assert.equal(visible.includes(capabilitySecret.slice(0, 12)), false);
-  assert.equal(redacted.content.length, 2);
-  assert.equal(redacted.content[1]?.text.includes('"text"'), false);
+  assert.equal(JSON.stringify(key.content).includes("MIIEvQ"), false);
+  assert.equal(key.redactions, 1);
 
-  const long = "y".repeat(300);
-  const cut = mediator.bound({
-    content: [{ type: "text", text: long }],
-    structuredContent: { text: long, extra: "shown only if room" },
+  // A secret the text spells with \u escapes is still counted once redacted
+  // in the structured copy, as before.
+  const mediator = unitMediator(4096);
+  const escaped = `{"k":"${Array.from(capabilitySecret, (char) => char)
+    .map((char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`)
+    .join("")}"}`;
+  const counted = mediator.bound({
+    content: [{ type: "text", text: escaped }],
+    structuredContent: { k: capabilitySecret },
+  });
+  assert.equal(counted.content.length, 2);
+  assert.equal(counted.redactions, 1);
+
+  // Redaction counts match the old view when a mirrored field is secret.
+  const secretText = `key ${capabilitySecret}`;
+  const both = mediator.bound({
+    content: [{ type: "text", text: secretText }],
+    structuredContent: { text: secretText },
+  });
+  assert.equal(both.redactions, 2);
+  assert.equal(JSON.stringify(both.content).includes(capabilitySecret), false);
+
+  // An item longer than the bound plus slack is always cut; the structured
+  // JSON is left alone (and never parsed).
+  const small = unitMediator(256);
+  const huge = `[${"0,".repeat(5000)}0]`;
+  const cut = small.bound({
+    content: [{ type: "text", text: huge }],
+    structuredContent: JSON.parse(huge) as unknown,
   });
   assert.equal(cut.truncated, true);
+  assert.equal(cut.content.length, 1);
+});
+
+test("skipping a mirror can leave room that was truncated before", () => {
+  const mediator = unitMediator(4096);
+  const page = "z".repeat(3000);
+  const bounded = mediator.bound({
+    content: [{ type: "text", text: page }],
+    structuredContent: { text: page, title: "T" },
+  });
+  // Before, the escaped copy overflowed the 4096-byte bound.
+  assert.equal(bounded.truncated, false);
   assert.deepEqual(
-    cut.content.map((item) => item.text),
-    ["y".repeat(256)],
+    bounded.content.map((item) => item.text),
+    [page, '{"text":"[text item 1]","title":"T"}'],
   );
+  assert.equal(bounded.redactions, 0);
 });
 
 async function configuredRuntime(

@@ -110,40 +110,6 @@ function secretFragments(secrets: readonly string[]): string[] {
   return [...fragments];
 }
 
-// The JSON of structuredContent, minus what the text items already show
-// verbatim: a whole mirror (as the MCP specification asks servers to send,
-// possibly pretty-printed) or top-level string fields equal to a text item.
-// Undefined when nothing new is left.
-function structuredMirror(
-  structured: unknown,
-  texts: readonly string[],
-): string | undefined {
-  const whole = JSON.stringify(structured);
-  for (const text of texts) {
-    if (!/^\s*[[{]/u.test(text)) continue;
-    try {
-      if (JSON.stringify(JSON.parse(text)) === whole) return undefined;
-    } catch {
-      // Not JSON, so not a mirror.
-    }
-  }
-  if (
-    structured === null ||
-    typeof structured !== "object" ||
-    Array.isArray(structured)
-  )
-    return whole;
-  const shown = new Set(texts);
-  const entries = Object.entries(structured);
-  const kept = entries.filter(
-    ([, value]) => typeof value !== "string" || !shown.has(value),
-  );
-  if (kept.length === entries.length) return whole;
-  return kept.length === 0
-    ? undefined
-    : JSON.stringify(Object.fromEntries(kept));
-}
-
 /**
  * Executes allow-decided, read-effect plans with a host-issued capability,
  * so the model never handles a token. Every executor check, the write-ahead
@@ -297,6 +263,58 @@ export class HostMediator {
     return { text: value, count };
   }
 
+  /**
+   * The JSON of structuredContent, without the copies the text items already
+   * carry: undefined when a text item is a JSON-equivalent mirror (as the MCP
+   * specification asks servers to send, possibly pretty-printed), otherwise
+   * with top-level string fields equal to a text item replaced by a
+   * "[text item N]" marker. Anything that could change what is shown or
+   * redacted keeps the whole JSON, exactly as before.
+   */
+  #structuredMirror(
+    structured: unknown,
+    texts: readonly string[],
+  ): string | undefined {
+    const whole = JSON.stringify(structured);
+    // Past this length an item is always cut, so either the structured JSON
+    // is never reached or only a prefix of it is shown: keep it unchanged.
+    // This also bounds the parsing and redaction work below.
+    const limit = this.#maxTextBytes + this.#slack;
+    if (whole.length > limit || texts.some((text) => text.length > limit))
+      return whole;
+    // Removing text could split a match a host pattern makes across fields,
+    // and skipping a copy would hide the redaction count.
+    if (this.#redact(whole).count > 0) return whole;
+    for (const text of texts) {
+      if (text === whole) return undefined;
+      if (!/^\s*[[{]/u.test(text)) continue;
+      try {
+        if (JSON.stringify(JSON.parse(text)) === whole) return undefined;
+      } catch {
+        // Not JSON, so not a mirror.
+      }
+    }
+    if (
+      structured === null ||
+      typeof structured !== "object" ||
+      Array.isArray(structured)
+    )
+      return whole;
+    let replaced = 0;
+    const fields: [string, unknown][] = [];
+    for (const [key, value] of Object.entries(structured)) {
+      const index = typeof value === "string" ? texts.indexOf(value) : -1;
+      const marker = `[text item ${String(index + 1)}]`;
+      // Short values cost less than the marker; keep them.
+      if (index !== -1 && (value as string).length > marker.length) {
+        fields.push([key, marker]);
+        replaced++;
+      } else fields.push([key, value]);
+    }
+    // fromEntries keeps a "__proto__" key as an own property.
+    return replaced > 0 ? JSON.stringify(Object.fromEntries(fields)) : whole;
+  }
+
   /** Redact, then bound, the model-visible view of a downstream result. */
   bound(result: unknown): BoundedContent {
     const texts: string[] = [];
@@ -320,7 +338,7 @@ export class HostMediator {
         "structuredContent" in result &&
         result.structuredContent !== undefined
       ) {
-        const mirror = structuredMirror(result.structuredContent, texts);
+        const mirror = this.#structuredMirror(result.structuredContent, texts);
         if (mirror !== undefined) texts.push(mirror);
       }
     } else if (result !== undefined) {
