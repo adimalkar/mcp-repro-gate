@@ -296,6 +296,20 @@ test("skipping a mirror can leave room that was truncated before", () => {
     [page, '{"text":"[text item 1]","title":"T"}'],
   );
   assert.equal(bounded.redactions, 0);
+
+  // A skipped mirror that exactly fills the bound withholds nothing.
+  const exact = unitMediator(256);
+  const mirror = JSON.stringify({ text: "w".repeat(245) });
+  assert.equal(Buffer.byteLength(mirror), 256);
+  const full = exact.bound({
+    content: [{ type: "text", text: mirror }],
+    structuredContent: JSON.parse(mirror) as unknown,
+  });
+  assert.equal(full.truncated, false);
+  assert.deepEqual(
+    full.content.map((item) => item.text),
+    [mirror],
+  );
 });
 
 async function configuredRuntime(

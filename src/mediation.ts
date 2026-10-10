@@ -376,11 +376,8 @@ export class HostMediator {
     // The structured JSON comes last, so it is only worth building once
     // every text item has been shown whole.
     if (uncut && structured !== undefined) {
-      if (remaining <= 0) truncated = true;
-      else {
-        const mirror = this.#structuredMirror(structured, texts);
-        if (mirror !== undefined) show(mirror);
-      }
+      const mirror = this.#structuredMirror(structured, texts);
+      if (mirror !== undefined) show(mirror);
     }
     return { content, truncated, redactions, omittedItems };
   }
