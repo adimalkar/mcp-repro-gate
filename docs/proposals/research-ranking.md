@@ -15,8 +15,8 @@ Status: proposed implementation. The research measurement in #37 found that rank
 `selectRelevant` changes as follows. Distillation, budgets and the output format stay the same.
 
 - **Weight terms by rarity on the page.** Each matched term contributes `idf × (10 + hits)`, with hits still capped at 5 and `idf = ln(1 + (N − df + 0.5) / (df + 0.5))` over the page's N blocks. Matching code still gets a small bonus. A term in most blocks weighs little, and a term in a handful of blocks dominates.
-- **Demote blocks that match only common terms.** A term is common on the page when its weight is less than half that of the rarest query term found there. Blocks whose matched terms are all common rank after every other match. They fill in only when the other matches use less than half the budget. When everything else is thin, recall wins.
-- **Keep one copy of repeated text blocks.** Blocks are repeats when their text matches apart from a trailing `#` or `¶`. The copy kept is the higher-scored one, then the later one, which is usually the section heading rather than its contents entry. Code blocks are never treated as repeats.
+- **Demote blocks that match only common terms in `fetch_distilled`.** A term is common on the page when its weight is less than half that of the rarest query term found there. Blocks whose matched terms are all common rank after every other match. They fill in only when the other matches use less than half the budget. When everything else is thin, recall wins. `resolve_stuck_error` passes `demoteCommon: false`. The error term is common by construction on a page about that error, and each page gets only about a third of the budget.
+- **Keep one copy of repeated text blocks.** Blocks are repeats when their text matches apart from a trailing `#` or `¶`. The copy kept is the one ending in a permalink character, which is the section heading wherever its contents entry sits; otherwise the first copy is kept. Code blocks are never treated as repeats.
 - **Bound the work.** A query keeps its first 64 distinct terms. Per-block hits are stored sparsely (only the terms a block contains), and document frequency is counted in the same pass.
 
 ## Measurement
@@ -43,8 +43,10 @@ The gain is narrow. It removes padding when the distinctive passages already fil
   - repeats keep the section heading, and code blocks are never treated as repeats;
   - common-only blocks fill in on an MDN-style page where "method" matches only a heading;
   - the same holds on an issue thread where the error term is in every block and "read" only in the title, and on a four-block page;
+  - at the resolver's per-page share, with demotion off, a fix that mentions only the error term survives substring-hit comments;
+  - on a Sphinx-ordered page, the heading is kept over the later contents entry, and other repeats keep their first copy;
   - the no-match fallback is unchanged;
-  - 200,000 tiny blocks with a 170-term query finish well within the limit.
+  - 200,000 tiny blocks with a 400-term query finish well within the limit.
 - `bench research` keeps 6/6 answers. The published numbers are updated, and the real pages were re-measured and read by hand.
 
 ## Review
@@ -59,5 +61,8 @@ The gain is narrow. It removes padding when the distinctive passages already fil
 - **Second draft, HIGH (fixed): memory and CPU on many-block pages.** Dense per-block count arrays took 1950 ms and 439 MB for 233,000 blocks and 170 terms, against 211 ms and 120 MB before. Fix: sparse hits and a 64-term cap bring this to about 120 ms and 185 MB.
 - **Second draft, MEDIUM (fixed): overclaiming docs.** The docs now state the remaining limits: substring matching, thin results that still carry filler, and leftover chrome that holds a unique term. The MDN page no longer changes.
 - **Second draft, LOW (fixed): repeats kept the contents entry.** They now keep the section heading. The tests now cover budget pressure, small pages and the repeat choice.
+- **Round 2, HIGH (fixed): the backfill threshold on the resolver path.** Each page gets about 1100 characters there. Substring hits ("read" in "already" and "thread") could fill half of that, so the fix, which mentions only the common error term, was dropped. Fix: the resolver turns demotion off, and a test reproduces the case at that share.
+- **Round 2, MEDIUM (fixed): Sphinx keeps its contents after the article.** "Keep the later copy" therefore kept the sidebar entry over the real `Awaitables¶` heading. Fix: the copy ending in a permalink character wins, otherwise the first.
+- **Round 2, LOW (fixed): the speed test did not catch dense counts.** It now uses 400 terms, which fails on the dense draft.
 - **Not fixed: unique terms in leftover chrome.** On the Docker page, the query "service_healthy method" ranks a leftover inline script first, because "method" occurs only there. A density rule (hits per character) was tried, but it made the Node.js and Python results worse. The limit is documented instead.
 - **Caught by an existing test:** the first repeat check used a quadratic regex. The hostile-input test caught it, and the check now uses `endsWith` and `trimEnd`.

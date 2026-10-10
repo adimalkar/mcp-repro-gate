@@ -244,10 +244,14 @@ export function createResearchServer(
             Math.floor((budget - header.length - 2) / pages.length) -
             sectionHeader.length -
             4;
+          // An error term is common on a page about that error, and each
+          // page gets only a share of the budget: demoting common-only
+          // blocks here could drop the fix.
           const selected = selectRelevant(
             distilled,
             relevance,
             Math.max(0, share),
+            { demoteCommon: false },
           );
           return {
             section: `${sectionHeader}\n\n${selected.text}`,
