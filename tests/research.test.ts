@@ -436,6 +436,27 @@ test("redirects never downgrade from https to http", () => {
   assert.equal(redirectAllowed(https, new URL("https://example.org/")), true);
 });
 
+// An issue thread: the error everywhere, comments that hit "read" only as
+// a substring, and a fix that names the error twice.
+function stuckThreadBlocks() {
+  return [
+    { kind: "text" as const, text: "ECONNRESET on every deploy" },
+    ...Array.from({ length: 8 }, () => ({
+      kind: "text" as const,
+      text: "+1 ECONNRESET",
+    })),
+    ...Array.from({ length: 5 }, (_, index) => ({
+      kind: "text" as const,
+      text: `We already tried restarting the service and pinning node ${String(index)}; ${"the logs show nothing else useful at all. ".repeat(6)}`,
+    })),
+    {
+      kind: "text" as const,
+      text: "Fix: ECONNRESET is the server closing idle sockets; ECONNRESET stops once keepAliveTimeout is below the server timeout.",
+    },
+    { kind: "text" as const, text: "thanks" },
+  ];
+}
+
 test("ranking weights terms by rarity and keeps one copy of repeats", () => {
   const filler = Array.from({ length: 30 }, (_, index) => ({
     kind: "text" as const,
@@ -559,39 +580,23 @@ test("blocks matching only common terms fill in when the rest is thin", () => {
   );
   assert.ok(thread.text.includes("lower keepAliveTimeout"), thread.text);
 
-  // At the error resolver's per-page share, substring hits ("read" in
-  // "already" and "thread") fill half the share; with demotion off, as the
-  // resolver calls it, the fix that only says ECONNRESET is still returned.
-  const busy = {
-    title: "",
-    blocks: [
-      { kind: "text" as const, text: "ECONNRESET on every deploy" },
-      ...Array.from({ length: 8 }, () => ({
-        kind: "text" as const,
-        text: "+1 ECONNRESET",
-      })),
-      {
-        kind: "text" as const,
-        text: `I already upgraded node and the ECONNRESET is still there. ${"More details about our setup. ".repeat(9)}`,
-      },
-      {
-        kind: "text" as const,
-        text: `Bumping this thread, ECONNRESET again today. ${"Nothing new to add here. ".repeat(9)}`,
-      },
-      {
-        kind: "text" as const,
-        text: "Fix: ECONNRESET is the server closing idle sockets; lower keepAliveTimeout below the server timeout.",
-      },
-      { kind: "text" as const, text: "thanks" },
-    ],
-  };
-  const resolverShare = selectRelevant(busy, "read ECONNRESET", 1100, {
-    demoteCommon: false,
-  });
-  assert.ok(
-    resolverShare.text.includes("lower keepAliveTimeout"),
-    resolverShare.text,
+  // On a page about an error, the error term is common, so rarity ranks
+  // comments with an incidental substring hit ("read" in "already") above
+  // a fix that only names the error. The resolver ranks with every term
+  // counting the same, which keeps the fix.
+  const resolverShare = selectRelevant(
+    { title: "", blocks: stuckThreadBlocks() },
+    "Error: read ECONNRESET",
+    1200,
   );
+  assert.equal(resolverShare.text.includes("ECONNRESET stops"), false);
+  const flat = selectRelevant(
+    { title: "", blocks: stuckThreadBlocks() },
+    "Error: read ECONNRESET",
+    1200,
+    { rarity: false },
+  );
+  assert.ok(flat.text.includes("ECONNRESET stops"), flat.text);
 
   // A small page whose terms all occur in one or two blocks.
   const small = selectRelevant(

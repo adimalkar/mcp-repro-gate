@@ -244,14 +244,14 @@ export function createResearchServer(
             Math.floor((budget - header.length - 2) / pages.length) -
             sectionHeader.length -
             4;
-          // An error term is common on a page about that error, and each
-          // page gets only a share of the budget: demoting common-only
-          // blocks here could drop the fix.
+          // An error term is common on a page about that error, so rarity
+          // would rank comments with incidental hits above a fix that only
+          // names the error; every term counts the same here.
           const selected = selectRelevant(
             distilled,
             relevance,
             Math.max(0, share),
-            { demoteCommon: false },
+            { rarity: false },
           );
           return {
             section: `${sectionHeader}\n\n${selected.text}`,

@@ -394,23 +394,23 @@ function cutBlock(block: DistilledBlock, room: number): string {
 
 /**
  * Keep the blocks most relevant to the query, in document order, within a
- * character budget. Query terms are weighted by their rarity on the page.
- * Unless `demoteCommon` is false, blocks that match only terms common on the
+ * character budget. Unless `rarity` is false, query terms are weighted by
+ * their rarity on the page, and blocks that match only terms common on the
  * page rank after all others and are used only when the others fill less
- * than half the budget. Repeated text blocks are kept once: the copy with a
- * trailing permalink character (a section heading rather than its contents
- * entry), otherwise the first. Blocks that match no term are dropped whenever any
- * block matches; with no match at all, the opening blocks are kept. A block
- * too large for the remaining room is cut when at least 200 characters
- * remain.
+ * than half the budget; with `rarity: false` every term counts the same.
+ * Repeated text blocks are kept once: the copy with a trailing permalink
+ * character (a section heading rather than its contents entry), otherwise
+ * the first. Blocks that match no term are dropped whenever any block
+ * matches; with no match at all, the opening blocks are kept. A block too
+ * large for the remaining room is cut when at least 200 characters remain.
  */
 export function selectRelevant(
   distilled: Distilled,
   query: string,
   maxChars: number,
-  options: { demoteCommon?: boolean } = {},
+  options: { rarity?: boolean } = {},
 ): { text: string; truncated: boolean } {
-  const demoteCommon = options.demoteCommon ?? true;
+  const rarity = options.rarity ?? true;
   const terms = queryTerms(query).slice(0, MAX_TERMS);
   const blocks = distilled.blocks;
   const df = new Array<number>(terms.length).fill(0);
@@ -422,7 +422,7 @@ export function selectRelevant(
   // A term found in most blocks says little about any one of them; weight
   // each term by its rarity on this page.
   const weights = df.map((count) =>
-    Math.log(1 + (blocks.length - count + 0.5) / (count + 0.5)),
+    rarity ? Math.log(1 + (blocks.length - count + 0.5) / (count + 0.5)) : 1,
   );
   const rarestWeight = weights.reduce(
     (top, weight, term) => ((df[term] ?? 0) > 0 ? Math.max(top, weight) : top),
@@ -477,7 +477,7 @@ export function selectRelevant(
       used += cost;
     }
   };
-  if (matching.length === 0 || !demoteCommon) fill(ranked);
+  if (matching.length === 0 || !rarity) fill(ranked);
   else {
     // A block matching only common terms, such as "socket" on a socket API
     // page, would pad the result; it fills in only when the rest is thin.
