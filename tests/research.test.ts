@@ -436,6 +436,65 @@ test("redirects never downgrade from https to http", () => {
   assert.equal(redirectAllowed(https, new URL("https://example.org/")), true);
 });
 
+test("ranking weights terms by rarity and drops common-only and repeated blocks", () => {
+  const filler = (index: number) => ({
+    kind: "text" as const,
+    text: `socket note ${String(index)}`,
+  });
+  const unixParagraph = `On Unix the socket path is a socket file; ${"socket ".repeat(40)}`;
+  const selected = selectRelevant(
+    {
+      title: "",
+      blocks: [
+        ...Array.from({ length: 30 }, (_, index) => filler(index)),
+        { kind: "text", text: unixParagraph },
+        { kind: "text", text: "socket.setKeepAlive([options])" },
+        { kind: "text", text: "Set initialDelay to delay the first probe." },
+        { kind: "text", text: "socket.setKeepAlive([options])#" },
+        { kind: "text", text: "socket.setKeepAlive([options]) ¶" },
+      ],
+    },
+    "socket setKeepAlive initialDelay",
+    4000,
+  );
+  assert.deepEqual(selected.text.split("\n\n"), [
+    "socket.setKeepAlive([options])",
+    "Set initialDelay to delay the first probe.",
+  ]);
+  assert.equal(selected.truncated, true);
+
+  // A term common on the page still counts when no rarer term matches.
+  const common = selectRelevant(
+    {
+      title: "",
+      blocks: [
+        { kind: "text", text: "socket one" },
+        { kind: "text", text: "socket two" },
+        { kind: "text", text: "unrelated" },
+      ],
+    },
+    "socket",
+    4000,
+  );
+  assert.equal(common.text, "socket one\n\nsocket two");
+
+  // With no match at all, the opening blocks are kept, repeats removed.
+  const none = selectRelevant(
+    {
+      title: "",
+      blocks: [
+        { kind: "text", text: "Intro" },
+        { kind: "text", text: "Intro#" },
+        { kind: "text", text: "Body" },
+      ],
+    },
+    "absent",
+    4000,
+  );
+  assert.equal(none.text, "Intro\n\nBody");
+  assert.equal(none.truncated, false);
+});
+
 test("hostile pages distill in linear time", () => {
   const size = 1024 * 1024;
   const fence = String.fromCharCode(96).repeat(3);
