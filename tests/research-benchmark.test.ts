@@ -57,6 +57,16 @@ test("the page-text baseline drops scripts and styles but keeps page chrome", ()
     pageText("<html><head><title>T</title><body><header>H</header><p>B</p>"),
     "H B",
   );
+  // Many heads without a body stay linear (this took seconds when the
+  // body was searched from scratch for every head).
+  for (const tail of ["", "<body><p>end</p>"]) {
+    const started = performance.now();
+    assert.equal(
+      pageText(`${"<head></head>".repeat(40_000)}${tail}`),
+      tail === "" ? "" : "end",
+    );
+    assert.ok(performance.now() - started < 1000);
+  }
   // Non-ASCII case mapping must not shift later indices.
   assert.equal(pageText("<p>İİİ</p><SCRIPT>x</SCRIPT><p>z</p>"), "İİİ z");
 });

@@ -409,6 +409,8 @@ export function pageText(html: string): string {
   const lower = html.replace(/[A-Z]+/gu, (run) => run.toLowerCase());
   let out = "";
   let index = 0;
+  // Where the next "<body" is; -2 means not looked up yet.
+  let bodyAt = -2;
   while (index < html.length) {
     const open = html.indexOf("<", index);
     if (open === -1) {
@@ -434,7 +436,11 @@ export function pageText(html: string): string {
       )
         end = lower.indexOf(`</${name}`, end + 1);
       // An omitted </head> ends at <body>, as in a browser.
-      const body = name === "head" ? lower.indexOf("<body", index) : -1;
+      // Index only moves forward, so a cached position (or its absence)
+      // stays valid until the scan passes it; the pass stays linear.
+      if (name === "head" && bodyAt !== -1 && bodyAt < index)
+        bodyAt = lower.indexOf("<body", index);
+      const body = name === "head" ? bodyAt : -1;
       if (body !== -1 && (end === -1 || body < end)) {
         index = body;
         continue;

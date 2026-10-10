@@ -108,7 +108,7 @@ The harness calls `fetch_distilled` and `resolve_stuck_error` through a real in-
 
 Median reduction on this fixture: 98.1% against raw HTML and 65.5% against page text. All 6 answers were kept.
 
-The fixture pages are generated in code and modeled on common page types: chrome-heavy markup, inline styles, scripts and JSON state, navigation, sidebars, comments. They are not copies of real pages, and their sizes are code parameters. Difficulty is uneven: the filler text never contains a query's distinctive terms, which makes the API reference and tutorial rows easy to rank. On the Q&A and issue rows, substring matches on filler words ("read" in "thread") fill the budget, as they do on real pages. The resolver row reads the issue thread, the Q&A thread and the tutorial, and is compared with the sum of their sizes.
+The fixture pages are generated in code and modeled on common page types: chrome-heavy markup, inline styles, scripts and JSON state, navigation, sidebars, comments. They are not copies of real pages, and their sizes are code parameters. Difficulty is uneven: the filler text never contains a query's distinctive terms, which makes the API reference and tutorial rows easy to rank. On the Q&A and issue rows, substring matches on filler words ("up" in "update", "read" in "thread") fill the budget, as they do on real pages. The resolver row reads the issue thread, the Q&A thread and the tutorial, and is compared with the sum of their sizes.
 
 ### Manual run on real pages (2026-10-10)
 
