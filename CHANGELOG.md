@@ -25,5 +25,6 @@ All notable changes will be documented in this file. The project follows [Semant
 
 ### Changed
 
+- `action.run` no longer repeats downstream data the text items already carry. A `structuredContent` that a text item mirrors as JSON is not appended, and top-level string fields equal to a text item become `"[text item N]"` markers. Structured content that redaction would touch, or that the bound would cut, is kept whole. `truncated` can now be `false` for results whose duplicate used to overflow the bound. The receipt still covers the complete downstream result.
 - **Breaking:** `action.plan` returns a compact summary (`actionId`, `envelopeDigest`, `toolRef`, `decision`, `reasonCodes`, `expiresAt`, `nextStep`) by default. Pass `detail: "full"` or call `action.inspect` for the previous envelope and policy fields.
 - Façade error results other than `action.execute` carry a compact text block without `structuredContent`. `policy.explain` and `action.inspect` accept only `sha256:` action IDs, and tool references are capped at 256 characters.
