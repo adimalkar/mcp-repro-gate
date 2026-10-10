@@ -6,6 +6,7 @@ All notable changes will be documented in this file. The project follows [Semant
 
 ### Added
 
+- `reprogate bench research [--html <file> --query <text>] [--json]`: a deterministic research measurement (fixture v1, synthetic pages) through a real MCP client, against raw HTML and page-text baselines, with an answer check per page. Published in `docs/RESEARCH.md` with a manual run on four real pages.
 - Research search: `--search-endpoint` (SearXNG-compatible JSON, with an optional `--search-endpoint-private` exemption for that origin only) enables `web_search` and `resolve_stuck_error`. The endpoint's origin is fixed by its template (`{query}` only after the host). These clean error text into a query with best-effort secret redaction, read the top results under the same fetch protections, and return the relevant passages and code with sources within one estimated budget.
 - `reprogate research-server`: a stdio research backend with `fetch_distilled`. It checks addresses at connect time to block private-network fetches, re-checks redirects, limits size, time and content type, distills HTML into the passages relevant to the query, and enforces an estimated token budget. ReproGate configures it like any other `network_read` backend.
 - Phase 1 action-contract kernel.
