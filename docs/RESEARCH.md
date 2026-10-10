@@ -68,7 +68,7 @@ reprogate research-server --search-endpoint 'https://search.example/search?q={qu
 - **Kept:** `pre` blocks become fenced code. Block elements become paragraphs. Entities are decoded.
 - **One unclosed tag ends the page.** Text after a `<` that starts a tag but never reaches `>` is dropped. This fails safe, but a malformed page can come back shorter than it looks in a browser.
 - **A heuristic, not a browser:** it does not run JavaScript, so pages rendered by scripts may come back nearly empty. It does not remove ads or banners marked only by class names.
-- **Relevance** is lexical. Paragraphs and code blocks are ranked by how many query terms they contain, and only matching blocks are kept, in document order. When nothing matches, the opening blocks are returned.
+- **Relevance** is lexical. Paragraphs and code blocks are ranked by the query terms they contain. Each term is weighted by how rare it is on the page, so a term found in most blocks counts for little. Only matching blocks are kept, in document order. Blocks that match only terms common on the page are dropped, and so are repeated blocks, such as a heading that repeats its contents entry. When nothing matches, the opening blocks are returned.
 - **Long blocks are cut, not dropped.** A relevant paragraph or code block bigger than the remaining room is cut, and marked with `…`, when at least 200 characters remain. Cuts never split a character. The source URL in the text is capped at 300 characters, while `finalUrl` keeps the full value.
 - **The budget is an estimate.** `maxTokens` (100–1000, default 900) is enforced as 4 characters per token. Real token counts depend on the host's tokenizer, and code or non-English text can use more tokens per character.
 
@@ -99,35 +99,35 @@ The harness calls `fetch_distilled` and `resolve_stuck_error` through a real in-
 
 | Page                    | Raw HTML B | Page text B | Measured B | Text B | vs HTML | vs text | Answer | Truncated |
 | ----------------------- | ---------: | ----------: | ---------: | -----: | ------: | ------: | ------ | --------- |
-| API reference page      |     270943 |       24909 |       2705 |   1157 |   99.0% |   89.1% | kept   | yes       |
-| Q&A thread              |     276518 |       14665 |       7434 |   3545 |   97.3% |   49.3% | kept   | yes       |
+| API reference page      |     270943 |       24909 |       1141 |    439 |   99.6% |   95.4% | kept   | yes       |
+| Q&A thread              |     276518 |       14665 |        997 |    359 |   99.6% |   93.2% | kept   | yes       |
 | tutorial blog post      |     183939 |       15591 |       1030 |    368 |   99.4% |   93.4% | kept   | yes       |
-| issue tracker thread    |     280894 |       12150 |       7576 |   3601 |   97.3% |   37.6% | kept   | yes       |
+| issue tracker thread    |     280894 |       12150 |       1150 |    417 |   99.6% |   90.5% | kept   | yes       |
 | small plain page        |        749 |         599 |        528 |    150 |   29.5% |   11.8% | kept   | yes       |
-| error resolver, 3 pages |     741351 |       42406 |       7725 |   3488 |   99.0% |   81.8% | kept   | yes       |
+| error resolver, 3 pages |     741351 |       42406 |       6299 |   2790 |   99.2% |   85.2% | kept   | yes       |
 
-Median reduction on this fixture: 98.1% against raw HTML and 65.5% against page text. All 6 answers were kept.
+Median reduction on this fixture: 99.5% against raw HTML and 91.9% against page text. All 6 answers were kept.
 
-The fixture pages are generated in code and modeled on common page types: chrome-heavy markup, inline styles, scripts and JSON state, navigation, sidebars, comments. They are not copies of real pages, and their sizes are code parameters. Difficulty is uneven: the filler text never contains a query's distinctive terms, which makes the API reference and tutorial rows easy to rank. On the Q&A and issue rows, substring matches on filler words ("up" in "update", "read" in "thread") fill the budget, as they do on real pages. The resolver row reads the issue thread, the Q&A thread and the tutorial, and is compared with the sum of their sizes.
+The fixture pages are generated in code and modeled on common page types: chrome-heavy markup, inline styles, scripts and JSON state, navigation, sidebars, comments. They are not copies of real pages, and their sizes are code parameters. Difficulty is uneven: the filler text never contains a query's distinctive terms, which makes the API reference and tutorial rows easy to rank. On the Q&A and issue rows, substring matches on filler words ("up" in "update", "read" in "thread") used to fill the budget. Rarity weighting now drops those blocks, because the filler terms are common on the page. The resolver row reads the issue thread, the Q&A thread and the tutorial, and is compared with the sum of their sizes.
 
 ### Manual run on real pages (2026-10-10)
 
-These four public pages were saved once and measured with `--html`. Real pages change, so the numbers will not reproduce exactly, and no answer check is automated. Each result was read by hand and contained the passage the query was looking for.
+These four public pages were saved once and measured with `--html`. Real pages change, so the numbers will not reproduce exactly, and no answer check is automated. Each result was read by hand and contained the passage the query was looking for. After the rarity-weighted ranking change, all four were measured again: the Node.js and MDN results got smaller and the other two did not change.
 
 | Page and query                                                                           | Raw HTML B | Page text B | Measured B | vs HTML | vs text |
 | ---------------------------------------------------------------------------------------- | ---------: | ----------: | ---------: | ------: | ------: |
-| `nodejs.org/api/net.html`, "socket setKeepAlive initialDelay"                            |     275035 |       75554 |       7590 |   97.2% |   90.0% |
-| `developer.mozilla.org/…/AbortController`, "abort fetch request signal"                  |     154370 |        4824 |       2082 |   98.7% |   56.8% |
+| `nodejs.org/api/net.html`, "socket setKeepAlive initialDelay"                            |     275035 |       75554 |       4730 |   98.3% |   93.7% |
+| `developer.mozilla.org/…/AbortController`, "abort fetch request signal"                  |     154370 |        4824 |       1786 |   98.8% |   63.0% |
 | `docs.python.org/3/library/asyncio-task.html`, "gather return_exceptions"                |     177177 |       46182 |       7654 |   95.7% |   83.4% |
 | `docs.docker.com/compose/how-tos/startup-order/`, "depends_on condition service_healthy" |     525375 |       24286 |       2773 |   99.5% |   88.6% |
 
 ### What these numbers do and do not show
 
-- **Against raw HTML, every page measured here (all above 150 KB) saves more than 95%.** Most of that is markup, scripts and styles, which any HTML-to-text step would also drop. The reduction is also capped by the budget: a result that uses the full default budget measures about 7.4–7.7 KB here, so it passes 95% only when the raw page is above roughly 150 KB, however good the distillation is. The page-text column is the one that reflects distillation. It shows much smaller savings, especially when the page has little besides its content or the budget is mostly used, as on the Q&A, issue and resolver rows.
+- **Against raw HTML, every page measured here (all above 150 KB) saves more than 95%.** Most of that is markup, scripts and styles, which any HTML-to-text step would also drop. The reduction is also capped by the budget: a result that uses the full default budget measures about 7.4–7.7 KB here, so it passes 95% only when the raw page is above roughly 150 KB, however good the distillation is. The page-text column is the one that reflects distillation. It shows smaller savings when the page has little besides its content, as on the MDN page, or when many passages are relevant and the budget is used, as on the Python page.
 - **Small pages save little.** On the plain-page row, the result keeps only the title, the source line and the answer section, but the fixed per-call overhead and the second copy of the text outweigh what was dropped.
 - **The text is sent twice.** `fetch_distilled` and `resolve_stuck_error` put the same text in `content` and `structuredContent`, so measured bytes are at least twice the text, plus JSON field overhead that weighs most on short results (compare the Measured B and Text B columns). A host that shows the model only one of them sees about half. This duplication is now the largest remaining cost.
 - **Truncation means the selection kept some blocks and dropped others.** It is not a free saving: dropped passages are gone for the agent.
-- **Ranking is lexical.** On the Node.js page, the result kept the `initialDelay` passages but spent part of the budget on a long, unrelated paragraph about Unix domain sockets that repeats "socket" often.
+- **Ranking is lexical.** Rarity weighting fixed the Node.js case, where a long paragraph about Unix domain sockets that repeats "socket" used to take part of the budget. Ranking still matches substrings ("socket" in `SocketAddress`) and knows no synonyms, so a passage that answers the query in other words can be missed.
 - **Bytes, not tokens.** Tokens are estimated at 4 bytes each; host tokenizers differ.
 
 ## Threat notes

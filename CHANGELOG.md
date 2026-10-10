@@ -28,5 +28,6 @@ All notable changes will be documented in this file. The project follows [Semant
 
 ### Changed
 
+- Research passage ranking weights query terms by their rarity on the page, drops blocks that match only common terms, and drops repeated blocks such as headings that repeat their contents entries.
 - **Breaking:** `action.plan` returns a compact summary (`actionId`, `envelopeDigest`, `toolRef`, `decision`, `reasonCodes`, `expiresAt`, `nextStep`) by default. Pass `detail: "full"` or call `action.inspect` for the previous envelope and policy fields.
 - Façade error results other than `action.execute` carry a compact text block without `structuredContent`. `policy.explain` and `action.inspect` accept only `sha256:` action IDs, and tool references are capped at 256 characters.
