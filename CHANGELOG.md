@@ -28,6 +28,6 @@ All notable changes will be documented in this file. The project follows [Semant
 
 ### Changed
 
-- Research passage ranking weights query terms by their rarity on the page, drops blocks that match only common terms, and drops repeated blocks such as headings that repeat their contents entries.
+- Research passage ranking weights query terms by their rarity on the page. Blocks that match only common terms rank last and fill in only when the other matches use less than half the budget. Repeated text blocks are kept once, preferring the section heading, and a query keeps its first 64 distinct terms.
 - **Breaking:** `action.plan` returns a compact summary (`actionId`, `envelopeDigest`, `toolRef`, `decision`, `reasonCodes`, `expiresAt`, `nextStep`) by default. Pass `detail: "full"` or call `action.inspect` for the previous envelope and policy fields.
 - Façade error results other than `action.execute` carry a compact text block without `structuredContent`. `policy.explain` and `action.inspect` accept only `sha256:` action IDs, and tool references are capped at 256 characters.
