@@ -302,6 +302,38 @@ test("search tools exist only when a provider is configured", async (context) =>
   }
 });
 
+test("resolve_stuck_error keeps a fix that only names the error", async (context) => {
+  const comments = Array.from(
+    { length: 5 },
+    (_, index) =>
+      `<p>We already tried restarting the service and pinning node ${String(index)}; ${"the logs show nothing else useful at all. ".repeat(6)}</p>`,
+  ).join("");
+  const body = `<title>ECONNRESET on every deploy</title><p>ECONNRESET on every deploy</p>${"<p>+1 ECONNRESET</p>".repeat(8)}${comments}<p>Fix: ECONNRESET is the server closing idle sockets; ECONNRESET stops once keepAliveTimeout is below the server timeout.</p><p>thanks</p>`;
+  const client = await connect(
+    context,
+    createResearchServer({
+      search: () =>
+        Promise.resolve([
+          { title: "Issue", url: "https://issue.example/", snippet: "" },
+        ]),
+      fetchPage: (url) =>
+        Promise.resolve({
+          url,
+          finalUrl: url,
+          contentType: "text/html",
+          body,
+        }),
+    }),
+  );
+  const result = await client.callTool({
+    name: "resolve_stuck_error",
+    arguments: { error: "Error: read ECONNRESET", maxTokens: 300 },
+  });
+  assert.equal(result.isError, undefined, JSON.stringify(result.content));
+  const parsed = resolveStuckErrorOutputSchema.parse(result.structuredContent);
+  assert.match(parsed.text, /ECONNRESET stops/u);
+});
+
 test("resolve_stuck_error combines readable sources within one budget", async (context) => {
   const pages: Record<string, FetchedPage | undefined> = {
     "https://a.example/": {

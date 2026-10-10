@@ -436,6 +436,221 @@ test("redirects never downgrade from https to http", () => {
   assert.equal(redirectAllowed(https, new URL("https://example.org/")), true);
 });
 
+// An issue thread: the error everywhere, comments that hit "read" only as
+// a substring, and a fix that names the error twice.
+function stuckThreadBlocks() {
+  return [
+    { kind: "text" as const, text: "ECONNRESET on every deploy" },
+    ...Array.from({ length: 8 }, () => ({
+      kind: "text" as const,
+      text: "+1 ECONNRESET",
+    })),
+    ...Array.from({ length: 5 }, (_, index) => ({
+      kind: "text" as const,
+      text: `We already tried restarting the service and pinning node ${String(index)}; ${"the logs show nothing else useful at all. ".repeat(6)}`,
+    })),
+    {
+      kind: "text" as const,
+      text: "Fix: ECONNRESET is the server closing idle sockets; ECONNRESET stops once keepAliveTimeout is below the server timeout.",
+    },
+    { kind: "text" as const, text: "thanks" },
+  ];
+}
+
+test("ranking weights terms by rarity and keeps one copy of repeats", () => {
+  const filler = Array.from({ length: 30 }, (_, index) => ({
+    kind: "text" as const,
+    text: `socket note ${String(index)}`,
+  }));
+  const blocks = [
+    ...filler,
+    { kind: "text" as const, text: "socket.setKeepAlive([options])" },
+    { kind: "text" as const, text: `On Unix ${"socket ".repeat(40)}` },
+    { kind: "text" as const, text: "socket.setKeepAlive([options]) #" },
+    {
+      kind: "text" as const,
+      text: "Set initialDelay to delay the first probe.",
+    },
+  ];
+  // Under budget pressure, the short rare-term passage beats the long block
+  // that only repeats the common term.
+  const tight = selectRelevant(
+    { title: "", blocks },
+    "socket setKeepAlive initialDelay",
+    120,
+  );
+  assert.ok(tight.text.includes("initialDelay"), tight.text);
+  assert.equal(tight.text.includes("On Unix"), false);
+  assert.equal(tight.truncated, true);
+
+  // With room to spare, the rare-term passages fill more than half the
+  // budget, so common-only blocks are left out. The section heading (the
+  // later copy) is kept over its contents entry.
+  const roomy = selectRelevant(
+    { title: "", blocks },
+    "socket setKeepAlive initialDelay",
+    150,
+  );
+  assert.deepEqual(roomy.text.split("\n\n"), [
+    "socket.setKeepAlive([options]) #",
+    "Set initialDelay to delay the first probe.",
+  ]);
+  assert.equal(roomy.truncated, true);
+
+  // Sphinx puts its contents after the article: the heading still wins,
+  // and other repeats keep their first copy.
+  const sphinx = selectRelevant(
+    {
+      title: "",
+      blocks: [
+        { kind: "text", text: "Awaitables¶" },
+        { kind: "text", text: "Changed in version 3.10: awaitables loop." },
+        { kind: "text", text: "Other section" },
+        { kind: "text", text: "Changed in version 3.10: awaitables loop." },
+        { kind: "text", text: "Awaitables" },
+      ],
+    },
+    "awaitables",
+    4000,
+  );
+  assert.equal(
+    sphinx.text,
+    "Awaitables¶\n\nChanged in version 3.10: awaitables loop.",
+  );
+
+  // Code blocks are never treated as repeats.
+  const code = selectRelevant(
+    {
+      title: "",
+      blocks: [
+        { kind: "code", text: "socket.end()" },
+        { kind: "code", text: "socket.end()" },
+      ],
+    },
+    "socket",
+    4000,
+  );
+  assert.equal(code.text.split("```").length - 1, 4);
+});
+
+test("blocks matching only common terms fill in when the rest is thin", () => {
+  // One incidental rare hit ("method" in a heading) must not hide the
+  // passages about the query's subject.
+  const page = {
+    title: "",
+    blocks: [
+      { kind: "text" as const, text: "AbortController" },
+      { kind: "text" as const, text: "Instance methods" },
+      { kind: "text" as const, text: "AbortController.abort()" },
+      {
+        kind: "text" as const,
+        text: "Aborts an asynchronous operation before it has completed.",
+      },
+      { kind: "text" as const, text: "AbortController.signal" },
+      { kind: "text" as const, text: "Browser compatibility" },
+    ],
+  };
+  const mdn = selectRelevant(page, "AbortController abort method", 3600);
+  assert.ok(mdn.text.includes("AbortController.abort()"), mdn.text);
+  assert.ok(mdn.text.includes("Aborts an asynchronous operation"));
+  assert.equal(mdn.text.includes("Browser compatibility"), false);
+  assert.equal(mdn.truncated, true);
+
+  // An issue thread where the error term is everywhere and "read" occurs
+  // only in the title: the fix is still returned.
+  const thread = selectRelevant(
+    {
+      title: "",
+      blocks: [
+        { kind: "text", text: "Error: read ECONNRESET in production" },
+        ...Array.from({ length: 8 }, () => ({
+          kind: "text" as const,
+          text: "+1 same ECONNRESET here",
+        })),
+        { kind: "text", text: "We run it in Docker." },
+        {
+          kind: "text",
+          text: "Fix for ECONNRESET: set keepAlive false or lower keepAliveTimeout.",
+        },
+        { kind: "text", text: "Thanks!" },
+      ],
+    },
+    "read ECONNRESET",
+    3600,
+  );
+  assert.ok(thread.text.includes("lower keepAliveTimeout"), thread.text);
+
+  // On a page about an error, the error term is common, so rarity ranks
+  // comments with an incidental substring hit ("read" in "already") above
+  // a fix that only names the error. The resolver ranks with every term
+  // counting the same, which keeps the fix.
+  const resolverShare = selectRelevant(
+    { title: "", blocks: stuckThreadBlocks() },
+    "Error: read ECONNRESET",
+    1200,
+  );
+  assert.equal(resolverShare.text.includes("ECONNRESET stops"), false);
+  const flat = selectRelevant(
+    { title: "", blocks: stuckThreadBlocks() },
+    "Error: read ECONNRESET",
+    1200,
+    { rarity: false },
+  );
+  assert.ok(flat.text.includes("ECONNRESET stops"), flat.text);
+
+  // A small page whose terms all occur in one or two blocks.
+  const small = selectRelevant(
+    {
+      title: "",
+      blocks: [
+        { kind: "text", text: "ECONNRESET means the peer closed the socket." },
+        { kind: "text", text: "Fix ECONNRESET by lowering keepAliveTimeout." },
+        { kind: "text", text: "See also: retry docs." },
+        { kind: "text", text: "Unrelated footer." },
+      ],
+    },
+    "ECONNRESET retry",
+    3600,
+  );
+  assert.ok(small.text.includes("lowering keepAliveTimeout"), small.text);
+
+  // With no match at all, the opening blocks are kept, repeats removed.
+  const none = selectRelevant(
+    {
+      title: "",
+      blocks: [
+        { kind: "text", text: "Intro" },
+        { kind: "text", text: "Intro#" },
+        { kind: "text", text: "Body" },
+      ],
+    },
+    "absent",
+    4000,
+  );
+  assert.equal(none.text, "Intro#\n\nBody");
+  assert.equal(none.truncated, false);
+});
+
+test("ranking stays fast on many tiny blocks and long queries", () => {
+  const blocks = Array.from({ length: 200_000 }, (_, index) => ({
+    kind: "text" as const,
+    text: index % 3 === 0 ? "ab socket" : "ab",
+  }));
+  const query = Array.from(
+    { length: 400 },
+    (_, index) => `t${index.toString(36)}x`,
+  ).join(" ");
+  const started = performance.now();
+  const selected = selectRelevant(
+    { title: "", blocks },
+    `socket ${query}`,
+    4000,
+  );
+  const elapsed = performance.now() - started;
+  assert.ok(selected.text.startsWith("ab socket"));
+  assert.ok(elapsed < 3000, `${elapsed.toFixed(0)} ms`);
+});
+
 test("hostile pages distill in linear time", () => {
   const size = 1024 * 1024;
   const fence = String.fromCharCode(96).repeat(3);
