@@ -351,7 +351,7 @@ const NO_HITS: Hits = [];
 
 function hits(block: DistilledBlock, terms: readonly string[]): Hits {
   const text = block.text.toLowerCase();
-  const found: [number, number][] = [];
+  const pairs: [number, number][] = [];
   terms.forEach((term, position) => {
     let count = 0;
     for (
@@ -360,20 +360,24 @@ function hits(block: DistilledBlock, terms: readonly string[]): Hits {
       index = text.indexOf(term, index + term.length)
     )
       count++;
-    if (count > 0) found.push([position, count]);
+    if (count > 0) pairs.push([position, count]);
   });
-  return found.length === 0 ? NO_HITS : found;
+  return pairs.length === 0 ? NO_HITS : pairs;
 }
 
-// Headings repeat their contents entries, apart from a trailing permalink
-// character. Code blocks are never treated as repeats.
+function permalinked(block: DistilledBlock): boolean {
+  return block.text.endsWith("#") || block.text.endsWith("¶");
+}
+
+// Repeated text blocks, such as a heading and its contents entry, which
+// differ only by the heading's trailing permalink character. Code blocks
+// are never treated as repeats.
 function repeatKey(block: DistilledBlock, index: number): string {
   if (block.kind === "code") return `code:${String(index)}`;
   // No regex: a trailing \s* would backtrack quadratically on long runs.
-  const text =
-    block.text.endsWith("#") || block.text.endsWith("¶")
-      ? block.text.slice(0, -1).trimEnd()
-      : block.text;
+  const text = permalinked(block)
+    ? block.text.slice(0, -1).trimEnd()
+    : block.text;
   return `text:${text}`;
 }
 
@@ -391,10 +395,11 @@ function cutBlock(block: DistilledBlock, room: number): string {
 /**
  * Keep the blocks most relevant to the query, in document order, within a
  * character budget. Query terms are weighted by their rarity on the page.
- * Blocks that match only terms common on the page rank after all others and
- * are used only when the others fill less than half the budget. Repeated
- * blocks are kept once, preferring the later copy (the section heading over
- * its contents entry). Blocks that match no term are dropped whenever any
+ * Unless `demoteCommon` is false, blocks that match only terms common on the
+ * page rank after all others and are used only when the others fill less
+ * than half the budget. Repeated text blocks are kept once: the copy with a
+ * trailing permalink character (a section heading rather than its contents
+ * entry), otherwise the first. Blocks that match no term are dropped whenever any
  * block matches; with no match at all, the opening blocks are kept. A block
  * too large for the remaining room is cut when at least 200 characters
  * remain.
@@ -403,23 +408,24 @@ export function selectRelevant(
   distilled: Distilled,
   query: string,
   maxChars: number,
+  options: { demoteCommon?: boolean } = {},
 ): { text: string; truncated: boolean } {
+  const demoteCommon = options.demoteCommon ?? true;
   const terms = queryTerms(query).slice(0, MAX_TERMS);
   const blocks = distilled.blocks;
-  const found = new Array<number>(terms.length).fill(0);
+  const df = new Array<number>(terms.length).fill(0);
   const blockHits = blocks.map((block) => {
     const list = hits(block, terms);
-    for (const [term] of list) found[term] = (found[term] ?? 0) + 1;
+    for (const [term] of list) df[term] = (df[term] ?? 0) + 1;
     return list;
   });
   // A term found in most blocks says little about any one of them; weight
   // each term by its rarity on this page.
-  const weights = found.map((count) =>
+  const weights = df.map((count) =>
     Math.log(1 + (blocks.length - count + 0.5) / (count + 0.5)),
   );
   const rarestWeight = weights.reduce(
-    (top, weight, term) =>
-      (found[term] ?? 0) > 0 ? Math.max(top, weight) : top,
+    (top, weight, term) => ((df[term] ?? 0) > 0 ? Math.max(top, weight) : top),
     0,
   );
   const scored = blocks.map((block, index) => {
@@ -436,12 +442,17 @@ export function selectRelevant(
   });
   const matching = scored.filter((item) => item.score > 0);
   const pool = matching.length > 0 ? matching : scored;
-  // One copy of each repeat: the higher score, then the later block.
+  // One copy of each repeat: the heading (with its permalink character)
+  // wherever the contents entry sits, otherwise the first.
   const kept = new Map<string, (typeof pool)[number]>();
   for (const item of pool) {
     const key = repeatKey(item.block, item.index);
     const other = kept.get(key);
-    if (other === undefined || item.score >= other.score) kept.set(key, item);
+    if (
+      other === undefined ||
+      (permalinked(item.block) && !permalinked(other.block))
+    )
+      kept.set(key, item);
   }
   const ranked = [...kept.values()].sort(
     (a, b) => b.score - a.score || a.index - b.index,
@@ -466,7 +477,7 @@ export function selectRelevant(
       used += cost;
     }
   };
-  if (matching.length === 0) fill(ranked);
+  if (matching.length === 0 || !demoteCommon) fill(ranked);
   else {
     // A block matching only common terms, such as "socket" on a socket API
     // page, would pad the result; it fills in only when the rest is thin.

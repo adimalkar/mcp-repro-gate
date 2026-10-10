@@ -476,6 +476,27 @@ test("ranking weights terms by rarity and keeps one copy of repeats", () => {
   ]);
   assert.equal(roomy.truncated, true);
 
+  // Sphinx puts its contents after the article: the heading still wins,
+  // and other repeats keep their first copy.
+  const sphinx = selectRelevant(
+    {
+      title: "",
+      blocks: [
+        { kind: "text", text: "Awaitables¶" },
+        { kind: "text", text: "Changed in version 3.10: awaitables loop." },
+        { kind: "text", text: "Other section" },
+        { kind: "text", text: "Changed in version 3.10: awaitables loop." },
+        { kind: "text", text: "Awaitables" },
+      ],
+    },
+    "awaitables",
+    4000,
+  );
+  assert.equal(
+    sphinx.text,
+    "Awaitables¶\n\nChanged in version 3.10: awaitables loop.",
+  );
+
   // Code blocks are never treated as repeats.
   const code = selectRelevant(
     {
@@ -538,6 +559,40 @@ test("blocks matching only common terms fill in when the rest is thin", () => {
   );
   assert.ok(thread.text.includes("lower keepAliveTimeout"), thread.text);
 
+  // At the error resolver's per-page share, substring hits ("read" in
+  // "already" and "thread") fill half the share; with demotion off, as the
+  // resolver calls it, the fix that only says ECONNRESET is still returned.
+  const busy = {
+    title: "",
+    blocks: [
+      { kind: "text" as const, text: "ECONNRESET on every deploy" },
+      ...Array.from({ length: 8 }, () => ({
+        kind: "text" as const,
+        text: "+1 ECONNRESET",
+      })),
+      {
+        kind: "text" as const,
+        text: `I already upgraded node and the ECONNRESET is still there. ${"More details about our setup. ".repeat(9)}`,
+      },
+      {
+        kind: "text" as const,
+        text: `Bumping this thread, ECONNRESET again today. ${"Nothing new to add here. ".repeat(9)}`,
+      },
+      {
+        kind: "text" as const,
+        text: "Fix: ECONNRESET is the server closing idle sockets; lower keepAliveTimeout below the server timeout.",
+      },
+      { kind: "text" as const, text: "thanks" },
+    ],
+  };
+  const resolverShare = selectRelevant(busy, "read ECONNRESET", 1100, {
+    demoteCommon: false,
+  });
+  assert.ok(
+    resolverShare.text.includes("lower keepAliveTimeout"),
+    resolverShare.text,
+  );
+
   // A small page whose terms all occur in one or two blocks.
   const small = selectRelevant(
     {
@@ -577,7 +632,7 @@ test("ranking stays fast on many tiny blocks and long queries", () => {
     text: index % 3 === 0 ? "ab socket" : "ab",
   }));
   const query = Array.from(
-    { length: 170 },
+    { length: 400 },
     (_, index) => `t${index.toString(36)}x`,
   ).join(" ");
   const started = performance.now();
