@@ -72,7 +72,7 @@ reprogate research-server --search-endpoint 'https://search.example/search?q={qu
 - **Long blocks are cut, not dropped.** A relevant paragraph or code block bigger than the remaining room is cut, and marked with `…`, when at least 200 characters remain. Cuts never split a character. The source URL in the text is capped at 300 characters, while `finalUrl` keeps the full value.
 - **The budget is an estimate.** `maxTokens` (100–1000, default 900) is enforced as 4 characters per token. Real token counts depend on the host's tokenizer, and code or non-English text can use more tokens per character.
 
-No token reduction compared with raw HTML is claimed here. Measuring it belongs to the [benchmarks](BENCHMARKS.md).
+The reduction against raw HTML and against page text is measured in [Measurement](#measurement) below.
 
 ## Measurement
 
@@ -99,16 +99,16 @@ The harness calls `fetch_distilled` and `resolve_stuck_error` through a real in-
 
 | Page                    | Raw HTML B | Page text B | Measured B | Text B | vs HTML | vs text | Answer | Truncated |
 | ----------------------- | ---------: | ----------: | ---------: | -----: | ------: | ------: | ------ | --------- |
-| API reference page      |     270952 |       24623 |       2719 |   1164 |   99.0% |   89.0% | kept   | yes       |
-| Q&A thread              |     276476 |       15119 |       7528 |   3600 |   97.3% |   50.2% | kept   | yes       |
-| tutorial blog post      |     183902 |       15652 |       1030 |    368 |   99.4% |   93.4% | kept   | yes       |
-| issue tracker thread    |     281003 |       11932 |       7604 |   3599 |   97.3% |   36.3% | kept   | yes       |
-| small plain page        |        719 |         569 |        528 |    150 |   26.6% |    7.2% | kept   | yes       |
-| error resolver, 3 pages |     741381 |       42703 |       7857 |   3584 |   98.9% |   81.6% | kept   | yes       |
+| API reference page      |     270943 |       24909 |       2705 |   1157 |   99.0% |   89.1% | kept   | yes       |
+| Q&A thread              |     276518 |       14665 |       7434 |   3545 |   97.3% |   49.3% | kept   | yes       |
+| tutorial blog post      |     183939 |       15591 |       1030 |    368 |   99.4% |   93.4% | kept   | yes       |
+| issue tracker thread    |     280894 |       12150 |       7576 |   3601 |   97.3% |   37.6% | kept   | yes       |
+| small plain page        |        749 |         599 |        528 |    150 |   29.5% |   11.8% | kept   | yes       |
+| error resolver, 3 pages |     741351 |       42406 |       7725 |   3488 |   99.0% |   81.8% | kept   | yes       |
 
-Median reduction on this fixture: 98.1% against raw HTML and 65.9% against page text. All 6 answers were kept.
+Median reduction on this fixture: 98.1% against raw HTML and 65.5% against page text. All 6 answers were kept.
 
-The fixture pages are generated in code and modeled on common page types: chrome-heavy markup, inline styles, scripts and JSON state, navigation, sidebars, comments. They are not copies of real pages. The resolver row reads the issue thread, the Q&A thread and the tutorial, and is compared with the sum of their sizes.
+The fixture pages are generated in code and modeled on common page types: chrome-heavy markup, inline styles, scripts and JSON state, navigation, sidebars, comments. They are not copies of real pages, and their sizes are code parameters. Difficulty is uneven: the filler text never contains a query's distinctive terms, which makes the API reference and tutorial rows easy to rank. On the Q&A and issue rows, substring matches on filler words ("read" in "thread") fill the budget, as they do on real pages. The resolver row reads the issue thread, the Q&A thread and the tutorial, and is compared with the sum of their sizes.
 
 ### Manual run on real pages (2026-10-10)
 
@@ -123,9 +123,9 @@ These four public pages were saved once and measured with `--html`. Real pages c
 
 ### What these numbers do and do not show
 
-- **Against raw HTML, every page above 100 KB saves 95.7–99.5%.** Most of that is markup, scripts and styles, which any HTML-to-text step would also drop. Against page text, the saving is 36–93%. It is smaller when the page has little besides its content, and when the 900-token budget is mostly used, as on the issue and Q&A rows.
-- **Small pages save little.** A page shorter than the budget is returned nearly whole (the plain-page row).
-- **The text is sent twice.** `fetch_distilled` and `resolve_stuck_error` put the same text in `content` and `structuredContent`, so measured bytes are at least twice the text, plus JSON field overhead that weighs most on short results (2.1–3.5 times on the fixture). A host that shows the model only one of them sees about half. This duplication is now the largest remaining cost.
+- **Against raw HTML, every page measured here (all above 150 KB) saves more than 95%.** Most of that is markup, scripts and styles, which any HTML-to-text step would also drop. The reduction is also capped by the budget: a result that uses the full default budget measures about 7.4–7.7 KB here, so it passes 95% only when the raw page is above roughly 150 KB, however good the distillation is. The page-text column is the one that reflects distillation. It shows much smaller savings, especially when the page has little besides its content or the budget is mostly used, as on the Q&A, issue and resolver rows.
+- **Small pages save little.** On the plain-page row, the result keeps only the title, the source line and the answer section, but the fixed per-call overhead and the second copy of the text outweigh what was dropped.
+- **The text is sent twice.** `fetch_distilled` and `resolve_stuck_error` put the same text in `content` and `structuredContent`, so measured bytes are at least twice the text, plus JSON field overhead that weighs most on short results (compare the Measured B and Text B columns). A host that shows the model only one of them sees about half. This duplication is now the largest remaining cost.
 - **Truncation means the selection kept some blocks and dropped others.** It is not a free saving: dropped passages are gone for the agent.
 - **Ranking is lexical.** On the Node.js page, the result kept the `initialDelay` passages but spent part of the budget on a long, unrelated paragraph about Unix domain sockets that repeats "socket" often.
 - **Bytes, not tokens.** Tokens are estimated at 4 bytes each; host tokenizers differ.

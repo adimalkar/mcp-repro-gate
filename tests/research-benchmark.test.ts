@@ -29,7 +29,7 @@ test("the research measurement is deterministic and keeps every answer", async (
     assert.ok(row.measuredBytes >= 2 * row.resultTextBytes, row.name);
     assert.ok(row.pageTextBytes < row.rawHtmlBytes, row.name);
   }
-  // The fixture is synthetic; pin its sizes so a change is deliberate.
+  // The fixture is synthetic: four large pages and one small one.
   const sizes = fixturePages().map((item) => Buffer.byteLength(item.html));
   assert.deepEqual(
     sizes.map((size) => size > 100_000),
@@ -48,8 +48,24 @@ test("the page-text baseline drops scripts and styles but keeps page chrome", ()
   // Unterminated constructs end the scan instead of looping.
   assert.equal(pageText("<p>a<script>b"), "a");
   assert.equal(pageText("a <b"), "a");
+  // "</head" is not "</header", and an omitted </head> ends at <body>.
+  assert.equal(
+    pageText("<head><title>T</title></head><body><header>H</header><p>B</p>"),
+    "H B",
+  );
+  assert.equal(
+    pageText("<html><head><title>T</title><body><header>H</header><p>B</p>"),
+    "H B",
+  );
   // Non-ASCII case mapping must not shift later indices.
   assert.equal(pageText("<p>İİİ</p><SCRIPT>x</SCRIPT><p>z</p>"), "İİİ z");
+});
+
+test("an empty baseline has no ratio instead of an infinite one", async () => {
+  const row = await measurePage("", "anything");
+  assert.equal(row.reductionVsHtml, null);
+  assert.equal(row.reductionVsText, null);
+  assert.match(formatResearchReport({ rows: [row] }), /n\/a/u);
 });
 
 test("a failed call is refused rather than measured", () => {
@@ -73,7 +89,7 @@ test("a local page is measured without an answer check", async () => {
     "socket retry backoff",
   );
   assert.equal(row.answerKept, null);
-  assert.ok(row.reductionVsHtml > 0);
+  assert.ok((row.reductionVsHtml ?? 0) > 0);
   assert.match(formatResearchReport({ rows: [row] }), /local page/u);
 });
 
@@ -126,22 +142,28 @@ test("published research numbers match the harness", async () => {
     const cells = rows.find((cells) => cells[1] === row.name);
     assert.ok(cells, row.name);
     assert.deepEqual(
-      cells.slice(2, 9),
+      cells.slice(2, 10),
       [
         String(row.rawHtmlBytes),
         String(row.pageTextBytes),
         String(row.measuredBytes),
         String(row.resultTextBytes),
-        `${(row.reductionVsHtml * 100).toFixed(1)}%`,
-        `${(row.reductionVsText * 100).toFixed(1)}%`,
+        `${((row.reductionVsHtml ?? 0) * 100).toFixed(1)}%`,
+        `${((row.reductionVsText ?? 0) * 100).toFixed(1)}%`,
         row.answerKept === true ? "kept" : "lost",
+        row.truncated ? "yes" : "no",
       ],
       row.name,
     );
   }
   assert.ok(
     docs.includes(
-      `Median reduction on this fixture: ${(report.medianReductionVsHtml * 100).toFixed(1)}% against raw HTML and ${(report.medianReductionVsText * 100).toFixed(1)}% against page text.`,
+      `Median reduction on this fixture: ${(report.medianReductionVsHtml * 100).toFixed(1)}% against raw HTML and ${(report.medianReductionVsText * 100).toFixed(1)}% against page text. All ${String(report.answersChecked)} answers were kept.`,
     ),
   );
+  assert.equal(report.answersKept, report.answersChecked);
+  // "Every page measured here saves more than 95%" covers the fixture.
+  for (const row of report.rows)
+    if (row.rawHtmlBytes > 150_000)
+      assert.ok((row.reductionVsHtml ?? 0) > 0.95, row.name);
 });

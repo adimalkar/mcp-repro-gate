@@ -19,7 +19,8 @@ export interface FixturePage {
 function random(seed: number): () => number {
   let state = seed;
   return () => {
-    state = (state * 1103515245 + 12345) % 2147483648;
+    // Math.imul keeps the multiply exact in 32 bits.
+    state = (Math.imul(state, 1103515245) + 12345) & 0x7fffffff;
     return state / 2147483648;
   };
 }
@@ -425,7 +426,19 @@ export function pageText(html: string): string {
     const name = /^<([a-z][a-z0-9]*)/u.exec(lower.slice(open, open + 20))?.[1];
     index = close + 1;
     if (name !== undefined && HIDDEN.has(name)) {
-      const end = lower.indexOf(`</${name}`, index);
+      // "</head" must not match "</header": a name boundary must follow.
+      let end = lower.indexOf(`</${name}`, index);
+      while (
+        end !== -1 &&
+        /[a-z0-9-]/u.test(lower.charAt(end + 2 + name.length))
+      )
+        end = lower.indexOf(`</${name}`, end + 1);
+      // An omitted </head> ends at <body>, as in a browser.
+      const body = name === "head" ? lower.indexOf("<body", index) : -1;
+      if (body !== -1 && (end === -1 || body < end)) {
+        index = body;
+        continue;
+      }
       const after = end === -1 ? -1 : html.indexOf(">", end);
       index = after === -1 ? html.length : after + 1;
     } else {
@@ -447,8 +460,9 @@ export interface ResearchMeasurement {
   /** The distilled text alone, sent once in content and once structured. */
   resultTextBytes: number;
   estimatedTokens: number;
-  reductionVsHtml: number;
-  reductionVsText: number;
+  /** Null when the baseline is empty, so no ratio exists. */
+  reductionVsHtml: number | null;
+  reductionVsText: number | null;
   /** Null when no answer was named, as for a user's own page. */
   answerKept: boolean | null;
   truncated: boolean;
@@ -511,7 +525,13 @@ function median(values: readonly number[]): number {
     : ((sorted[middle - 1] ?? 0) + (sorted[middle] ?? 0)) / 2;
 }
 
-async function connect(pages: readonly FixturePage[], search?: string[]) {
+interface ServedPage {
+  url: string;
+  html: string;
+  name?: string;
+}
+
+async function connect(pages: readonly ServedPage[], search?: string[]) {
   const byUrl = new Map(pages.map((item) => [item.url, item]));
   const server = createResearchServer({
     fetchPage: (url) => {
@@ -553,6 +573,10 @@ async function connect(pages: readonly FixturePage[], search?: string[]) {
   };
 }
 
+function reduction(measured: number, baseline: number): number | null {
+  return baseline === 0 ? null : round(1 - measured / baseline);
+}
+
 function measurement(
   name: string,
   tool: ResearchMeasurement["tool"],
@@ -577,8 +601,8 @@ function measurement(
     measuredBytes,
     resultTextBytes: bytes(text),
     estimatedTokens: Math.ceil(measuredBytes / CHARS_PER_TOKEN),
-    reductionVsHtml: round(1 - measuredBytes / rawHtmlBytes),
-    reductionVsText: round(1 - measuredBytes / pageTextBytes),
+    reductionVsHtml: reduction(measuredBytes, rawHtmlBytes),
+    reductionVsText: reduction(measuredBytes, pageTextBytes),
     answerKept: answer === undefined ? null : text.includes(answer),
     truncated,
   };
@@ -590,13 +614,7 @@ export async function measurePage(
   query: string,
   name = "local page",
 ): Promise<ResearchMeasurement> {
-  const local: FixturePage = {
-    name,
-    url: "https://local.invalid/page",
-    query,
-    answer: "",
-    html,
-  };
+  const local: ServedPage = { name, url: "https://local.invalid/page", html };
   const session = await connect([local]);
   try {
     const result = await session.call("fetch_distilled", {
@@ -654,6 +672,14 @@ export async function runResearchBenchmark(): Promise<ResearchBenchmarkReport> {
     sources.map((item) => item.url),
   );
   try {
+    const result = await resolverSession.call("resolve_stuck_error", {
+      error: RESOLVER_ERROR,
+    });
+    // The baseline counts every source, so every source must have been read.
+    const read = result.structuredContent as
+      { sources?: unknown[]; skipped?: unknown } | undefined;
+    if (read?.skipped !== 0 || read.sources?.length !== sources.length)
+      throw new Error("Benchmark resolver did not read every source");
     rows.push(
       measurement(
         "error resolver, 3 pages",
@@ -661,9 +687,7 @@ export async function runResearchBenchmark(): Promise<ResearchBenchmarkReport> {
         "(derived from the error)",
         sources,
         sources[0]?.answer,
-        await resolverSession.call("resolve_stuck_error", {
-          error: RESOLVER_ERROR,
-        }),
+        result,
       ),
     );
   } finally {
@@ -673,19 +697,22 @@ export async function runResearchBenchmark(): Promise<ResearchBenchmarkReport> {
   return {
     fixtureVersion: RESEARCH_FIXTURE_VERSION,
     rows,
-    medianReductionVsHtml: round(
-      median(rows.map((row) => row.reductionVsHtml)),
-    ),
-    medianReductionVsText: round(
-      median(rows.map((row) => row.reductionVsText)),
-    ),
+    medianReductionVsHtml: round(median(ratios(rows, "reductionVsHtml"))),
+    medianReductionVsText: round(median(ratios(rows, "reductionVsText"))),
     answersKept: checked.filter((row) => row.answerKept === true).length,
     answersChecked: checked.length,
   };
 }
 
-function percent(value: number): string {
-  return `${(value * 100).toFixed(1)}%`;
+function ratios(
+  rows: readonly ResearchMeasurement[],
+  key: "reductionVsHtml" | "reductionVsText",
+): number[] {
+  return rows.flatMap((row) => (row[key] === null ? [] : [row[key]]));
+}
+
+function percent(value: number | null): string {
+  return value === null ? "n/a" : `${(value * 100).toFixed(1)}%`;
 }
 
 /** A fixed-width text table for terminals. */
@@ -712,7 +739,7 @@ export function formatResearchReport(
     String(row.resultTextBytes),
     percent(row.reductionVsHtml),
     percent(row.reductionVsText),
-    row.answerKept === null ? "-" : row.answerKept ? "kept" : "LOST",
+    row.answerKept === null ? "-" : row.answerKept ? "kept" : "lost",
     row.truncated ? "yes" : "no",
   ]);
   const widths = header.map((title, column) =>
