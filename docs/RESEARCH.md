@@ -74,6 +74,62 @@ reprogate research-server --search-endpoint 'https://search.example/search?q={qu
 
 No token reduction compared with raw HTML is claimed here. Measuring it belongs to the [benchmarks](BENCHMARKS.md).
 
+## Measurement
+
+The Phase 4 exit criteria ask for a reduction of more than 95% against raw HTML on external research. This section measures it.
+
+```sh
+npm run build
+node dist/src/cli.js bench research          # fixture table
+node dist/src/cli.js bench research --json   # machine-readable report
+node dist/src/cli.js bench research --html saved-page.html --query "your terms"
+```
+
+The harness calls `fetch_distilled` and `resolve_stuck_error` through a real in-memory MCP client, using the default budget of 900 estimated tokens. Pages are injected, so nothing is fetched (`src/research/benchmark.ts`, fixture v1). Every call must succeed; a failed call stops the run instead of being measured.
+
+### What is counted
+
+- **Measured:** the UTF-8 bytes a host receives: the text content, `structuredContent` and `isError`, counted as in the façade measurement.
+- **Raw HTML:** the page as a plain fetch tool would return it. This is the roadmap's baseline.
+- **Page text:** every text node outside `head`, `script`, `style` and `template`, with whitespace collapsed, like a naive HTML-to-text tool. Navigation, footers, forms and comments stay in. This stricter baseline shows how much is saved beyond dropping markup.
+- **Text:** the distilled text alone.
+- **Answer:** each fixture page names one sentence a useful result must contain. `lost` would mean a row saved bytes by dropping the answer.
+
+### Fixture results (synthetic pages)
+
+| Page                    | Raw HTML B | Page text B | Measured B | Text B | vs HTML | vs text | Answer | Truncated |
+| ----------------------- | ---------: | ----------: | ---------: | -----: | ------: | ------: | ------ | --------- |
+| API reference page      |     270952 |       24623 |       2719 |   1164 |   99.0% |   89.0% | kept   | yes       |
+| Q&A thread              |     276476 |       15119 |       7528 |   3600 |   97.3% |   50.2% | kept   | yes       |
+| tutorial blog post      |     183902 |       15652 |       1030 |    368 |   99.4% |   93.4% | kept   | yes       |
+| issue tracker thread    |     281003 |       11932 |       7604 |   3599 |   97.3% |   36.3% | kept   | yes       |
+| small plain page        |        719 |         569 |        528 |    150 |   26.6% |    7.2% | kept   | yes       |
+| error resolver, 3 pages |     741381 |       42703 |       7857 |   3584 |   98.9% |   81.6% | kept   | yes       |
+
+Median reduction on this fixture: 98.1% against raw HTML and 65.9% against page text. All 6 answers were kept.
+
+The fixture pages are generated in code and modeled on common page types: chrome-heavy markup, inline styles, scripts and JSON state, navigation, sidebars, comments. They are not copies of real pages. The resolver row reads the issue thread, the Q&A thread and the tutorial, and is compared with the sum of their sizes.
+
+### Manual run on real pages (2026-10-10)
+
+These four public pages were saved once and measured with `--html`. Real pages change, so the numbers will not reproduce exactly, and no answer check is automated. Each result was read by hand and contained the passage the query was looking for.
+
+| Page and query                                                                           | Raw HTML B | Page text B | Measured B | vs HTML | vs text |
+| ---------------------------------------------------------------------------------------- | ---------: | ----------: | ---------: | ------: | ------: |
+| `nodejs.org/api/net.html`, "socket setKeepAlive initialDelay"                            |     275035 |       75554 |       7590 |   97.2% |   90.0% |
+| `developer.mozilla.org/…/AbortController`, "abort fetch request signal"                  |     154370 |        4824 |       2082 |   98.7% |   56.8% |
+| `docs.python.org/3/library/asyncio-task.html`, "gather return_exceptions"                |     177177 |       46182 |       7654 |   95.7% |   83.4% |
+| `docs.docker.com/compose/how-tos/startup-order/`, "depends_on condition service_healthy" |     525375 |       24286 |       2773 |   99.5% |   88.6% |
+
+### What these numbers do and do not show
+
+- **Against raw HTML, every page above 100 KB saves 95.7–99.5%.** Most of that is markup, scripts and styles, which any HTML-to-text step would also drop. Against page text, the saving is 36–93%. It is smaller when the page has little besides its content, and when the 900-token budget is mostly used, as on the issue and Q&A rows.
+- **Small pages save little.** A page shorter than the budget is returned nearly whole (the plain-page row).
+- **The text is sent twice.** `fetch_distilled` and `resolve_stuck_error` put the same text in `content` and `structuredContent`, so measured bytes are at least twice the text, plus JSON field overhead that weighs most on short results (2.1–3.5 times on the fixture). A host that shows the model only one of them sees about half. This duplication is now the largest remaining cost.
+- **Truncation means the selection kept some blocks and dropped others.** It is not a free saving: dropped passages are gone for the agent.
+- **Ranking is lexical.** On the Node.js page, the result kept the `initialDelay` passages but spent part of the budget on a long, unrelated paragraph about Unix domain sockets that repeats "socket" often.
+- **Bytes, not tokens.** Tokens are estimated at 4 bytes each; host tokenizers differ.
+
 ## Threat notes
 
 Fetched pages are untrusted input. A page can contain text written to steer the model (prompt injection), and distillation does not remove it. Treat results as data. Mediation still redacts and bounds what reaches the model, and receipts record each fetch. The address checks stop the backend from reaching the host's internal network through user-supplied URLs or redirects. They do not stop a public page from carrying harmful content.
