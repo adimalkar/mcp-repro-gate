@@ -96,6 +96,18 @@ A plan row edited directly in the store could claim an `allow` decision, but wri
 
 `reprogate catalog import` is a host-side review aid. It copies a pinned backend's live input schemas and descriptions into proposed catalog entries. Effects are exactly what the operator declares; downstream annotations and tool names only produce warnings. The backend's stderr is discarded during import, and downstream text that appears in errors is shown with control and bidirectional characters escaped. Copied descriptions are stripped of those characters, but their remaining text is still downstream-authored, and so are the input schemas, which must be copied exactly for the schema pin. Import's stdout escapes control and bidirectional characters inside the JSON, so reviewing it in a terminal is safe. Once added to the catalog, it is model-visible through `catalog.search` and `catalog.describe` and can carry prompt-injection content, so operators should review descriptions as well as effects before adding entries.
 
+## Optional code-discovery benchmark
+
+The developer-only code-discovery harness executes an explicit trusted local
+graph binary and ripgrep, reads pinned Git objects, and writes temporary source,
+graph indexes and private configuration. It uses a fresh CBM_CACHE_DIR and XDG
+directories, disables auto-index/watch/UI there, indexes without artifact
+persistence, closes its client, and removes temporary state on normal exit.
+A hard kill may leave temporary state. This isolates configuration; it does
+not sandbox a malicious binary or authorize gateway actions. The JSON report
+retains complete responses and copies of the public pinned source. See
+[measurement scope and retention](CODE_DISCOVERY_BENCHMARK.md).
+
 ## Known gaps before execution is production-safe
 
 - SQLite is durable locally but has no replica lease/ownership protocol;
