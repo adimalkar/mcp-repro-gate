@@ -6,6 +6,7 @@ All notable changes will be documented in this file. The project follows [Semant
 
 ### Added
 
+- Optional code-discovery byte benchmark over pinned source, with graph-versus-grep comparisons, answer checks, isolated graph state, and a published local transcript.
 - Phase 1 action-contract kernel.
 - Plan-only MCP façade with catalog search and policy explanation.
 - Exact-action capability tokens and tamper-evident decision evidence.
