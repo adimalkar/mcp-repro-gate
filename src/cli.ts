@@ -10,6 +10,11 @@ import { runArtifactDigest, runCatalogImport } from "./catalog-cli.js";
 import { runGitReviewCli } from "./git-review-cli.js";
 import { runHeldApproval } from "./held-approval-cli.js";
 import {
+  formatResearchReport,
+  measurePage,
+  runResearchBenchmark,
+} from "./research/benchmark.js";
+import {
   type SearchFunction,
   createEndpointSearch,
 } from "./research/search.js";
@@ -296,6 +301,40 @@ async function main(): Promise<void> {
     );
     return;
   }
+  if (command === "bench" && process.argv[3] === "research") {
+    const usage =
+      "Usage: reprogate bench research [--html <file> --query <text>] [--json]";
+    const rest = process.argv.slice(4);
+    let json = false;
+    let htmlPath: string | undefined;
+    let query: string | undefined;
+    for (let index = 0; index < rest.length; index++) {
+      const option = rest[index];
+      if (option === "--json" && !json) {
+        json = true;
+        continue;
+      }
+      const value = rest[++index];
+      if (value === undefined || value.startsWith("--")) throw new Error(usage);
+      if (option === "--html" && htmlPath === undefined) htmlPath = value;
+      else if (option === "--query" && query === undefined) query = value;
+      else throw new Error(usage);
+    }
+    if ((htmlPath === undefined) !== (query === undefined))
+      throw new Error(usage);
+    const report =
+      htmlPath === undefined || query === undefined
+        ? await runResearchBenchmark()
+        : {
+            rows: [await measurePage(readFileSync(htmlPath, "utf8"), query)],
+          };
+    process.stdout.write(
+      json
+        ? `${JSON.stringify(report, null, 2)}\n`
+        : formatResearchReport(report),
+    );
+    return;
+  }
   if (command === "research-server") {
     const usage =
       "Usage: reprogate research-server [--allow-host <host|.domain>]... [--search-endpoint <url-with-{query}> [--search-endpoint-private]]";
@@ -361,7 +400,7 @@ async function main(): Promise<void> {
     return;
   }
   process.stderr.write(
-    "Usage: reprogate [serve [--config <absolute-path>] [--handoff-config <absolute-path>]|demo|approve [--config <absolute-path>] <target> <action-id>|verify-receipt [--config <absolute-path>] <receipt.json>|catalog import --config <absolute-path> --backend <name> --effects <effects> ...|artifact digest <absolute-path>|bench facade [--json]|research-server [--allow-host <host>]... [--search-endpoint <url> [--search-endpoint-private]]|git-review <prepare|sign|import|check|revoke> ...]\n",
+    "Usage: reprogate [serve [--config <absolute-path>] [--handoff-config <absolute-path>]|demo|approve [--config <absolute-path>] <target> <action-id>|verify-receipt [--config <absolute-path>] <receipt.json>|catalog import --config <absolute-path> --backend <name> --effects <effects> ...|artifact digest <absolute-path>|bench facade [--json]|research-server [--allow-host <host>]... [--search-endpoint <url> [--search-endpoint-private]]|bench research [--html <file> --query <text>] [--json]|git-review <prepare|sign|import|check|revoke> ...]\n",
   );
   process.exitCode = 2;
 }
