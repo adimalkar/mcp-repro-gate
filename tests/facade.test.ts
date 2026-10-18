@@ -40,10 +40,11 @@ async function connect(
   return { client, kernel, call };
 }
 
+// The text mirror is exactly the compact JSON of structuredContent.
 function textMirrorsStructured(result: ToolResult): void {
-  assert.deepEqual(
-    JSON.parse(result.content[0]?.text ?? ""),
-    result.structuredContent,
+  assert.equal(
+    result.content[0]?.text,
+    JSON.stringify(result.structuredContent),
   );
 }
 
