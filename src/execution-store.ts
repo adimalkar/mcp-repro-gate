@@ -20,6 +20,7 @@ import {
 } from "./handoff-filesystem.js";
 import { envelopeDigest, verifyActionEnvelope } from "./envelope.js";
 import type { PlanStore, PlannedAction } from "./kernel.js";
+import { parseHeldApproval, type HeldApprovalV1 } from "./held-approval.js";
 import type { ExecutionReceiptV1 } from "./receipt.js";
 import type { Digest } from "./types.js";
 
@@ -150,6 +151,14 @@ export class SqliteExecutionStore implements PlanStore, TokenUseStore {
         receipt_json TEXT,
         FOREIGN KEY (action_id) REFERENCES plans(action_id),
         FOREIGN KEY (capability_id) REFERENCES token_uses(capability_id)
+      ) STRICT;
+
+      CREATE TABLE IF NOT EXISTS held_approvals (
+        action_id TEXT PRIMARY KEY,
+        approval_id TEXT NOT NULL UNIQUE,
+        approval_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (action_id) REFERENCES plans(action_id)
       ) STRICT;
     `);
   }
@@ -554,6 +563,75 @@ export class SqliteExecutionStore implements PlanStore, TokenUseStore {
     return row === undefined
       ? undefined
       : (JSON.parse(row.plan_json) as PlannedAction);
+  }
+
+  /** Record a signed host-side approval; one per action. */
+  holdApproval(record: HeldApprovalV1): void {
+    try {
+      this.#database
+        .prepare(
+          "INSERT INTO held_approvals (action_id, approval_id, approval_json, created_at) VALUES (?, ?, ?, ?)",
+        )
+        .run(
+          record.actionId,
+          record.approvalId,
+          canonicalJson(record),
+          record.issuedAt,
+        );
+    } catch (error) {
+      if (this.#isConstraintError(error))
+        throw new Error("This action already has a held approval", {
+          cause: error,
+        });
+      throw error;
+    }
+  }
+
+  /**
+   * The stored held approval, parsed but not yet verified. The row's ID
+   * column must agree with the signed record, whose ID is authoritative.
+   */
+  getHeldApproval(actionId: string): HeldApprovalV1 | undefined {
+    const row = this.#database
+      .prepare(
+        "SELECT approval_id, approval_json FROM held_approvals WHERE action_id = ?",
+      )
+      .get(actionId) as
+      { approval_id: string; approval_json: string } | undefined;
+    if (row === undefined) return undefined;
+    const record = parseHeldApproval(row.approval_json);
+    if (record.approvalId !== row.approval_id)
+      throw new Error("Held approval row does not match its record");
+    return record;
+  }
+
+  /**
+   * Revoke an unused held approval by consuming its single-use capability
+   * ID as a tombstone, then removing the row, in one transaction. A run that
+   * already verified the approval then fails at its own atomic consume, and
+   * re-inserting the row cannot revive it. Returns "revoked", "consumed" or
+   * "missing".
+   */
+  revokeHeldApproval(actionId: string): "revoked" | "consumed" | "missing" {
+    this.#database.exec("BEGIN IMMEDIATE");
+    try {
+      const record = this.getHeldApproval(actionId);
+      let outcome: "revoked" | "consumed" | "missing" = "missing";
+      if (record !== undefined) {
+        outcome = this.consume(`host-held:${record.approvalId}`)
+          ? "revoked"
+          : "consumed";
+        if (outcome === "revoked")
+          this.#database
+            .prepare("DELETE FROM held_approvals WHERE action_id = ?")
+            .run(actionId);
+      }
+      this.#database.exec("COMMIT");
+      return outcome;
+    } catch (error) {
+      this.#rollback();
+      throw error;
+    }
   }
 
   /** Consumed capabilities whose ID starts with this non-empty prefix. */

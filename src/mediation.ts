@@ -2,7 +2,8 @@ import * as z from "zod/v4";
 
 import { issueCapabilityToken } from "./capability-token.js";
 import type { ReproGateExecutor } from "./executor.js";
-import type { ReproGateKernel } from "./kernel.js";
+import { heldApprovalMatches, type HeldApprovalV1 } from "./held-approval.js";
+import type { PlannedAction, ReproGateKernel } from "./kernel.js";
 import type { EffectClass } from "./types.js";
 
 export const MEDIATED_EFFECTS = ["local_read", "network_read"] as const;
@@ -33,7 +34,9 @@ export const mediationConfigSchema = z
     effects: z
       .array(z.enum(MEDIATED_EFFECTS))
       .min(1)
-      .refine((effects) => new Set(effects).size === effects.length),
+      .refine((effects) => new Set(effects).size === effects.length)
+      .optional(),
+    heldApprovals: z.boolean().optional(),
     maxRunsPerPlan: z.number().int().min(1).max(MAX_RUNS_PER_PLAN).optional(),
     result: z
       .object({
@@ -46,7 +49,11 @@ export const mediationConfigSchema = z
       .strict()
       .optional(),
   })
-  .strict();
+  .strict()
+  .refine(
+    (config) => config.effects !== undefined || config.heldApprovals === true,
+    "Mediation needs effects, heldApprovals: true, or both",
+  );
 
 export type MediationConfigV1 = z.infer<typeof mediationConfigSchema>;
 
@@ -56,7 +63,10 @@ export type MediationRefusal =
   | "effect_not_mediated"
   | "stale_plan"
   | "expired"
-  | "run_limit";
+  | "run_limit"
+  | "awaiting_approval"
+  | "invalid_approval"
+  | "approval_consumed";
 
 export class MediationError extends Error {
   constructor(readonly code: MediationRefusal) {
@@ -131,7 +141,7 @@ export class HostMediator {
     receiptSecret: string,
     readonly clock: () => Date = () => new Date(),
   ) {
-    this.#effects = new Set(config.effects);
+    this.#effects = new Set(config.effects ?? []);
     this.#maxRuns = config.maxRunsPerPlan ?? 1;
     this.#maxTextBytes = config.result?.maxTextBytes ?? DEFAULT_MAX_TEXT_BYTES;
     this.#patterns = (config.result?.redactPatterns ?? []).map(
@@ -150,6 +160,11 @@ export class HostMediator {
     return this.#effects.has("network_read");
   }
 
+  /** Whether operator-held approvals let action.run execute any effect. */
+  get runsApprovedPlans(): boolean {
+    return this.config.heldApprovals === true;
+  }
+
   async run(input: {
     actionId: string;
     arguments: Record<string, unknown>;
@@ -157,8 +172,21 @@ export class HostMediator {
   }): Promise<MediatedRunResult> {
     const plan = this.executor.store.get(input.actionId);
     if (plan === undefined) throw new MediationError("unknown_action");
-    if (plan.policy.decision !== "allow")
+    if (plan.policy.decision === "deny")
       throw new MediationError("not_allowed");
+    if (this.runsApprovedPlans) {
+      let held: HeldApprovalV1 | undefined;
+      try {
+        held = this.executor.store.getHeldApproval(input.actionId);
+      } catch {
+        throw new MediationError("invalid_approval");
+      }
+      if (held !== undefined) return this.#runHeld(plan, held, input);
+    }
+    if (plan.policy.decision !== "allow")
+      throw new MediationError(
+        this.runsApprovedPlans ? "awaiting_approval" : "not_allowed",
+      );
     // An effect-less plan declares nothing to allowlist; never mediate it.
     const effects = plan.envelope.authority.effects;
     if (
@@ -209,6 +237,57 @@ export class HostMediator {
       }
     }
     if (executed === undefined) throw new MediationError("run_limit");
+    const { receipt, downstreamResult } = executed;
+    return {
+      executionId: receipt.executionId,
+      outcome: receipt.outcome,
+      receiptDigest: receipt.receiptDigest,
+      resultDigest: receipt.resultDigest,
+      ...this.bound(downstreamResult),
+    };
+  }
+
+  // One run of an operator-approved plan. The host-mediation effect
+  // allowlist does not apply: a person approved this exact envelope.
+  async #runHeld(
+    plan: PlannedAction,
+    held: HeldApprovalV1,
+    input: { actionId: string; arguments: Record<string, unknown>; now?: Date },
+  ): Promise<MediatedRunResult> {
+    if (this.kernel.currentDecision(plan.envelope) !== plan.policy.decision)
+      throw new MediationError("stale_plan");
+    const now = input.now ?? this.clock();
+    if (Date.parse(plan.envelope.expiresAt) <= now.getTime())
+      throw new MediationError("expired");
+    if (!heldApprovalMatches(held, plan, this.capabilitySecret, now))
+      throw new MediationError("invalid_approval");
+    const capabilityToken = issueCapabilityToken(
+      {
+        jti: `host-held:${held.approvalId}`,
+        actionId: plan.envelope.actionId,
+        envelopeDigest: plan.envelopeDigest,
+        scopes: plan.envelope.authority.scopes,
+        issuedAt: now.toISOString(),
+        expiresAt: held.expiresAt,
+      },
+      this.capabilitySecret,
+    );
+    let executed: Awaited<ReturnType<ReproGateExecutor["execute"]>>;
+    try {
+      executed = await this.executor.execute({
+        actionId: input.actionId,
+        arguments: input.arguments,
+        capabilityToken,
+        now,
+      });
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        error.message === "Capability token has already been consumed"
+      )
+        throw new MediationError("approval_consumed");
+      throw error;
+    }
     const { receipt, downstreamResult } = executed;
     return {
       executionId: receipt.executionId,

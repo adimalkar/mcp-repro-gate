@@ -7,6 +7,7 @@ import { issueCapabilityToken } from "./capability-token.js";
 import { SqliteExecutionStore } from "./execution-store.js";
 import { runArtifactDigest, runCatalogImport } from "./catalog-cli.js";
 import { runGitReviewCli } from "./git-review-cli.js";
+import { runHeldApproval } from "./held-approval-cli.js";
 import { createHandoffService, type HandoffService } from "./handoff.js";
 import {
   loadHandoffConfig,
@@ -206,14 +207,21 @@ async function main(): Promise<void> {
     return;
   }
   if (command === "approve") {
-    if (process.argv[3] === "--config") {
-      const configPath = process.argv[4];
-      const actionId = process.argv[5];
-      if (configPath === undefined || actionId === undefined) {
-        throw new Error(
-          "Usage: reprogate approve --config <absolute-path> <action-id>",
-        );
-      }
+    const args = process.argv.slice(3);
+    const usage =
+      "Usage: reprogate approve [--config <absolute-path> <action-id> [--hold [--expires-in <seconds>]|--revoke-held]|<database> <action-id>]";
+    // Any extra or mistyped argument is an error: falling through to the
+    // token-printing path would do the opposite of the operator's intent.
+    if (args.length > 3 && args[0] === "--config") {
+      runHeldApproval(args, {
+        stdout: (text) => process.stdout.write(text),
+      });
+      return;
+    }
+    if (args[0] === "--config") {
+      const [, configPath, actionId] = args;
+      if (configPath === undefined || actionId === undefined)
+        throw new Error(usage);
       const config = loadRuntimeConfig(configPath);
       approve(
         config.databasePath,
@@ -222,13 +230,13 @@ async function main(): Promise<void> {
       );
       return;
     }
-    const databasePath = process.argv[3];
-    const actionId = process.argv[4];
-    if (databasePath === undefined || actionId === undefined) {
-      throw new Error(
-        "Usage: reprogate approve [--config <absolute-path> <action-id>|<database> <action-id>]",
-      );
-    }
+    const [databasePath, actionId] = args;
+    if (
+      databasePath === undefined ||
+      actionId === undefined ||
+      args.length !== 2
+    )
+      throw new Error(usage);
     approve(databasePath, actionId, "REPROGATE_CAPABILITY_SECRET");
     return;
   }
