@@ -65,6 +65,30 @@
               "type": "array",
               "maxItems": 16,
               "items": { "type": "string", "minLength": 1, "maxLength": 256 }
+            },
+            "graphViews": {
+              "description": "Opt-in presentation profiles for exact catalog server/tool identities. Duplicate identities are rejected by runtime validation.",
+              "type": "array",
+              "maxItems": 64,
+              "uniqueItems": true,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["serverRef", "toolName", "view"],
+                "properties": {
+                  "serverRef": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  },
+                  "toolName": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  },
+                  "view": { "enum": ["search", "snippet"] }
+                }
+              }
             }
           }
         },

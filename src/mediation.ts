@@ -2,6 +2,13 @@ import * as z from "zod/v4";
 
 import { issueCapabilityToken } from "./capability-token.js";
 import type { ReproGateExecutor } from "./executor.js";
+import {
+  GRAPH_VIEWS,
+  graphJson,
+  MAX_GRAPH_VIEW_CHARS,
+  projectGraphPayload,
+  type GraphView,
+} from "./graph-view.js";
 import { heldApprovalMatches, type HeldApprovalV1 } from "./held-approval.js";
 import type { PlannedAction, ReproGateKernel } from "./kernel.js";
 import type { EffectClass } from "./types.js";
@@ -46,6 +53,24 @@ export const mediationConfigSchema = z
         redactPatterns: z
           .array(z.string().min(1).max(256).refine(usablePattern))
           .max(16)
+          .optional(),
+        graphViews: z
+          .array(
+            z.strictObject({
+              serverRef: z.string().min(1).max(256),
+              toolName: z.string().min(1).max(256),
+              view: z.enum(GRAPH_VIEWS),
+            }),
+          )
+          .max(64)
+          .refine(
+            (entries) =>
+              new Set(
+                entries.map((entry) =>
+                  JSON.stringify([entry.serverRef, entry.toolName]),
+                ),
+              ).size === entries.length,
+          )
           .optional(),
       })
       .strict()
@@ -187,6 +212,7 @@ export class HostMediator {
   // Bumped by each resolver success, so a failure that started before it
   // does not count against the fresh period.
   #generation = 0;
+  readonly #graphViews: ReadonlyMap<string, GraphView>;
 
   constructor(
     readonly executor: ReproGateExecutor,
@@ -199,6 +225,12 @@ export class HostMediator {
     this.#effects = new Set(config.effects ?? []);
     this.#maxRuns = config.maxRunsPerPlan ?? 1;
     this.#maxTextBytes = config.result?.maxTextBytes ?? DEFAULT_MAX_TEXT_BYTES;
+    this.#graphViews = new Map(
+      (config.result?.graphViews ?? []).map((entry) => [
+        JSON.stringify([entry.serverRef, entry.toolName]),
+        entry.view,
+      ]),
+    );
     this.#patterns = (config.result?.redactPatterns ?? []).map(
       (pattern) => new RegExp(pattern, "gu"),
     );
@@ -416,7 +448,15 @@ export class HostMediator {
       outcome: receipt.outcome,
       receiptDigest: receipt.receiptDigest,
       resultDigest: receipt.resultDigest,
-      ...this.bound(downstreamResult),
+      ...this.bound(
+        downstreamResult,
+        this.#graphViews.get(
+          JSON.stringify([
+            plan.envelope.tool.serverRef,
+            plan.envelope.tool.toolName,
+          ]),
+        ),
+      ),
     };
   }
 
@@ -518,8 +558,68 @@ export class HostMediator {
     return replaced > 0 ? JSON.stringify(Object.fromEntries(fields)) : whole;
   }
 
-  /** Redact, then bound, the model-visible view of a downstream result. */
-  bound(result: unknown): BoundedContent {
+  #graphView(result: unknown, view: GraphView): unknown {
+    if (
+      result === null ||
+      typeof result !== "object" ||
+      !("content" in result) ||
+      !Array.isArray(result.content) ||
+      result.content.length !== 1 ||
+      Object.keys(result).some(
+        (key) => !["content", "structuredContent", "isError"].includes(key),
+      ) ||
+      ("isError" in result && result.isError !== false)
+    )
+      return undefined;
+    const item: unknown = result.content[0];
+    if (
+      item === null ||
+      typeof item !== "object" ||
+      !("type" in item) ||
+      item.type !== "text" ||
+      !("text" in item) ||
+      typeof item.text !== "string" ||
+      Object.keys(item).some((key) => !["type", "text"].includes(key))
+    )
+      return undefined;
+    const text = item.text;
+    // Do not serialize a huge structured copy when the text alone is too
+    // large. For real MCP JSON replies the mirrored channels are bounded
+    // together here before parsing, redaction or projection.
+    if (text.length > MAX_GRAPH_VIEW_CHARS) return undefined;
+    const hasStructured =
+      "structuredContent" in result && result.structuredContent !== undefined;
+    const whole = hasStructured
+      ? graphJson(result.structuredContent, MAX_GRAPH_VIEW_CHARS - text.length)
+      : undefined;
+    if (hasStructured && whole === undefined) return undefined;
+    if (text.length + (whole?.length ?? 0) > MAX_GRAPH_VIEW_CHARS)
+      return undefined;
+    // Removing fields must not split a host pattern or hide its count.
+    if (
+      this.#redact(text).count > 0 ||
+      (whole !== undefined && this.#redact(whole).count > 0)
+    )
+      return undefined;
+    let payload: unknown;
+    try {
+      payload = JSON.parse(text);
+    } catch {
+      return undefined;
+    }
+    if (whole !== undefined && JSON.stringify(payload) !== whole)
+      return undefined;
+    const projected = projectGraphPayload(payload, view);
+    if (projected === undefined) return undefined;
+    return { content: [{ type: "text", text: JSON.stringify(projected) }] };
+  }
+
+  /** Redact, then bound, the optionally projected model-visible view. */
+  bound(original: unknown, view?: GraphView): BoundedContent {
+    const result =
+      view === undefined
+        ? original
+        : (this.#graphView(original, view) ?? original);
     const texts: string[] = [];
     let structured: unknown;
     let omittedItems = 0;

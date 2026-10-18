@@ -182,6 +182,64 @@ Redaction removes only what it can recognise. Fragments shorter than 12 characte
 
 ## Filesystem observation
 
+### Compact graph result views
+
+For graph lookup/read tools, the host can opt into a compact model-visible view:
+
+```json
+{
+  "mediation": {
+    "effects": ["local_read"],
+    "result": {
+      "graphViews": [
+        { "serverRef": "graph", "toolName": "search_graph", "view": "search" },
+        {
+          "serverRef": "graph",
+          "toolName": "get_code_snippet",
+          "view": "snippet"
+        }
+      ]
+    }
+  }
+}
+```
+
+Use the exact server and tool names in your catalog. Runtime startup rejects
+missing identities and duplicate server/tool pairs; at most 64 entries are
+allowed. An empty or absent list preserves the existing view. This configuration
+does not allow additional effects or bypass policy/executor checks. It adds no
+agent-facing tool arguments. Older runtimes reject this new configuration key;
+omit it when using an older runtime. The JSON Schema constrains entry shapes and
+counts; runtime validation also checks identity uniqueness and catalog membership.
+
+`search` emits `view: "graph_search_v1"`, retaining `total`, `has_more`, every
+result's `name`, `qualified_name`, `label`, `file_path`, and available `lines`.
+`snippet` emits `view: "graph_snippet_v1"`, retaining identity, file path,
+`start_line`, `end_line`, and the complete `source`. Known diagnostic fields such
+as fingerprints and token streams are omitted. These markers describe the view;
+they do not authenticate downstream content. All text remains untrusted.
+
+Only recognized successful replies with one JSON text item and an optional
+matching structured mirror are projected. Errors, unknown fields, extra content
+or annotations, non-mirrored JSON, malformed data, and oversized replies keep
+the normal bounded view. The projection processing window is 64 Ki UTF-16 code
+units across original text and structured JSON. Structured traversal uses a
+conservative allowance for JSON escaping and property overhead, so it can fall
+back below that window. No diagnostic warnings from an unknown shape are
+silently removed.
+
+Redaction is checked against the original text and structured JSON before
+omitting fields. Any match keeps the normal view, preserving matches spanning
+fields and the existing redaction counts. Projected text still passes through
+redaction and `maxTextBytes`; a cut sets `truncated` as usual. The downstream
+object is unchanged, and signed `resultDigest` still covers the complete original
+result. Compact views add no raw-result storage or retrieval endpoint.
+
+See [the replay report](GRAPH_VIEWS_BENCHMARK.md) for measured size reductions and
+their limits.
+
+## Filesystem observation
+
 The observer hashes regular-file contents and records file type, mode, and size. It does not retain file contents, and it records but never follows symlinks inside an observed root. Entry and byte limits fail closed.
 
 The current observer does not observe network, process, or credential effects. Configured mode remains a reference enforcement path, not a sandbox. Run one ReproGate process per SQLite database; multi-process leases and asymmetric receipt signing remain future work.
