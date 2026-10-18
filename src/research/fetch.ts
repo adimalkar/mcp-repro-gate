@@ -13,7 +13,9 @@ export type ResearchErrorCode =
   | "unsupported_type"
   | "timeout"
   | "http_status"
-  | "fetch_failed";
+  | "fetch_failed"
+  | "search_failed"
+  | "no_results";
 
 /** A refusal with a stable code; it never carries response content. */
 export class ResearchError extends Error {
@@ -29,9 +31,14 @@ export interface FetchOptions {
   timeoutMs?: number;
   maxBytes?: number;
   maxRedirects?: number;
+  /** Accepted content types; defaults to the readable text types. */
+  contentTypes?: ReadonlySet<string>;
+  /** The Accept header to send with those content types. */
+  accept?: string;
   /**
-   * Test seam only: decides which resolved addresses may be connected to.
-   * The CLI never sets it, so production always uses the blocked ranges.
+   * Decides which resolved addresses may be connected to. Production sets
+   * it only for the operator's --search-endpoint-private exemption, where no
+   * redirect is followed; tests use it to reach a local server.
    */
   isAllowedAddress?: (address: string) => boolean;
 }
@@ -137,7 +144,12 @@ export async function fetchText(
     const host = bareHost(url);
     if (isIP(host) !== 0 && !allowed(host))
       throw new ResearchError("blocked_address");
-    const response = await open(url, allowed, deadline);
+    const response = await open(
+      url,
+      allowed,
+      deadline,
+      options.accept ?? "text/html, text/plain;q=0.9, text/markdown;q=0.9",
+    );
     const status = response.statusCode ?? 0;
     if (REDIRECTS.has(status)) {
       response.destroy();
@@ -164,7 +176,10 @@ export async function fetchText(
       .split(";")[0]
       ?.trim()
       .toLowerCase();
-    if (contentType === undefined || !TEXT_TYPES.has(contentType)) {
+    if (
+      contentType === undefined ||
+      !(options.contentTypes ?? TEXT_TYPES).has(contentType)
+    ) {
       response.destroy();
       throw new ResearchError("unsupported_type");
     }
@@ -182,6 +197,7 @@ function open(
   url: URL,
   allowed: (address: string) => boolean,
   deadline: number,
+  accept: string,
 ): Promise<IncomingMessage> {
   return new Promise((resolve, reject) => {
     const remaining = deadline - Date.now();
@@ -196,7 +212,7 @@ function open(
         agent: false,
         lookup: guardedLookup(allowed),
         headers: {
-          accept: "text/html, text/plain;q=0.9, text/markdown;q=0.9",
+          accept,
           "user-agent": "reprogate-research/1",
         },
         timeout: remaining,
