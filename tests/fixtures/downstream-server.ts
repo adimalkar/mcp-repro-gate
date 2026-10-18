@@ -25,6 +25,7 @@ server.registerTool(
   {
     description: "Test-only read-shaped downstream tool",
     inputSchema: z.object({ text: z.string() }),
+    annotations: { readOnlyHint: true },
   },
   ({ text }) => ({
     content: [{ type: "text", text }],

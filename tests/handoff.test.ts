@@ -789,8 +789,8 @@ test("terminal escapes and bidi overrides are rejected before effects", (t) => {
   const service = f.service();
   for (const goal of [
     "link \u001b]8;;https://example.invalid\u0007click",
-    "spoof ‮gnp.exe",
-    "isolate ⁦text⁩",
+    "spoof \u202egnp.exe",
+    "isolate \u2066text\u2069",
     "nul \u0000 byte",
     "c1 \u009b control",
   ]) {
