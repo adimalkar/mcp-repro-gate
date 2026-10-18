@@ -40,3 +40,26 @@ test("unknown tools are rejected instead of being planned from caller metadata",
     /Unknown catalog tool/,
   );
 });
+
+test("arguments that fail the catalog input schema are never planned", () => {
+  const kernel = createDemoKernel();
+  for (const args of [{}, { nope: 1 }, { path: 7 }, "README.md", null])
+    assert.throws(
+      () => kernel.plan({ toolRef: "demo.read_file", arguments: args }),
+      /Arguments fail the input schema of demo\.read_file/u,
+    );
+  // Messages name schema paths, never the supplied values.
+  assert.throws(
+    () =>
+      kernel.plan({
+        toolRef: "demo.read_file",
+        arguments: { path: 7, secret: "do-not-echo" },
+      }),
+    (error: Error) => !error.message.includes("do-not-echo"),
+  );
+  assert.equal(
+    kernel.plan({ toolRef: "demo.read_file", arguments: { path: "README.md" } })
+      .policy.decision,
+    "allow",
+  );
+});
