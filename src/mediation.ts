@@ -401,7 +401,7 @@ export class HostMediator {
       outcome: receipt.outcome,
       receiptDigest: receipt.receiptDigest,
       resultDigest: receipt.resultDigest,
-      ...this.bound(downstreamResult),
+      ...this.bound(downstreamResult, this.#configuredView(plan)),
       ...(strikes === undefined ? {} : { strikes }),
     };
   }
@@ -453,16 +453,15 @@ export class HostMediator {
       outcome: receipt.outcome,
       receiptDigest: receipt.receiptDigest,
       resultDigest: receipt.resultDigest,
-      ...this.bound(
-        downstreamResult,
-        this.#graphViews.get(
-          graphViewKey(
-            plan.envelope.tool.serverRef,
-            plan.envelope.tool.toolName,
-          ),
-        ),
-      ),
+      ...this.bound(downstreamResult, this.#configuredView(plan)),
     };
+  }
+
+  // The compact view the host configured for this exact server and tool.
+  #configuredView(plan: PlannedAction): GraphView | undefined {
+    return this.#graphViews.get(
+      graphViewKey(plan.envelope.tool.serverRef, plan.envelope.tool.toolName),
+    );
   }
 
   /** A model-visible error message, redacted and bounded like results. */

@@ -438,7 +438,12 @@ test("real MCP action.run selects exact identities and signs original results", 
       });
       const response = await client.callTool({
         name: "action.run",
-        arguments: { actionId: plan.envelope.actionId, arguments: {} },
+        // Receipt digests are opt-in on action.run results.
+        arguments: {
+          actionId: plan.envelope.actionId,
+          arguments: {},
+          detail: "full",
+        },
       });
       assert.notEqual(response.isError, true);
       const summary = actionRunOutputSchema.parse(response.structuredContent);
