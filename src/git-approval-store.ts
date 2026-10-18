@@ -215,6 +215,13 @@ export interface PromoteGitPromotionAttemptInput {
 }
 
 /** Host-only input; the acknowledgement is a host contract, not proof. */
+export interface ReleaseUnreservedGitPromotionFenceInput {
+  attemptId: string;
+  hostControl: GitPromotionHostControlConfig;
+  acknowledgement: { childrenQuiescent: true };
+}
+
+/** Host-only input; the acknowledgement is a host contract, not proof. */
 export interface RecoverGitPromotionAttemptInput {
   attemptId: string;
   hostControl: GitPromotionHostControlConfig;
@@ -225,6 +232,26 @@ export interface GitPromotionResultV1 {
   status: ImmutablePromotion<GitPromotionStatusV1>;
   /** `not_held`: no fence, or one held by another owner, was left alone. */
   fence: "released" | "retained" | "not_held";
+}
+
+// The trusted host's explicit statement that every process that might still
+// be promoting has been stopped or reaped: plain data `true`, nothing else.
+function assertQuiescent(acknowledgement: unknown): void {
+  const acknowledged =
+    typeof acknowledgement === "object" && acknowledgement !== null
+      ? Object.getOwnPropertyDescriptor(acknowledgement, "childrenQuiescent")
+      : undefined;
+  if (
+    acknowledged === undefined ||
+    Object.getPrototypeOf(acknowledgement) !== Object.prototype ||
+    Reflect.ownKeys(acknowledgement as object).length !== 1 ||
+    !acknowledged.enumerable ||
+    !("value" in acknowledged) ||
+    acknowledged.value !== true
+  )
+    throw new Error(
+      "Recovery requires an explicit trusted-host child quiescence acknowledgement",
+    );
 }
 
 // A canonical journal timestamp no earlier than the record it follows, so a
@@ -1294,21 +1321,7 @@ export class SqliteGitApprovalStore {
       acknowledgement,
     } = input;
     const attemptId = promotionUuidSchema.parse(callerAttemptId);
-    const acknowledged =
-      typeof acknowledgement === "object" &&
-      (acknowledgement as unknown) !== null
-        ? Object.getOwnPropertyDescriptor(acknowledgement, "childrenQuiescent")
-        : undefined;
-    if (
-      Object.getPrototypeOf(acknowledgement) !== Object.prototype ||
-      Reflect.ownKeys(acknowledgement).length !== 1 ||
-      !acknowledged?.enumerable ||
-      !("value" in acknowledged) ||
-      acknowledged.value !== true
-    )
-      throw new Error(
-        "Recovery requires an explicit trusted-host child quiescence acknowledgement",
-      );
+    assertQuiescent(acknowledgement);
     const config = capturePromotionData(
       callerConfig,
       "config",
@@ -1352,6 +1365,47 @@ export class SqliteGitApprovalStore {
       );
     });
     return this.#settle(attempt, control, owner, "release");
+  }
+
+  /**
+   * Host-only release of a fence acquired for an attempt that was never
+   * reserved, for example when object preparation or reservation failed. The
+   * fence must be held for exactly this attempt ID and bound to this ledger,
+   * and a check under the writer lock must find no attempt row. A reserved
+   * attempt is refused: use recoverGitPromotionAttempt instead.
+   */
+  releaseUnreservedGitPromotionFence(
+    input: ReleaseUnreservedGitPromotionFenceInput,
+  ): { fence: "released" } {
+    const {
+      attemptId: callerAttemptId,
+      hostControl: callerConfig,
+      acknowledgement,
+    } = input;
+    const attemptId = promotionUuidSchema.parse(callerAttemptId);
+    assertQuiescent(acknowledgement);
+    const config = capturePromotionData(
+      callerConfig,
+      "config",
+    ) as GitPromotionHostControlConfig;
+    const control = createGitPromotionHostControl(config);
+    const held = control.query();
+    if (held.status !== "held" || held.owner.attemptId !== attemptId)
+      throw new Error("No fence is held for this promotion attempt");
+    const owner = held.owner;
+    this.#writeTransaction(() => {
+      this.#assertPromotionDatabase(owner.approvalDatabasePath);
+      if (
+        this.#database
+          .prepare("SELECT 1 FROM git_promotion_attempts WHERE attempt_id = ?")
+          .get(attemptId)
+      )
+        throw new Error(
+          "Promotion attempt was reserved; recover it instead of releasing its fence",
+        );
+    });
+    control.release(owner, { childrenQuiescent: true });
+    return { fence: "released" };
   }
 
   // Read the durable status back and release the attempt's fence when allowed.

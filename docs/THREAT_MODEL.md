@@ -87,7 +87,7 @@ Residual limits:
 - Policy, plan or trust changes after admission do not cancel the bounded write.
 - Writers that ignore the fence, a same-user attacker, and a raw writer of the trusted ledger, which could insert a consistent but false outcome, are outside the claim.
 - Reflog entries and unreachable candidate objects are retained effects.
-- No promotion CLI or portable signed promotion receipt exists yet.
+- The host-only `git-review` promotion commands add no authority of their own: `--confirm-quiescent` is an operator assertion, and a version 2 configuration is trusted host input. No portable signed promotion receipt exists yet.
 
 ## Native handoff context boundary
 
