@@ -72,7 +72,22 @@ Private POSIX modes or host-managed Windows ACLs do not exclude an agent with th
 
 The [prepared promotion journal](GIT_PROMOTION_JOURNAL.md) permanently consumes an exact linked signed approval in the same private SQLite connection/transaction as its approval and review evidence. Reservation verifies installed candidate objects and rechecks live persisted-plan authority, trust, proof, expiry, and concrete fence ownership after acquiring the writer lock. Unique attempt/approval/proposal links, strict canonical readback, cross-column bindings, canonical timestamp-to-epoch triggers, immutable prepared records, and guarded raw revocation reject replay and ambiguous retained state. A commit/readback error cannot promise rollback or approval reuse; the fence must remain held for inspection.
 
-Disk SQLite connections open the lossless canonical physical filename before WAL/schema setup, including new ordinary leaves under a canonical parent. This prevents alias-specific WAL namespaces from hiding committed consumption from a canonical live reader. Dangling aliases fail closed. The connection's disk identity is obtained as SQLite filename bytes, validated with fatal UTF-8 and native byte realpath, and pinned by device/inode to the exact fence-owner ledger. This rejects invalid-byte filenames before they can alias a valid Unicode twin; valid U+FFFD names remain supported. Reservation requires an absolute disk ledger, foreign keys, and FULL synchronous mode. The host owns SQLite schema/functions and access, configuration, cooperative fence mapping, plan state, operator trust, signing-key isolation, and the clock. Windows ACLs and storage durability remain deployment assumptions. No status read or prepared record authorizes dispatch, proves ref mutation/quiescence, or implements final admission, ref compare-and-swap, recovery, or a promotion CLI.
+Disk SQLite connections open the lossless canonical physical filename before WAL/schema setup, including new ordinary leaves under a canonical parent. This prevents alias-specific WAL namespaces from hiding committed consumption from a canonical live reader. Dangling aliases fail closed. The connection's disk identity is obtained as SQLite filename bytes, validated with fatal UTF-8 and native byte realpath, and pinned by device/inode to the exact fence-owner ledger. This rejects invalid-byte filenames before they can alias a valid Unicode twin; valid U+FFFD names remain supported. Reservation requires an absolute disk ledger, foreign keys, and FULL synchronous mode. The host owns SQLite schema/functions and access, configuration, cooperative fence mapping, plan state, operator trust, signing-key isolation, and the clock. Windows ACLs and storage durability remain deployment assumptions. No status read or prepared record authorizes dispatch or proves ref mutation or quiescence.
+
+## Final Git promotion gate boundary
+
+The [final gate](GIT_PROMOTION_JOURNAL.md#final-gate-admission-compare-and-swap-and-outcomes) admits one prepared attempt under its exact fence owner and the ledger writer lock. It rechecks plan, catalog and policy authority, the V2 workspace and worktree list, the signed review under current trust, the candidate objects, and the admission deadline. A durable admission record is committed before `update-ref` runs with the expected old OID. Because dispatch only follows admission, a crash can never be read as "never dispatched", and an admitted attempt is never promoted twice.
+
+Only a zero exit with an exact readback is `confirmed`. A lost compare-and-swap, any nonzero exit, a non-exact readback, or a destination that some other writer already moved to the candidate is `indeterminate`, and the fence is retained. Recovery requires a trusted-host quiescence acknowledgement. It never retries, rolls back or overwrites refs, and never infers authorization from present-ref equality; destination OIDs it records are observations only.
+
+Residual limits:
+
+- Git and SQLite are not one atomic transaction. An interrupted dispatch stays `indeterminate`.
+- Expiry bounds admission, not the instant of the ref write.
+- Policy, plan or trust changes after admission do not cancel the bounded write.
+- Writers that ignore the fence, a same-user attacker, and a raw writer of the trusted ledger, which could insert a consistent but false outcome, are outside the claim.
+- Reflog entries and unreachable candidate objects are retained effects.
+- No promotion CLI or portable signed promotion receipt exists yet.
 
 ## Native handoff context boundary
 
