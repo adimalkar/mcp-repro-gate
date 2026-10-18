@@ -227,6 +227,12 @@ export interface GitPromotionResultV1 {
   fence: "released" | "retained" | "not_held";
 }
 
+// A canonical journal timestamp no earlier than the record it follows, so a
+// clock step backwards cannot commit an order that strict readback rejects.
+function journalTime(now: number, floor: string): string {
+  return new Date(Math.max(now, Date.parse(floor))).toISOString();
+}
+
 // The destination's current direct commit, or undefined when it cannot be
 // read exactly. An observation only, never evidence of authorization.
 function promotionDestination(
@@ -446,8 +452,8 @@ export class SqliteGitApprovalStore {
       ) STRICT;
       CREATE UNIQUE INDEX IF NOT EXISTS git_operator_review_promotion_link
         ON git_operator_review_decisions (approval_id, proposal_id, review_digest);
-      -- T1 intent-only slice. Future evidence/transitions need an additive
-      -- migration and concrete verifier, never a generic public state setter.
+      -- Immutable T1 intent. Admission and outcome evidence live in the
+      -- insert-only tables below, never in a generic public state setter.
       CREATE TABLE IF NOT EXISTS git_promotion_attempts (
         attempt_id TEXT NOT NULL PRIMARY KEY,
         approval_id TEXT NOT NULL UNIQUE,
@@ -518,10 +524,9 @@ export class SqliteGitApprovalStore {
           OR NEW.reserved_epoch_ms IS NOT reprogate_promotion_epoch_ms(json_extract(NEW.record_json, '$.reservedAt'))
           OR NEW.admission_deadline_epoch_ms IS NOT reprogate_promotion_epoch_ms(json_extract(NEW.record_json, '$.admissionDeadline'))
         BEGIN SELECT RAISE(ABORT, 'Promotion epoch/canonical timestamp CHECK failed'); END;
-      -- Future transition vocabulary is reserved, but ONLY prepared can be
-      -- inserted and NO updates are allowed in Task3B. Task3C adds evidence
-      -- columns and replaces the immutable-update guard with verified,
-      -- immutable-binding-preserving transitions (no table reinterpretation).
+      -- ONLY prepared intent can be inserted and NO updates are allowed.
+      -- Terminal states are git_promotion_outcomes rows, so this guard and
+      -- the intent row stay unchanged (no table reinterpretation).
       CREATE TRIGGER IF NOT EXISTS git_promotion_prepared_only
         BEFORE INSERT ON git_promotion_attempts WHEN NEW.state != 'prepared'
         BEGIN SELECT RAISE(ABORT, 'Reservation only creates prepared intent'); END;
@@ -888,7 +893,8 @@ export class SqliteGitApprovalStore {
    * Every replay (including identical attempt) rejects: a readback is not a
    * renewed authorization or permission to dispatch. No refs are written.
    * A thrown COMMIT/readback error is NOT proof of rollback/reusability: retain
-   * the fence and inspect the attempt. Recovery/admission are Task3C operations.
+   * the fence and inspect the attempt. Admission and recovery are separate:
+   * promoteGitPromotionAttempt and recoverGitPromotionAttempt.
    */
   reserveGitPromotionFromPlan(
     input: ReserveGitPromotionFromPlanInput,
@@ -1173,6 +1179,7 @@ export class SqliteGitApprovalStore {
     if (precheck !== undefined)
       throw new Error(`Promotion precheck rejected: ${precheck}`);
     checkFence();
+    const deadline = Date.parse(attempt.admissionDeadline);
 
     const rejected = this.#writeTransaction(() => {
       checkFence();
@@ -1184,13 +1191,16 @@ export class SqliteGitApprovalStore {
         repositoryPath,
       );
       checkFence();
-      if (reason !== undefined) {
+      // One clock read decides the deadline AND becomes admittedAt, so a
+      // record committed here always satisfies strict readback.
+      const admittedAt = Date.now();
+      if (reason !== undefined || !(admittedAt < deadline)) {
         this.#insertOutcome({
           outcomeVersion: 1,
           attemptId,
           state: "failed",
-          reason,
-          decidedAt: new Date().toISOString(),
+          reason: reason ?? "admission_expired",
+          decidedAt: journalTime(admittedAt, attempt.reservedAt),
           observedDestinationOid: null,
         });
         return true;
@@ -1202,7 +1212,7 @@ export class SqliteGitApprovalStore {
         reviewDigest: attempt.reviewDigest,
         expectedOldOid: attempt.prepared.expectedOldOid,
         candidateCommitOid: attempt.prepared.candidateCommitOid,
-        admittedAt: new Date().toISOString(),
+        admittedAt: journalTime(admittedAt, attempt.reservedAt),
       });
       return false;
     });
@@ -1232,6 +1242,9 @@ export class SqliteGitApprovalStore {
           // does not distinguish it from a write that failed part way.
         }
         const observed = promotionDestination(repositoryPath, destinationRef);
+        const admission = this.getGitPromotionStatus(attemptId)?.admission;
+        if (!admission) throw new Error("Promotion admission readback failed");
+        const decidedAt = journalTime(Date.now(), admission.admittedAt);
         const exact =
           dispatched &&
           observed === attempt.prepared.candidateCommitOid &&
@@ -1243,7 +1256,7 @@ export class SqliteGitApprovalStore {
                 attemptId,
                 state: "confirmed",
                 reason: "ref_updated",
-                decidedAt: new Date().toISOString(),
+                decidedAt,
                 observedDestinationOid: attempt.prepared.candidateCommitOid,
               }
             : {
@@ -1251,7 +1264,7 @@ export class SqliteGitApprovalStore {
                 attemptId,
                 state: "indeterminate",
                 reason: dispatched ? "readback_mismatch" : "dispatch_uncertain",
-                decidedAt: new Date().toISOString(),
+                decidedAt,
                 observedDestinationOid: observed ?? null,
               },
         );
@@ -1314,6 +1327,10 @@ export class SqliteGitApprovalStore {
         attempt.repositoryPath,
         attempt.proposal.workspace.destinationRef,
       );
+      const decidedAt = journalTime(
+        Date.now(),
+        status.admission?.admittedAt ?? attempt.reservedAt,
+      );
       this.#insertOutcome(
         status.admission
           ? {
@@ -1321,7 +1338,7 @@ export class SqliteGitApprovalStore {
               attemptId,
               state: "indeterminate",
               reason: "interrupted",
-              decidedAt: new Date().toISOString(),
+              decidedAt,
               observedDestinationOid: observed ?? null,
             }
           : {
@@ -1329,7 +1346,7 @@ export class SqliteGitApprovalStore {
               attemptId,
               state: "failed",
               reason: "abandoned",
-              decidedAt: new Date().toISOString(),
+              decidedAt,
               observedDestinationOid: observed ?? null,
             },
       );
@@ -1503,9 +1520,9 @@ export class SqliteGitApprovalStore {
   /** Revocation is durable; no new grant for the same proposal is allowed. */
   revoke(approvalId: string): boolean {
     return this.#writeTransaction(() => {
-      // Guard + update are one locked transaction. Any attempt is unresolved in
-      // this intent-only version; even corrupt/ambiguous journal JSON cannot
-      // manufacture terminal/quiescent evidence and bypass crash fencing.
+      // Guard + update are one locked transaction. Any attempt, even a
+      // resolved one, permanently consumed its approval; corrupt/ambiguous
+      // journal JSON cannot manufacture evidence that bypasses crash fencing.
       const approval = this.#database
         .prepare(
           "SELECT proposal_id FROM git_change_approvals WHERE approval_id = ?",

@@ -236,6 +236,34 @@ test("a lost compare-and-swap after admission is indeterminate and keeps the fen
   assert.equal(target(f), moved);
 });
 
+test("a destination already at the candidate without our dispatch is never confirmed", (t) => {
+  const f = fixture(t);
+  reserve(f);
+  const result = promote(f, {
+    context: {
+      ...f.context,
+      // Another writer moves the ref to the candidate first; our expected-old
+      // compare-and-swap then fails. Present-ref equality is not evidence.
+      plans: observingPlans(f.plans, (n) => {
+        if (n === 2)
+          git(
+            f.root,
+            "update-ref",
+            "refs/heads/target",
+            f.prepared.candidateCommitOid,
+          );
+      }),
+    },
+  });
+  assert.equal(result.status.state, "indeterminate");
+  assert.equal(result.status.outcome?.reason, "dispatch_uncertain");
+  assert.equal(
+    result.status.outcome.observedDestinationOid,
+    f.prepared.candidateCommitOid,
+  );
+  assert.equal(result.fence, "retained");
+});
+
 test("recovery of a never-admitted attempt fails it without dispatch", (t) => {
   const f = fixture(t);
   reserve(f);
