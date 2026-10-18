@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://reprogate.dev/schemas/git-promotion-admission-v1.json",
+  "title": "ReproGate Git promotion admission v1",
+  "$comment": "Committed before the ref update is dispatched; its absence means this library never dispatched the attempt. admittedAt is the final authorization check time. Real dates, bindings to the exact attempt (authority, review, expected old OID and candidate), ordering after reservation and before the admission deadline, and canonical JSON require library and SQL checks.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "admissionVersion",
+    "attemptId",
+    "authorityDigest",
+    "reviewDigest",
+    "expectedOldOid",
+    "candidateCommitOid",
+    "admittedAt"
+  ],
+  "properties": {
+    "admissionVersion": {
+      "const": 1
+    },
+    "attemptId": {
+      "$ref": "#/$defs/uuid"
+    },
+    "authorityDigest": {
+      "$ref": "#/$defs/digest"
+    },
+    "reviewDigest": {
+      "$ref": "#/$defs/digest"
+    },
+    "expectedOldOid": {
+      "$ref": "#/$defs/oid"
+    },
+    "candidateCommitOid": {
+      "$ref": "#/$defs/oid"
+    },
+    "admittedAt": {
+      "$ref": "#/$defs/timestamp"
+    }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "minLength": 71,
+      "maxLength": 71,
+      "pattern": "^sha256:[0-9a-f]{64}$(?![\\s\\S])"
+    },
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$(?![\\s\\S])"
+    },
+    "oid": {
+      "type": "string",
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$(?![\\s\\S])"
+    },
+    "timestamp": {
+      "type": "string",
+      "minLength": 24,
+      "maxLength": 27,
+      "pattern": "^(?:[0-9]{4}|[+-][0-9]{6})-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$(?![\\s\\S])"
+    }
+  }
+}

@@ -97,11 +97,11 @@ export type ImmutablePromotion<T> = T extends readonly (infer V)[]
     : T;
 /**
  * Immutable T1 intent only. No dispatch, physical ref observation, quiescence or
- * final authorization is asserted. Task3C must add separately validated evidence
- * for prepared|confirmed|failed|indeterminate transitions; no terminal setter is
- * provided here. Expiry is an admission deadline, not a physical Git clock bound.
+ * final authorization is asserted. Admission and terminal outcomes are separate
+ * insert-only records (see parseGitPromotionStatus); the intent never changes.
+ * Expiry is an admission deadline, not a physical Git clock bound.
  */
-/** Future transition vocabulary; not public construction/transition authority. */
+/** Effective state: prepared until an outcome record exists. */
 export type GitPromotionState =
   "prepared" | "confirmed" | "failed" | "indeterminate";
 export interface GitPromotionAttemptV1 {
@@ -351,4 +351,130 @@ export function parseGitPromotionAttempt(
   // filesystem paths additionally require lossless UTF-8 and <=4096 BYTES in
   // the concrete host-control module; schema acceptance is not path authority.
   return freeze({ ...r, proposal, prepared, fenceOwner: owner });
+}
+
+/** Final-gate rejection before any dispatch; the approval stays consumed. */
+export const GIT_PROMOTION_FAILED_REASONS = [
+  "admission_expired",
+  "authority_rejected",
+  "approval_rejected",
+  "candidate_rejected",
+  "abandoned",
+] as const;
+/** A dispatched or possibly dispatched write whose effect is not proven. */
+export const GIT_PROMOTION_INDETERMINATE_REASONS = [
+  "dispatch_uncertain",
+  "readback_mismatch",
+  "interrupted",
+] as const;
+export type GitPromotionFailedReason =
+  (typeof GIT_PROMOTION_FAILED_REASONS)[number];
+export type GitPromotionIndeterminateReason =
+  (typeof GIT_PROMOTION_INDETERMINATE_REASONS)[number];
+
+const admissionSchema = z.strictObject({
+  admissionVersion: z.literal(1),
+  attemptId: promotionUuidSchema,
+  authorityDigest: digestSchema,
+  reviewDigest: digestSchema,
+  expectedOldOid: oidSchema,
+  candidateCommitOid: oidSchema,
+  admittedAt: timestampSchema,
+});
+const outcomeSchema = z.discriminatedUnion("state", [
+  z.strictObject({
+    outcomeVersion: z.literal(1),
+    attemptId: promotionUuidSchema,
+    state: z.literal("confirmed"),
+    reason: z.literal("ref_updated"),
+    decidedAt: timestampSchema,
+    observedDestinationOid: oidSchema,
+  }),
+  z.strictObject({
+    outcomeVersion: z.literal(1),
+    attemptId: promotionUuidSchema,
+    state: z.literal("failed"),
+    reason: z.enum(GIT_PROMOTION_FAILED_REASONS),
+    decidedAt: timestampSchema,
+    observedDestinationOid: oidSchema.nullable(),
+  }),
+  z.strictObject({
+    outcomeVersion: z.literal(1),
+    attemptId: promotionUuidSchema,
+    state: z.literal("indeterminate"),
+    reason: z.enum(GIT_PROMOTION_INDETERMINATE_REASONS),
+    decidedAt: timestampSchema,
+    observedDestinationOid: oidSchema.nullable(),
+  }),
+]);
+
+/**
+ * Durable record that every final-gate check passed, committed BEFORE the ref
+ * update is dispatched. `admittedAt` is the authorization check time; expiry
+ * is not re-evaluated inside Git's compare-and-swap.
+ */
+export type GitPromotionAdmissionV1 = z.infer<typeof admissionSchema>;
+/**
+ * Terminal evidence. `observedDestinationOid` is a bounded observation only:
+ * it never proves historical authorization or who moved a ref.
+ */
+export type GitPromotionOutcomeV1 = z.infer<typeof outcomeSchema>;
+export interface GitPromotionStatusV1 {
+  state: GitPromotionState;
+  attempt: GitPromotionAttemptV1;
+  admission?: GitPromotionAdmissionV1;
+  outcome?: GitPromotionOutcomeV1;
+}
+
+/**
+ * Strict canonical readback of the journal rows for one attempt. Every
+ * cross-record binding is checked here as well as by SQL triggers.
+ */
+export function parseGitPromotionStatus(
+  attempt: ImmutablePromotion<GitPromotionAttemptV1>,
+  admissionJson: unknown,
+  outcomeJson: unknown,
+): ImmutablePromotion<GitPromotionStatusV1> {
+  const record = (json: unknown) => {
+    if (json === null) return undefined;
+    if (typeof json !== "string" || Buffer.byteLength(json) > 64 * 1024)
+      throw new Error("Corrupt promotion journal");
+    return { json, value: JSON.parse(json) as unknown };
+  };
+  const admissionRow = record(admissionJson);
+  const outcomeRow = record(outcomeJson);
+  const admission = admissionRow && admissionSchema.parse(admissionRow.value);
+  const outcome = outcomeRow && outcomeSchema.parse(outcomeRow.value);
+  const reserved = Date.parse(attempt.reservedAt);
+  if (
+    (admissionRow && canonicalJson(admission) !== admissionRow.json) ||
+    (outcomeRow && canonicalJson(outcome) !== outcomeRow.json) ||
+    (admission &&
+      (admission.attemptId !== attempt.attemptId ||
+        admission.authorityDigest !== attempt.authorityDigest ||
+        admission.reviewDigest !== attempt.reviewDigest ||
+        admission.expectedOldOid !== attempt.prepared.expectedOldOid ||
+        admission.candidateCommitOid !== attempt.prepared.candidateCommitOid ||
+        Date.parse(admission.admittedAt) < reserved ||
+        Date.parse(admission.admittedAt) >=
+          Date.parse(attempt.admissionDeadline))) ||
+    (outcome &&
+      (outcome.attemptId !== attempt.attemptId ||
+        Date.parse(outcome.decidedAt) <
+          (admission ? Date.parse(admission.admittedAt) : reserved) ||
+        (outcome.state === "confirmed" &&
+          (!admission ||
+            outcome.observedDestinationOid !==
+              attempt.prepared.candidateCommitOid)) ||
+        // Dispatch only ever follows a durable admission, so a failure means
+        // nothing was dispatched and anything uncertain was admitted.
+        (outcome.state === "failed") !== (admission === undefined)))
+  )
+    throw new Error("Corrupt promotion journal outcome bindings");
+  return freeze({
+    state: outcome?.state ?? "prepared",
+    attempt: attempt as GitPromotionAttemptV1,
+    ...(admission ? { admission } : {}),
+    ...(outcome ? { outcome } : {}),
+  });
 }
