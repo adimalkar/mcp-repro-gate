@@ -197,7 +197,7 @@ test("catalog import from a draft config yields entries a mediated runtime can r
   );
   assert.deepEqual(
     result.entries.map((entry) => entry.toolRef),
-    ["fixture.echo", "fixture.publish"],
+    ["fixture.echo", "fixture.publish", "fixture.resolve"],
   );
   assert.deepEqual(JSON.parse(d.lines.stdout), result.entries);
   assert.match(d.lines.stderr, /fixture\.echo sha256:[0-9a-f]{64}\n/u);

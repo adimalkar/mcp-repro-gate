@@ -133,7 +133,7 @@ This registers `action.run { actionId, arguments, detail? }`. The server runs a 
 - the live catalog and policy still give this exact envelope an `allow` decision;
 - the plan has run fewer than `maxRunsPerPlan` times (default 1, maximum 1000).
 
-The server then issues and consumes a one-use capability itself, so the model never handles a token. Otherwise the call is refused with `not_allowed`, `effect_not_mediated`, `stale_plan`, `expired`, `run_limit` or `unknown_action`, and nothing runs. Different arguments make a different plan, so a run limit of 1 still allows any number of distinct queries.
+The server then issues and consumes a one-use capability itself, so the model never handles a token. Otherwise the call is refused with `not_allowed`, `effect_not_mediated`, `stale_plan`, `expired`, `run_limit` or `unknown_action` (or `resolve_required` with the two-strike gate below), and nothing runs. Different arguments make a different plan, so a run limit of 1 still allows any number of distinct queries.
 
 - `effects` may contain only `local_read` and `network_read`. Write, process, credential and destructive effects always need out-of-band approval through `action.execute`.
 - Every executor check still applies: argument digest, live schema pin, artifact digest, JSON Schema validation, the write-ahead execution record and the signed receipt. The receipt's `capabilityId` is `host-mediated:<action digest hex>:<run number>`, so audits can tell mediated runs from approved ones. Because the store accepts each capability ID once, the run limit holds even under concurrent calls.
@@ -162,6 +162,21 @@ node dist/src/cli.js approve --config /absolute/path/reprogate.json '<action-id>
 A held run is refused with `invalid_approval` if the signature or plan binding fails, `stale_plan` if the live catalog or policy no longer gives the same decision, `expired` once the plan expires, and `approval_consumed` once the approval has been used or revoked. Without a held approval, an `approval_required` plan gets `awaiting_approval`. `--revoke-held` succeeds only while the approval is unused. It consumes the approval's single-use ID as a tombstone in the same transaction, so a run already in progress fails instead of executing. A held approval takes precedence for its plan, even one that policy allows. After that run, the plan returns `approval_consumed` rather than falling back to auto-mediation. With held approvals enabled, `effects` is optional, and `action.run` is annotated as possibly destructive and open-world.
 
 A held approval proves possession of the capability secret on the host, the same trust as `approve`. It does not authenticate an individual approver. Signed approvals are stored in the database, so anyone who can both read and write the store can replay an approved run until it expires. Protect the store, and use `--expires-in` to keep that window short.
+
+### Two-strike gate
+
+Add `strikes` to `mediation` to stop an agent from retrying a failing tool in a loop:
+
+```json
+"strikes": { "resolverToolRef": "research.resolve_stuck_error", "limit": 2 }
+```
+
+- **Blocking:** after `limit` consecutive failed runs of one downstream tool (default 2, range 2–5), `action.run` refuses further runs of that tool. The refusal is `{ "error": "resolve_required", "resolverToolRef": "…", "failures": n }`, and nothing runs. Tools are counted by backend and tool name, across plans and arguments.
+- **What counts as a failure:** a run whose receipt outcome is `failed`, or any executor error during the run. That includes arguments that do not match the plan, but also faults that are not the agent's: a downstream that crashes or changed its schema, an observer or store error, or an indeterminate run. They cannot be told apart reliably, so a tool on a broken backend is blocked too. Refusals that run nothing, such as `run_limit`, `expired` or `stale_plan`, do not count.
+- **Unblocking:** a successful run of a tool resets its own count. A successful run of the resolver, through `action.run`, resets every count. The resolver itself is never counted or blocked.
+- **Agent feedback:** a failed run of a gated tool carries `strikes: { failures, limit, resolverToolRef }`, in its result or, for an executor error, next to the error message. The `action.run` description states the rule.
+- **Startup checks:** `resolverToolRef` must name a catalog tool whose effects are all listed in `effects`, or the server refuses to start. Your policy must also decide `allow` for the resolver. If it does not, or if the resolver itself keeps failing, a blocked tool stays blocked until restart.
+- **Scope:** counts live in memory for one server process, so each stdio session has its own and a restart clears them. `action.execute` with an approved capability is not gated and neither counts nor resets strikes; nor is a run of a host-held approval, which executes once. Concurrent runs of one tool are checked before any of them finishes, so they can overshoot the limit; a failure that was in flight when the resolver succeeded does not count afterwards. The gate is guidance for agents, not a security control.
 
 Redaction removes only what it can recognise. Fragments shorter than 12 characters, a secret split into pieces across separate items or calls, and other encodings (base64, hex, percent-encoding) are not detected. **A mediated tool must not be able to read the gateway's secret material**, for example the process environment, `/proc/<pid>/environ` or the secret files. Treat downstream output as untrusted even after redaction.
 

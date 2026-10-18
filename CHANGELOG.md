@@ -25,6 +25,7 @@ All notable changes will be documented in this file. The project follows [Semant
 - Schema-on-demand `catalog.describe` and full-evidence `action.inspect` MCP tools; output schemas and conservative annotations on every façade tool.
 - Opt-in host-held approvals: `approve --hold`/`--revoke-held` record signed, single-use approvals for exact plans, so `action.run` can execute `approval_required` plans without the model handling a capability token.
 - Host-side `reprogate catalog import` (catalog entries from a configured backend's live tool list, with operator-declared effects and review warnings), `reprogate artifact digest`, and a code graph proxy guide for codebase-memory-mcp.
+- Opt-in two-strike gate for mediated runs (`mediation.strikes`): after consecutive failures of one tool, `action.run` refuses it with `resolve_required` until a configured resolver tool succeeds. Failed results report `strikes`, and the `action.run` description states the rule.
 - Opt-in host-mediated execution: `mediation` runtime configuration and the `action.run` tool for allow-decided read-effect plans, with host-issued one-use capabilities (`host-mediated:` capability IDs) and redacted, bounded model-visible results.
 
 ### Fixed
