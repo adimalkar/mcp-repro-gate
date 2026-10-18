@@ -252,6 +252,11 @@ test("mirrored replies project up to the text bound", () => {
   const withoutError: Record<string, unknown> = { ...reply(search) };
   delete withoutError.isError;
   assert.equal(projected(withoutError, "search"), true);
+  assert.equal(
+    projected({ ...reply(search), isError: undefined }, "search"),
+    true,
+  );
+  assert.equal(projected({ ...reply(search), isError: null }, "search"), false);
 });
 
 test("only compact JSON exactly as serialized is projected", () => {
@@ -310,6 +315,18 @@ test("sameJson compares serialized form without serializing", () => {
   assert.equal(sameJson({ a: 1 }, { a: 1, b: undefined }), false);
   assert.equal(sameJson("1", 1), false);
   assert.equal(sameJson(0, -0), true);
+  // A mirror that would serialize differently is never equal.
+  class Row {
+    a = 1;
+    toJSON() {
+      return { a: 1, bt: "rg1.leak.token" };
+    }
+  }
+  assert.equal(sameJson({ a: 1 }, new Row()), false);
+  assert.equal(
+    sameJson({ a: 1 }, Object.assign(Object.create(null), { a: 1 })),
+    false,
+  );
 });
 
 test("graph profile configuration rejects ambiguous identities and unknown options", () => {

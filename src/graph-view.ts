@@ -12,7 +12,7 @@ export function graphViewKey(serverRef: string, toolName: string): string {
 
 /**
  * Whether two JSON values serialize identically: equal scalars, and arrays
- * and objects with the same keys in the same order. `expected` must already
+ * and plain objects with the same keys in the same order. `expected` must already
  * be shape-checked, which bounds the recursion depth; `actual` is compared
  * node by node and never serialized.
  */
@@ -24,6 +24,13 @@ export function sameJson(expected: unknown, actual: unknown): boolean {
     typeof actual !== "object"
   )
     return expected === actual;
+  // Only plain containers: a toJSON method, Proxy or other prototype could
+  // serialize differently from what is compared here.
+  if (
+    Object.getPrototypeOf(actual) !==
+    (Array.isArray(actual) ? Array.prototype : Object.prototype)
+  )
+    return false;
   if (Array.isArray(expected) || Array.isArray(actual)) {
     if (!Array.isArray(expected) || !Array.isArray(actual)) return false;
     return (

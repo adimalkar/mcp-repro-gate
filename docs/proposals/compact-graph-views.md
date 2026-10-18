@@ -36,8 +36,9 @@ non-text items, malformed data, text that is not compact JSON exactly as
 JSON.stringify writes it, and text above 64 Ki characters fall back to the
 existing bounded view.
 
-Before removing fields, check the complete original text and structured JSON
-for host redaction matches. Any match keeps the original view, preserving
+Before removing fields, check the complete original text for host redaction
+matches; a structured mirror must be a plain JSON copy that serializes to the
+same text. Any match keeps the original view, preserving
 cross-field host patterns and redaction counts. Projected text still passes
 through the existing redaction and UTF-8 byte bound. Pagination, results and
 source are never intentionally dropped; byte truncation remains explicit.

@@ -228,11 +228,12 @@ known free-form fields `docstring`, `signature` and `return_type` are omitted
 by design.
 
 Redaction is checked against the original text before omitting fields; a
-structured mirror must serialize to that same text. Any match keeps the normal view, preserving matches spanning
-fields and the existing redaction counts. Projected text still passes through
-redaction and `maxTextBytes`; a cut sets `truncated` as usual. The downstream
-object is unchanged, and signed `resultDigest` still covers the complete original
-result. Compact views add no raw-result storage or retrieval endpoint.
+structured mirror must serialize to that same text. Any match keeps the normal
+view, preserving matches spanning fields and the existing redaction counts.
+Projected text still passes through redaction and `maxTextBytes`; a cut sets
+`truncated` as usual. The downstream object is unchanged, and signed
+`resultDigest` still covers the complete original result. Compact views add no
+raw-result storage or retrieval endpoint.
 
 See [the replay report](GRAPH_VIEWS_BENCHMARK.md) for measured size reductions and
 their limits.
