@@ -21,17 +21,17 @@ A host first loads tool definitions, then spends calls finding a tool:
 
 | Item                               | Bytes |
 | ---------------------------------- | ----: |
-| façade tool list                   |  9915 |
+| façade tool list                   |  9990 |
 | direct tool list                   |  4964 |
 | finding a tool (search + describe) |  2122 |
 | average downstream tool definition |   355 |
-| break-even catalog size (tools)    |    34 |
+| break-even catalog size (tools)    |    35 |
 
 - **Façade tool list:** ReproGate's own `tools/list`, including output schemas.
 - **Direct tool list:** every downstream definition, as a host would see by proxying the tools directly.
 - **Finding a tool:** one `catalog.search` with three hits plus one `catalog.describe`.
 
-The façade's own tool list is about twice the 14 downstream definitions it replaces. So on this fixture, discovery through the façade costs more context than loading the tools directly. It breaks even at about 34 downstream tools when an agent looks up one tool per session. Each further tool looked up adds another `catalog.describe` and raises the break-even. The façade's cost per lookup stays flat as the catalog grows, while a direct list keeps growing.
+The façade's own tool list is about twice the 14 downstream definitions it replaces. So on this fixture, discovery through the façade costs more context than loading the tools directly. It breaks even at about 35 downstream tools when an agent looks up one tool per session. Each further tool looked up adds another `catalog.describe` and raises the break-even. The façade's cost per lookup stays flat as the catalog grows, while a direct list keeps growing.
 
 ### Tool results
 
@@ -60,7 +60,7 @@ The façade's own tool list is about twice the 14 downstream definitions it repl
   - Large result: from 38064 to 35420 bytes (reduction from 26.3% to 31.4%).
   - Finding a tool: from 2498 to 2122 bytes.
   - Planning: from 852 to 800 bytes. Its reduction fell from 72.6% to 70.9%, because the full baseline also shrank with compact JSON.
-  - Façade tool list: grew from 9781 to 9915 bytes. The `detail` input, the optional digest fields and the bounded text in the `action.run` output schema account for the increase. Tool list plus finding a tool fell from 12279 to 12037 bytes per session, and break-even moved from 35 to 34 tools.
+  - Façade tool list: grew from 9856 to 9990 bytes. The `detail` input, the optional digest fields and the bounded text in the `action.run` output schema account for the increase. Tool list plus finding a tool fell from 12354 to 12112 bytes per session, and break-even stayed at 35 tools.
 
 ## Two-host protocol (manual)
 
