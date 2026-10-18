@@ -180,6 +180,64 @@ Add `strikes` to `mediation` to stop an agent from retrying a failing tool in a 
 
 Redaction removes only what it can recognise. Fragments shorter than 12 characters, a secret split into pieces across separate items or calls, and other encodings (base64, hex, percent-encoding) are not detected. **A mediated tool must not be able to read the gateway's secret material**, for example the process environment, `/proc/<pid>/environ` or the secret files. Treat downstream output as untrusted even after redaction.
 
+### Compact graph result views
+
+For graph lookup/read tools, the host can opt into a compact model-visible view:
+
+```json
+{
+  "mediation": {
+    "effects": ["local_read"],
+    "result": {
+      "graphViews": [
+        { "serverRef": "graph", "toolName": "search_graph", "view": "search" },
+        {
+          "serverRef": "graph",
+          "toolName": "get_code_snippet",
+          "view": "snippet"
+        }
+      ]
+    }
+  }
+}
+```
+
+Use the exact server and tool names in your catalog. Runtime startup rejects
+missing identities and duplicate server/tool pairs; at most 64 entries are
+allowed. An empty or absent list preserves the existing view. This configuration
+does not allow additional effects or bypass policy/executor checks. It adds no
+agent-facing tool arguments. Older runtimes reject this new configuration key;
+omit it when using an older runtime. The JSON Schema constrains entry shapes and
+counts; runtime validation also checks identity uniqueness and catalog membership.
+
+`search` emits `view: "graph_search_v1"`, retaining `total`, `has_more`, every
+result's `name`, `qualified_name`, `label`, `file_path`, and available `lines`.
+`snippet` emits `view: "graph_snippet_v1"`, retaining identity, file path,
+`start_line`, `end_line`, and the complete `source`. Known diagnostic fields such
+as fingerprints and token streams are omitted. These markers describe the view;
+they do not authenticate downstream content. All text remains untrusted.
+
+Only recognized successful replies are projected: one text item of compact JSON
+exactly as `JSON.stringify` writes it, at most 64 Ki UTF-16 code units long, and
+an optional structured mirror that serializes to the same text. codebase-memory-mcp
+0.9.0 replies have this form. Errors, unknown fields, extra content or
+annotations, pretty-printed or otherwise re-spelled JSON (including duplicate
+keys), non-mirrored structured content, malformed data and longer replies keep
+the normal bounded view. A new field or channel is never silently removed; the
+known free-form fields `docstring`, `signature` and `return_type` are omitted
+by design.
+
+Redaction is checked against the original text before omitting fields; a
+structured mirror must serialize to that same text. Any match keeps the normal
+view, preserving matches spanning fields and the existing redaction counts.
+Projected text still passes through redaction and `maxTextBytes`; a cut sets
+`truncated` as usual. The downstream object is unchanged, and signed
+`resultDigest` still covers the complete original result. Compact views add no
+raw-result storage or retrieval endpoint.
+
+See [the replay report](GRAPH_VIEWS_BENCHMARK.md) for measured size reductions and
+their limits.
+
 ## Filesystem observation
 
 The observer hashes regular-file contents and records file type, mode, and size. It does not retain file contents, and it records but never follows symlinks inside an observed root. Entry and byte limits fail closed.

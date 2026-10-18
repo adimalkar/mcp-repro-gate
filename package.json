@@ -34,6 +34,7 @@
   "scripts": {
     "bench:code-discovery": "npm run build --silent && node dist/benchmarks/code-discovery.js",
     "build": "tsc -p tsconfig.json",
+    "bench:graph-views": "npm run build --silent && node dist/benchmarks/graph-views.js",
     "check": "npm run format:check && npm run lint && npm run typecheck && npm test",
     "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
     "demo": "npm run build --silent && node dist/src/cli.js demo",

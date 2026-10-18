@@ -2,6 +2,14 @@ import * as z from "zod/v4";
 
 import { issueCapabilityToken } from "./capability-token.js";
 import type { ReproGateExecutor } from "./executor.js";
+import {
+  GRAPH_VIEWS,
+  graphViewKey,
+  MAX_GRAPH_VIEW_CHARS,
+  projectGraphPayload,
+  sameJson,
+  type GraphView,
+} from "./graph-view.js";
 import { heldApprovalMatches, type HeldApprovalV1 } from "./held-approval.js";
 import type { PlannedAction, ReproGateKernel } from "./kernel.js";
 import type { EffectClass } from "./types.js";
@@ -46,6 +54,28 @@ export const mediationConfigSchema = z
         redactPatterns: z
           .array(z.string().min(1).max(256).refine(usablePattern))
           .max(16)
+          .optional(),
+        graphViews: z
+          .array(
+            z.strictObject({
+              serverRef: z.string().min(1).max(256),
+              toolName: z.string().min(1).max(256),
+              view: z.enum(GRAPH_VIEWS),
+            }),
+          )
+          .max(64)
+          .superRefine((entries, context) => {
+            const seen = new Set<string>();
+            for (const entry of entries) {
+              const key = graphViewKey(entry.serverRef, entry.toolName);
+              if (seen.has(key))
+                context.addIssue({
+                  code: "custom",
+                  message: `Duplicate graph view for ${entry.serverRef}/${entry.toolName}`,
+                });
+              seen.add(key);
+            }
+          })
           .optional(),
       })
       .strict()
@@ -187,6 +217,7 @@ export class HostMediator {
   // Bumped by each resolver success, so a failure that started before it
   // does not count against the fresh period.
   #generation = 0;
+  readonly #graphViews: ReadonlyMap<string, GraphView>;
 
   constructor(
     readonly executor: ReproGateExecutor,
@@ -199,6 +230,12 @@ export class HostMediator {
     this.#effects = new Set(config.effects ?? []);
     this.#maxRuns = config.maxRunsPerPlan ?? 1;
     this.#maxTextBytes = config.result?.maxTextBytes ?? DEFAULT_MAX_TEXT_BYTES;
+    this.#graphViews = new Map(
+      (config.result?.graphViews ?? []).map((entry) => [
+        graphViewKey(entry.serverRef, entry.toolName),
+        entry.view,
+      ]),
+    );
     this.#patterns = (config.result?.redactPatterns ?? []).map(
       (pattern) => new RegExp(pattern, "gu"),
     );
@@ -364,7 +401,7 @@ export class HostMediator {
       outcome: receipt.outcome,
       receiptDigest: receipt.receiptDigest,
       resultDigest: receipt.resultDigest,
-      ...this.bound(downstreamResult),
+      ...this.bound(downstreamResult, this.#configuredView(plan)),
       ...(strikes === undefined ? {} : { strikes }),
     };
   }
@@ -416,8 +453,15 @@ export class HostMediator {
       outcome: receipt.outcome,
       receiptDigest: receipt.receiptDigest,
       resultDigest: receipt.resultDigest,
-      ...this.bound(downstreamResult),
+      ...this.bound(downstreamResult, this.#configuredView(plan)),
     };
+  }
+
+  // The compact view the host configured for this exact server and tool.
+  #configuredView(plan: PlannedAction): GraphView | undefined {
+    return this.#graphViews.get(
+      graphViewKey(plan.envelope.tool.serverRef, plan.envelope.tool.toolName),
+    );
   }
 
   /** A model-visible error message, redacted and bounded like results. */
@@ -518,8 +562,68 @@ export class HostMediator {
     return replaced > 0 ? JSON.stringify(Object.fromEntries(fields)) : whole;
   }
 
-  /** Redact, then bound, the model-visible view of a downstream result. */
-  bound(result: unknown): BoundedContent {
+  #graphView(
+    result: unknown,
+    view: GraphView,
+  ): { content: { type: "text"; text: string }[] } | undefined {
+    if (
+      result === null ||
+      typeof result !== "object" ||
+      !("content" in result) ||
+      !Array.isArray(result.content) ||
+      result.content.length !== 1 ||
+      Object.keys(result).some(
+        (key) => !["content", "structuredContent", "isError"].includes(key),
+      ) ||
+      ("isError" in result &&
+        result.isError !== false &&
+        result.isError !== undefined)
+    )
+      return undefined;
+    const item: unknown = result.content[0];
+    if (
+      item === null ||
+      typeof item !== "object" ||
+      !("type" in item) ||
+      item.type !== "text" ||
+      !("text" in item) ||
+      typeof item.text !== "string" ||
+      Object.keys(item).some((key) => !["type", "text"].includes(key))
+    )
+      return undefined;
+    const text = item.text;
+    // Bounds the parse, schema check, redaction and mirror comparison.
+    if (text.length > MAX_GRAPH_VIEW_CHARS) return undefined;
+    // Removing fields must not split a host pattern or hide its count.
+    if (this.#redact(text).count > 0) return undefined;
+    let payload: unknown;
+    try {
+      payload = JSON.parse(text);
+    } catch {
+      return undefined;
+    }
+    // Only compact JSON exactly as JSON.stringify writes it: no duplicate
+    // keys, escaped spellings or whitespace that parsing would hide.
+    if (JSON.stringify(payload) !== text) return undefined;
+    const projected = projectGraphPayload(payload, view);
+    if (projected === undefined) return undefined;
+    // A structured copy must serialize to the same text, so the redaction
+    // check above covered it too.
+    if (
+      "structuredContent" in result &&
+      result.structuredContent !== undefined &&
+      !sameJson(payload, result.structuredContent)
+    )
+      return undefined;
+    return { content: [{ type: "text", text: JSON.stringify(projected) }] };
+  }
+
+  /** Redact, then bound, the optionally projected model-visible view. */
+  bound(original: unknown, view?: GraphView): BoundedContent {
+    const result =
+      view === undefined
+        ? original
+        : (this.#graphView(original, view) ?? original);
     const texts: string[] = [];
     let structured: unknown;
     let omittedItems = 0;

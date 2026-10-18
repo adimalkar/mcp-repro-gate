@@ -289,6 +289,18 @@ export function validateRuntimeConfig(config: RuntimeConfigV1): void {
     );
   }
 
+  // Reject configuration typos before any backend starts.
+  for (const view of config.mediation?.result?.graphViews ?? []) {
+    if (
+      !config.catalog.some(
+        (tool) =>
+          tool.serverRef === view.serverRef && tool.toolName === view.toolName,
+      )
+    )
+      throw new Error(
+        `Graph view references ${view.serverRef}/${view.toolName}, which is absent from the catalog`,
+      );
+  }
   for (const [serverRef, backend] of Object.entries(config.backends))
     assertBackendFiles(serverRef, backend);
 }

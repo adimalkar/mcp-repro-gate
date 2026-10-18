@@ -119,6 +119,60 @@ function environment(): NodeJS.ProcessEnv {
   };
 }
 
+test("graph views require catalog identities before runtime startup", async (context) => {
+  const fixture = await createFixture(context);
+  const entry = {
+    serverRef: "configured",
+    toolName: "publish",
+    view: "search",
+  };
+  const config = {
+    ...fixture.config,
+    mediation: { effects: ["local_read"], result: { graphViews: [entry] } },
+  };
+  const schema = JSON.parse(
+    readFileSync(
+      fileURLToPath(
+        new URL("../../schemas/runtime-config.schema.json", import.meta.url),
+      ),
+      "utf8",
+    ),
+  ) as object;
+  const validator = new Ajv2020({ strict: true });
+  assert.equal(validator.validate(schema, config), true);
+  writeFileSync(fixture.configPath, JSON.stringify(config));
+  loadRuntimeConfig(fixture.configPath);
+  for (const invalid of [
+    { ...entry, serverRef: "unknown" },
+    { ...entry, toolName: "prefix_publish" },
+  ]) {
+    writeFileSync(
+      fixture.configPath,
+      JSON.stringify({
+        ...config,
+        mediation: { ...config.mediation, result: { graphViews: [invalid] } },
+      }),
+    );
+    assert.throws(
+      () => loadRuntimeConfig(fixture.configPath),
+      /absent from the catalog/u,
+    );
+  }
+  for (const invalid of [
+    { ...entry, view: "automatic" },
+    { ...entry, unknown: true },
+    { ...entry, serverRef: "" },
+    { ...entry, toolName: "x".repeat(257) },
+  ])
+    assert.equal(
+      validator.validate(schema, {
+        ...config,
+        mediation: { ...config.mediation, result: { graphViews: [invalid] } },
+      }),
+      false,
+    );
+});
+
 test("configured runtime enables an artifact-bound execution facade", async (context) => {
   const fixture = await createFixture(context);
   const schema = JSON.parse(
