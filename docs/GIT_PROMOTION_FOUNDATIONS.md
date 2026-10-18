@@ -2,9 +2,9 @@
 
 ## Status and scope
 
-These are library foundations for journaled, operator-reviewed Git ref promotion. They do **not** implement protected-ref promotion, approval consumption for promotion, final authorization/CAS, conservative promotion recovery, or a promotion CLI. Existing `git-review` commands remain the V1 review workflow; no default MCP promotion, signing or approval tool is added.
+These are library foundations for journaled, operator-reviewed Git ref promotion. They do not themselves promote a ref, consume an approval, or recover an attempt; the [promotion journal](GIT_PROMOTION_JOURNAL.md) and the [promotion commands](GIT_PROMOTION.md) build those on top. No default MCP promotion, signing or approval tool is added.
 
-The development modules are `src/git-change-proposal.ts`, `src/git-change-stage.ts`, `src/git-promotion-objects.ts` and `src/git-promotion-host-control.ts`. The object-preparation and host-control modules are not yet exposed as stable package entrypoints through the package export map. They are intended for explicit trusted-host integration in the subsequent promotion slice, not invocation by an agent as approval authority.
+The development modules are `src/git-change-proposal.ts`, `src/git-change-stage.ts`, `src/git-promotion-objects.ts` and `src/git-promotion-host-control.ts`. The object-preparation and host-control modules are not exposed as stable package entrypoints through the package export map. Hosts drive them through `git-review promote` or the `SqliteGitApprovalStore` promotion methods, never as approval authority for an agent.
 
 The implemented pieces are:
 
@@ -13,7 +13,7 @@ The implemented pieces are:
 - a persistent cooperative repository ownership fence;
 - bounded reads that reject observable metadata changes during reads.
 
-The subsequent [prepared promotion journal](GIT_PROMOTION_JOURNAL.md) implements durable one-use intent reservation. Final ref transition and host CLI/config integration remain follow-up work. Neither a candidate commit, ownership record nor prepared intent grants dispatch authority.
+The [promotion journal](GIT_PROMOTION_JOURNAL.md) implements durable one-use intent reservation, the final gate and recovery, and the [promotion commands](GIT_PROMOTION.md) drive them. Neither a candidate commit, ownership record nor prepared intent grants dispatch authority by itself.
 
 ## Requirements
 

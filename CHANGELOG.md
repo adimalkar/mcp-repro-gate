@@ -36,6 +36,10 @@ All notable changes will be documented in this file. The project follows [Semant
 
 ### Fixed
 
+- `action.plan` and `ReproGateKernel.plan` reject arguments that fail the catalog tool's input schema, with the executor's validator settings. Previously such a plan could be persisted, explained and approved, then refused at execution. Error messages name schema paths, never argument values.
+- New plan and approval SQLite databases are created owner-only (`0600`), and so are their sidecars. `git-review import` used to create a world-readable ledger that `git-review promote` then refused. Fence permission errors now name the offending path and the required modes.
+- `reprogate help`, `--help` and `-h` print usage on stdout and exit 0 instead of exiting as a usage error.
+- The façade benchmark planned `graph.list_routes` without its required `method` argument; the published numbers are unchanged.
 - `@modelcontextprotocol/client` is now a runtime dependency. The configured stdio downstream connector already imported it at runtime, so production installs without dev dependencies could not start configured backends.
 
 ### Changed
