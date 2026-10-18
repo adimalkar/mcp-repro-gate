@@ -2,29 +2,48 @@ import * as z from "zod/v4";
 
 export const GRAPH_VIEWS = ["search", "snippet"] as const;
 export type GraphView = (typeof GRAPH_VIEWS)[number];
-/** Aggregate original JSON/text characters examined before projection. */
+/** Longest reply text, in UTF-16 code units, that is parsed and projected. */
 export const MAX_GRAPH_VIEW_CHARS = 64 * 1024;
 
-/** Conservative bounded serialization for a possible structured mirror. */
-export function graphJson(
-  value: unknown,
-  maxChars: number,
-): string | undefined {
-  let remaining = maxChars;
-  try {
-    return JSON.stringify(value, (key: string, item: unknown) => {
-      // JSON escapes can expand each UTF-16 code unit to six characters.
-      // Charge keys and scalar values before JSON.stringify allocates them;
-      // a constant charge also bounds traversal of many tiny properties.
-      remaining -=
-        key.length * 6 + 8 + (typeof item === "string" ? item.length * 6 : 32);
-      if (remaining < 0)
-        throw new Error("Graph JSON processing window exceeded");
-      return item;
-    });
-  } catch {
-    return undefined;
+/** The lookup key for a server/tool identity, unambiguous for any names. */
+export function graphViewKey(serverRef: string, toolName: string): string {
+  return JSON.stringify([serverRef, toolName]);
+}
+
+/**
+ * Whether two JSON values serialize identically: equal scalars, and arrays
+ * and objects with the same keys in the same order. `expected` must already
+ * be shape-checked, which bounds the recursion depth; `actual` is compared
+ * node by node and never serialized.
+ */
+export function sameJson(expected: unknown, actual: unknown): boolean {
+  if (
+    expected === null ||
+    actual === null ||
+    typeof expected !== "object" ||
+    typeof actual !== "object"
+  )
+    return expected === actual;
+  if (Array.isArray(expected) || Array.isArray(actual)) {
+    if (!Array.isArray(expected) || !Array.isArray(actual)) return false;
+    return (
+      expected.length === actual.length &&
+      expected.every((item, index) => sameJson(item, actual[index]))
+    );
   }
+  const keys = Object.keys(expected);
+  const other = Object.keys(actual);
+  return (
+    keys.length === other.length &&
+    keys.every(
+      (key, index) =>
+        key === other[index] &&
+        sameJson(
+          (expected as Record<string, unknown>)[key],
+          (actual as Record<string, unknown>)[key],
+        ),
+    )
+  );
 }
 
 const count = z.number().int().nonnegative();

@@ -32,8 +32,9 @@ marker, making intentional diagnostic-field omission explicit.
 Project only a recognized successful graph response with one JSON text item,
 optionally mirrored exactly in structuredContent. Reject unknown payload/row
 fields rather than hide possible future warnings. Errors, non-mirrored text,
-non-text items, malformed data and replies above a fixed 64 Ki-character
-aggregate processing window fall back to the existing bounded view.
+non-text items, malformed data, text that is not compact JSON exactly as
+JSON.stringify writes it, and text above 64 Ki characters fall back to the
+existing bounded view.
 
 Before removing fields, check the complete original text and structured JSON
 for host redaction matches. Any match keeps the original view, preserving
@@ -61,3 +62,22 @@ subsequent runs; the executor API still returns the original downstream result.
 
 The default remains unchanged. This is a presentation feature for exact-name
 lookup/read workflows, not a general replacement for graph diagnostics.
+
+## Review
+
+- **Medium (fixed): the mirror check made the feature mostly inert.** It
+  serialized structuredContent under a budget that charged each string six
+  times its length, so a search of 8 or more rows, or a function above about
+  9 KB, fell back. The text must now be compact JSON exactly as
+  JSON.stringify writes it, and the mirror is compared structurally with the
+  parsed, shape-checked text, without serializing. A 40-row search and a
+  32 KB snippet now project; the bound is 64 Ki characters of text.
+- **Medium (fixed): untested guards.** Tests now fail if the text bound, the
+  redaction gate, the canonical-JSON check or the mirror comparison is
+  removed.
+- **Low (fixed): duplicate keys.** The parser kept the last value, so text
+  could carry rows the projection hid. Canonical text rejects them, along with
+  escaped spellings that only the mirror decoded.
+- **Low (fixed): docs.** The configuration section sat under the wrong heading,
+  the benchmark overstated its Git pinning, and the threat model said no
+  warning is dropped, though known free-form fields are.

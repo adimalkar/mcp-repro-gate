@@ -4,10 +4,10 @@ Compact graph views shrink what the model sees from a mediated graph lookup. Rep
 
 ## What is measured
 
-- **Input:** the six actual codebase-memory-mcp 0.9.0 replies recorded in `docs/benchmarks/code-discovery-v1.json` at commit `e4c9600`. The input fixture pins that file by digest (`docs/benchmarks/graph-views-input-v1.json`). Nothing is fetched or launched.
+- **Input:** the six actual codebase-memory-mcp 0.9.0 replies recorded in `docs/benchmarks/code-discovery-v1.json` by #40 (commit `e4c9600` on its branch). The input fixture (`docs/benchmarks/graph-views-input-v1.json`) records that file's sha256. Nothing is fetched or launched.
 - **Before:** `HostMediator.bound()` without a graph view, which is today's mediated view with mirror deduplication and the default `maxTextBytes` of 16384. The bytes counted are the JSON-serialized bounded content.
 - **After:** the same call with the `search` or `snippet` view configured.
-- **Checks:** every task must still name the expected file. The snippet's source must match the pinned Git source byte for byte, newlines included, and must contain the expected implementation fragment. A failed check stops the run.
+- **Checks:** every task must still name the expected file. The snippet's source must match a sha256 recorded from the pinned source revision `6eabc20` (lines start to end, newlines included), and must contain the expected implementation fragment. The harness does not read Git itself. A failed check stops the run.
 
 Reproduce, with no graph binary needed:
 
@@ -49,7 +49,7 @@ This does **not** show that the roadmap criterion is met:
 
 - **Different accounting.** #40 counted complete MCP payloads. This table counts one copy of the bounded view and leaves out the `action.run` summary. A host that shows the model both text content and `structuredContent` receives roughly twice the view, plus the summary on every call.
 - **A narrow baseline.** It reads complete matched files. An agent that narrows its grep or reads only selected lines would use far fewer bytes.
-- **A narrow fixture.** It covers six exact-name lookups on one repository, not exploration or call-graph tasks.
+- **A narrow fixture.** It covers six exact-name lookups on one repository, not exploration or call-graph tasks. Every search returns a single row with no further pages, so multi-row results and pagination are covered only by unit tests, not measured.
 - **No host tokens.** Host token counts and task completion need the two-host runs.
 
 Location queries still often cost more than grep, whose output for a unique name is a single line.

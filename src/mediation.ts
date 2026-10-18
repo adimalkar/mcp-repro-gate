@@ -4,9 +4,10 @@ import { issueCapabilityToken } from "./capability-token.js";
 import type { ReproGateExecutor } from "./executor.js";
 import {
   GRAPH_VIEWS,
-  graphJson,
+  graphViewKey,
   MAX_GRAPH_VIEW_CHARS,
   projectGraphPayload,
+  sameJson,
   type GraphView,
 } from "./graph-view.js";
 import { heldApprovalMatches, type HeldApprovalV1 } from "./held-approval.js";
@@ -63,14 +64,18 @@ export const mediationConfigSchema = z
             }),
           )
           .max(64)
-          .refine(
-            (entries) =>
-              new Set(
-                entries.map((entry) =>
-                  JSON.stringify([entry.serverRef, entry.toolName]),
-                ),
-              ).size === entries.length,
-          )
+          .superRefine((entries, context) => {
+            const seen = new Set<string>();
+            for (const entry of entries) {
+              const key = graphViewKey(entry.serverRef, entry.toolName);
+              if (seen.has(key))
+                context.addIssue({
+                  code: "custom",
+                  message: `Duplicate graph view for ${entry.serverRef}/${entry.toolName}`,
+                });
+              seen.add(key);
+            }
+          })
           .optional(),
       })
       .strict()
@@ -227,7 +232,7 @@ export class HostMediator {
     this.#maxTextBytes = config.result?.maxTextBytes ?? DEFAULT_MAX_TEXT_BYTES;
     this.#graphViews = new Map(
       (config.result?.graphViews ?? []).map((entry) => [
-        JSON.stringify([entry.serverRef, entry.toolName]),
+        graphViewKey(entry.serverRef, entry.toolName),
         entry.view,
       ]),
     );
@@ -451,10 +456,10 @@ export class HostMediator {
       ...this.bound(
         downstreamResult,
         this.#graphViews.get(
-          JSON.stringify([
+          graphViewKey(
             plan.envelope.tool.serverRef,
             plan.envelope.tool.toolName,
-          ]),
+          ),
         ),
       ),
     };
@@ -558,7 +563,10 @@ export class HostMediator {
     return replaced > 0 ? JSON.stringify(Object.fromEntries(fields)) : whole;
   }
 
-  #graphView(result: unknown, view: GraphView): unknown {
+  #graphView(
+    result: unknown,
+    view: GraphView,
+  ): { content: { type: "text"; text: string }[] } | undefined {
     if (
       result === null ||
       typeof result !== "object" ||
@@ -568,7 +576,9 @@ export class HostMediator {
       Object.keys(result).some(
         (key) => !["content", "structuredContent", "isError"].includes(key),
       ) ||
-      ("isError" in result && result.isError !== false)
+      ("isError" in result &&
+        result.isError !== false &&
+        result.isError !== undefined)
     )
       return undefined;
     const item: unknown = result.content[0];
@@ -583,34 +593,29 @@ export class HostMediator {
     )
       return undefined;
     const text = item.text;
-    // Do not serialize a huge structured copy when the text alone is too
-    // large. For real MCP JSON replies the mirrored channels are bounded
-    // together here before parsing, redaction or projection.
+    // Bounds the parse, schema check, redaction and mirror comparison.
     if (text.length > MAX_GRAPH_VIEW_CHARS) return undefined;
-    const hasStructured =
-      "structuredContent" in result && result.structuredContent !== undefined;
-    const whole = hasStructured
-      ? graphJson(result.structuredContent, MAX_GRAPH_VIEW_CHARS - text.length)
-      : undefined;
-    if (hasStructured && whole === undefined) return undefined;
-    if (text.length + (whole?.length ?? 0) > MAX_GRAPH_VIEW_CHARS)
-      return undefined;
     // Removing fields must not split a host pattern or hide its count.
-    if (
-      this.#redact(text).count > 0 ||
-      (whole !== undefined && this.#redact(whole).count > 0)
-    )
-      return undefined;
+    if (this.#redact(text).count > 0) return undefined;
     let payload: unknown;
     try {
       payload = JSON.parse(text);
     } catch {
       return undefined;
     }
-    if (whole !== undefined && JSON.stringify(payload) !== whole)
-      return undefined;
+    // Only compact JSON exactly as JSON.stringify writes it: no duplicate
+    // keys, escaped spellings or whitespace that parsing would hide.
+    if (JSON.stringify(payload) !== text) return undefined;
     const projected = projectGraphPayload(payload, view);
     if (projected === undefined) return undefined;
+    // A structured copy must serialize to the same text, so the redaction
+    // check above covered it too.
+    if (
+      "structuredContent" in result &&
+      result.structuredContent !== undefined &&
+      !sameJson(payload, result.structuredContent)
+    )
+      return undefined;
     return { content: [{ type: "text", text: JSON.stringify(projected) }] };
   }
 

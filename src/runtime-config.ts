@@ -297,7 +297,9 @@ export function validateRuntimeConfig(config: RuntimeConfigV1): void {
           tool.serverRef === view.serverRef && tool.toolName === view.toolName,
       )
     )
-      throw new Error("Graph view references a tool absent from the catalog");
+      throw new Error(
+        `Graph view references ${view.serverRef}/${view.toolName}, which is absent from the catalog`,
+      );
   }
   for (const [serverRef, backend] of Object.entries(config.backends))
     assertBackendFiles(serverRef, backend);

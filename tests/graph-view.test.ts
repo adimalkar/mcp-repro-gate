@@ -8,7 +8,7 @@ import { digestCanonical } from "../src/digest.js";
 import { SqliteExecutionStore } from "../src/execution-store.js";
 import { ReproGateExecutor } from "../src/executor.js";
 import { actionRunOutputSchema } from "../src/facade.js";
-import { graphJson, MAX_GRAPH_VIEW_CHARS } from "../src/graph-view.js";
+import { MAX_GRAPH_VIEW_CHARS, sameJson } from "../src/graph-view.js";
 import { ReproGateKernel } from "../src/kernel.js";
 import { HostMediator, mediationConfigSchema } from "../src/mediation.js";
 import { verifyExecutionReceipt } from "../src/receipt.js";
@@ -219,28 +219,97 @@ test("projected views obey the UTF-8 byte bound and report truncation", () => {
   assert.equal((actual.content[0]?.text ?? "").includes("�"), false);
 });
 
-test("structured mirror processing stops within a conservative character budget", () => {
-  assert.equal(graphJson({ x: "small" }, 1000), '{"x":"small"}');
-  assert.equal(
-    graphJson({ x: "x".repeat(MAX_GRAPH_VIEW_CHARS) }, MAX_GRAPH_VIEW_CHARS),
-    undefined,
-  );
-  assert.equal(
-    graphJson(
-      Array.from({ length: 10000 }, () => 0),
-      MAX_GRAPH_VIEW_CHARS,
-    ),
-    undefined,
-  );
-  const circular: Record<string, unknown> = {};
-  circular.self = circular;
-  assert.equal(graphJson(circular, MAX_GRAPH_VIEW_CHARS), undefined);
+test("mirrored replies project up to the text bound", () => {
   const host = mediator();
-  const input = {
-    ...reply(search),
-    structuredContent: { x: "x".repeat(MAX_GRAPH_VIEW_CHARS) },
+  const projected = (input: unknown, view: "search" | "snippet") =>
+    (host.bound(input, view).content[0]?.text ?? "").includes(
+      `"view":"graph_${view}_v1"`,
+    );
+  // Realistic sizes: many rows, or a large function, with a mirror.
+  const rows = Array.from({ length: 40 }, (_, index) => ({
+    ...row,
+    name: `example${String(index)}`,
+    fp: "f".repeat(200),
+    bt: "token stream ".repeat(40),
+  }));
+  const many = { total: 40, has_more: false, results: rows };
+  assert.ok(JSON.stringify(many).length > 30_000);
+  assert.equal(projected(reply(many), "search"), true);
+  const large = { ...snippet, source: "line();\n".repeat(4000) };
+  assert.equal(projected(reply(large), "snippet"), true);
+
+  // The bound applies to the text, with or without a mirror.
+  const base = JSON.stringify({ ...snippet, source: "" }).length;
+  const exact = { ...snippet, source: "a".repeat(MAX_GRAPH_VIEW_CHARS - base) };
+  assert.equal(JSON.stringify(exact).length, MAX_GRAPH_VIEW_CHARS);
+  const over = { ...exact, source: `${exact.source}a` };
+  for (const mirror of [false, true]) {
+    assert.equal(projected(reply(exact, mirror), "snippet"), true);
+    assert.equal(projected(reply(over, mirror), "snippet"), false);
+  }
+
+  // isError may be absent.
+  const withoutError: Record<string, unknown> = { ...reply(search) };
+  delete withoutError.isError;
+  assert.equal(projected(withoutError, "search"), true);
+});
+
+test("only compact JSON exactly as serialized is projected", () => {
+  const host = mediator();
+  const text = JSON.stringify(search);
+  const fallsBack = (input: unknown) => {
+    assert.deepEqual(host.bound(input, "search"), host.bound(input));
   };
-  assert.deepEqual(host.bound(input, "search"), host.bound(input));
+  // Pretty-printed text, and text with a duplicate key hiding rows.
+  fallsBack({
+    content: [{ type: "text", text: JSON.stringify(search, null, 2) }],
+    structuredContent: search,
+  });
+  fallsBack({
+    content: [
+      {
+        type: "text",
+        text: `${text.slice(0, -1)},"results":[]}`,
+      },
+    ],
+  });
+  // A mirror with the same values in a different key order.
+  fallsBack({
+    content: [{ type: "text", text }],
+    structuredContent: {
+      has_more: search.has_more,
+      total: search.total,
+      results: search.results,
+    },
+  });
+  // An escaped token in the text, decoded in the mirror: the normal view
+  // redacts the mirror, and so the projection must not hide that count.
+  const token = "rg1.abc.def";
+  const escaped = text.replace(
+    '"bt":"diagnostic token stream"',
+    `"bt":"\\u0072g1.abc.def"`,
+  );
+  assert.notEqual(escaped, text);
+  const input = {
+    content: [{ type: "text", text: escaped }],
+    structuredContent: {
+      ...search,
+      results: [{ ...row, bt: token }, search.results[1]],
+    },
+  };
+  const actual = host.bound(input, "search");
+  assert.deepEqual(actual, host.bound(input));
+  assert.ok(actual.redactions >= 1);
+});
+
+test("sameJson compares serialized form without serializing", () => {
+  assert.equal(sameJson({ a: [1, "x", null] }, { a: [1, "x", null] }), true);
+  assert.equal(sameJson({ a: 1, b: 2 }, { b: 2, a: 1 }), false);
+  assert.equal(sameJson([1, 2], [1, 2, 3]), false);
+  assert.equal(sameJson({ a: [1] }, { a: { 0: 1 } }), false);
+  assert.equal(sameJson({ a: 1 }, { a: 1, b: undefined }), false);
+  assert.equal(sameJson("1", 1), false);
+  assert.equal(sameJson(0, -0), true);
 });
 
 test("graph profile configuration rejects ambiguous identities and unknown options", () => {
