@@ -21,7 +21,7 @@ A host first loads tool definitions, then spends calls finding a tool:
 
 | Item                               | Bytes |
 | ---------------------------------- | ----: |
-| façade tool list                   |  9781 |
+| façade tool list                   |  9856 |
 | direct tool list                   |  4964 |
 | finding a tool (search + describe) |  2498 |
 | average downstream tool definition |   355 |
