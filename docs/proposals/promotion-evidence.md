@@ -122,7 +122,7 @@ node dist/src/cli.js verify-evidence --bundle bundle.json --trust trust.json [--
 - **Proposal source:** the bundle has no separate `proposal`. The attempt already embeds it, so the verifier checks it there.
 - **Attempt record:** the attempt is exported without `repositoryPath` and `fenceOwner`, because the fence owner carries the fence token. `parseGitPromotionAttemptEvidence` applies the same proposal, prepared-object and authority checks as the journal parser. `parseGitPromotionRecords` shares the admission and outcome binding checks with the journal readback.
 - **Review time:** `authenticateGitOperatorReview` gained an optional reference time, so the review is judged at admission, or at reservation for an attempt that was never admitted. The default is still the current time.
-- **Staged diff equivalence:** staging hashes `git diff --cached --binary --no-ext-diff --no-textconv <base>` over the candidate index. The verifier hashes the tree-to-tree diff with the same options. The round-trip test shows the two agree on a real repository.
+- **Staged diff equivalence:** the verifier reproduces staging's computation exactly: it reads the candidate tree into an index (re-hashing it with `write-tree`), then hashes `git diff --cached --binary --no-ext-diff --no-textconv <base>`. It does this in an empty repository that borrows the trusted clone's objects, with commit-graph caches disabled.
 
 ## Review
 

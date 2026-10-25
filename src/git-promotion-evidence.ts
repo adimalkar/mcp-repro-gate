@@ -355,23 +355,14 @@ export function verifyGitPromotionEvidence(
     }
     const prepared = attempt.prepared;
     const patch = options.patch;
-    withBorrowedObjects(options.repositoryPath, (repo) => {
+    withBorrowedObjects(options.repositoryPath, (git) => {
       attemptTo("candidate_commit", () => {
-        const raw = runGit([
-          "-C",
-          repo,
-          "cat-file",
-          "commit",
-          prepared.candidateCommitOid,
-        ]);
+        const raw = git(["cat-file", "commit", prepared.candidateCommitOid]);
         const header = raw.toString("utf8").split("\n\n", 1)[0] ?? "";
         const parents = header
           .split("\n")
           .filter((line) => line.startsWith("parent "));
-        const rehashed = runGit(
-          ["-C", repo, "hash-object", "-t", "commit", "--stdin"],
-          raw,
-        )
+        const rehashed = git(["hash-object", "-t", "commit", "--stdin"], raw)
           .toString("utf8")
           .trim();
         if (
@@ -389,10 +380,14 @@ export function verifyGitPromotionEvidence(
       attemptTo("staged_diff", () => {
         // Exactly the staging computation: the candidate tree in an index,
         // diffed against the base commit.
-        runGit(["-C", repo, "read-tree", prepared.candidateTreeOid]);
-        const diff = runGit([
-          "-C",
-          repo,
+        git(["read-tree", prepared.candidateTreeOid]);
+        // write-tree re-hashes the tree read from the borrowed objects.
+        if (
+          git(["write-tree"]).toString("utf8").trim() !==
+          prepared.candidateTreeOid
+        )
+          throw new Error("Candidate tree objects do not hash to their OID");
+        const diff = git([
           "diff",
           "--cached",
           "--binary",
@@ -407,11 +402,9 @@ export function verifyGitPromotionEvidence(
       });
       if (patch !== undefined)
         attemptTo("patch_applies", () => {
-          runGit(["-C", repo, "read-tree", prepared.baseCommit]);
-          runGit(["-C", repo, "apply", "--cached", "--binary", "-"], patch);
-          const tree = runGit(["-C", repo, "write-tree"])
-            .toString("utf8")
-            .trim();
+          git(["read-tree", prepared.baseCommit]);
+          git(["apply", "--cached", "--binary", "-"], patch);
+          const tree = git(["write-tree"]).toString("utf8").trim();
           if (tree !== prepared.candidateTreeOid)
             throw new Error("Patch does not reproduce the staged tree");
           checks.push({ check: "patch_applies", ok: true });
@@ -434,7 +427,7 @@ export function verifyGitPromotionEvidence(
  */
 function withBorrowedObjects(
   repositoryPath: string,
-  run: (repo: string) => void,
+  run: (git: (args: string[], input?: Uint8Array) => Buffer) => void,
 ): void {
   const root = realpathSync.native(repositoryPath);
   const common = runGit([
@@ -445,7 +438,9 @@ function withBorrowedObjects(
     "--git-common-dir",
   ])
     .toString("utf8")
-    .trim();
+    .replace(/\n$/u, "");
+  if (common.includes("\n") || common !== common.trim())
+    throw new Error("Unsupported repository path for evidence checks");
   const format = runGit(["-C", root, "rev-parse", "--show-object-format"])
     .toString("utf8")
     .trim();
@@ -459,7 +454,10 @@ function withBorrowedObjects(
       join(repo, ".git", "objects", "info", "alternates"),
       `${join(common, "objects")}\n`,
     );
-    run(repo);
+    // Commit-graph files are caches; read trees from the objects themselves.
+    run((args, input) =>
+      runGit(["-C", repo, "-c", "core.commitGraph=false", ...args], input),
+    );
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
