@@ -243,6 +243,8 @@ export function authenticateGitOperatorReview(
   authority: GitApprovalAuthority,
   expectedEffectDigest: Digest,
   hostTrust: unknown,
+  // Offline evidence checks validity at a recorded time, not the clock.
+  at: number = Date.now(),
 ):
   | Readonly<{
       payload: Readonly<GitOperatorReviewPayloadV1>;
@@ -305,7 +307,7 @@ export function authenticateGitOperatorReview(
     const createdAt = Date.parse(expectedProposal.createdAt);
     const issuedAt = Date.parse(payload.issuedAt);
     const expiresAt = Date.parse(payload.expiresAt);
-    const now = Date.now();
+    const now = at;
     if (
       createdAt > issuedAt ||
       issuedAt > now ||

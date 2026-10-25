@@ -115,3 +115,11 @@ node dist/src/cli.js verify-evidence --bundle bundle.json --trust trust.json [--
 - Test and secret-scan verifier outputs inside the bundle.
 - Live-ref drift checks.
 - Transparency logs or third-party timestamping.
+
+## Implementation notes
+
+- **Commands:** they are `git-review export-evidence` and `git-review verify-evidence`, beside the other `git-review` commands. `verify-evidence` still reads no configuration.
+- **Proposal source:** the bundle has no separate `proposal`. The attempt already embeds it, so the verifier checks it there.
+- **Attempt record:** the attempt is exported without `repositoryPath` and `fenceOwner`, because the fence owner carries the fence token. `parseGitPromotionAttemptEvidence` applies the same proposal, prepared-object and authority checks as the journal parser. `parseGitPromotionRecords` shares the admission and outcome binding checks with the journal readback.
+- **Review time:** `authenticateGitOperatorReview` gained an optional reference time, so the review is judged at admission, or at reservation for an attempt that was never admitted. The default is still the current time.
+- **Staged diff equivalence:** staging hashes `git diff --cached --binary --no-ext-diff --no-textconv <base>` over the candidate index. The verifier hashes the tree-to-tree diff with the same options. The round-trip test shows the two agree on a real repository.
