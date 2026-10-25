@@ -8,7 +8,7 @@ This is the maintained improvement backlog for ReproGate, aligned with the [phas
 - [ ] Specify and test the versioned change contract: repository/base-ref witness, dirty state, allowed paths, exact patch digest, policy/approval identity, expiry/revocation epoch, and destination ref.
 - [ ] Stage the agent's candidate patch away from the protected target; do not assign a pre-commit enforcement claim to a direct-write backend.
 - [ ] Observe renames, deletions, mode changes, symlinks, untracked files, and path escapes; compare the proposed patch and changed-path manifest with approved scope.
-- [x] Revalidate approval, policy, and Git ref/workspace witness at the promotion boundary; serialize revocation with the check, fail closed on drift, and use a compare-and-swap ref update. (Host-only library gate; a promotion CLI is pending.)
+- [x] Revalidate approval, policy, and Git ref/workspace witness at the promotion boundary; serialize revocation with the check, fail closed on drift, and use a compare-and-swap ref update. (Host-only; `git-review promote` with a version 2 config.)
 - [ ] Export coverage-aware, content-addressed receipt bundles and an asymmetric-signature offline verifier that can recompute the changed-path claim from a Git object or supplied patch; make missing or unknown effect coverage explicit.
 - [ ] Add optional test, secret-scan, and user-script verifier evidence without conflating test success with authorization.
 - [ ] Maintain adversarial fixtures for stale refs, changed patches, concurrent promotion, interrupted promotion, symlink escape, and out-of-scope writes, plus benign false-denial fixtures.

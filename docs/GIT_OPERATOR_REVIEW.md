@@ -1,5 +1,7 @@
 # Out-of-band Git operator review
 
+These commands review version 1 proposals under a version 1 configuration, and version 2 proposals under a [version 2 configuration](GIT_PROMOTION.md#version-2-configuration). Only version 2 can be promoted; see [promoting a reviewed Git change](GIT_PROMOTION.md).
+
 This workflow authenticates a configured operator key's decision about one exact staged Git effect. It does not promote a Git ref, prove human presence or actual inspection, or confine an agent process. The default MCP server exposes no Git approval/signing tool.
 
 ## Deployment roles and prerequisites
