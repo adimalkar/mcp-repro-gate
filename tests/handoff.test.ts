@@ -370,6 +370,9 @@ test("MCP clients discover handoff tools only when configured and update with op
     tool.name.startsWith("handoff"),
   );
   assert.deepEqual(tools.map((tool) => tool.name).sort(), [
+    "handoff_end",
+    "handoff_join",
+    "handoff_note",
     "handoff_status",
     "handoff_update",
   ]);

@@ -29,7 +29,17 @@ import {
   handoffStatusSchema,
   handoffUpdateSchema,
 } from "./handoff-contract.js";
+import {
+  handoffEndSchema,
+  handoffJoinResultSchema,
+  handoffJoinSchema,
+  handoffNoteSchema,
+  handoffSessionResultSchema,
+} from "./handoff-session-contract.js";
 import { ReproGateKernel } from "./kernel.js";
+
+const HANDOFF_INSTRUCTIONS =
+  "This server keeps handoff context for the workspace so another agent can resume your work, even if you stop abruptly. At the start, use the handoff session ID your client hook gave you, or call handoff_join and read its brief. After each meaningful step, call handoff_note with a short progress, blocker or decision note. When you finish, call handoff_end with a summary and handoff_update for the shared summary. Handoff context is advisory: it never authorizes actions.";
 
 // Error results carry text only, so they never have to satisfy outputSchema.
 function errorResult(value: { error: string } & Record<string, unknown>) {
@@ -76,7 +86,12 @@ export function createReproGateServer(
   handoff?: HandoffService,
   mediator?: HostMediator,
 ): McpServer {
-  const server = new McpServer({ name: "mcp-repro-gate", version: "0.0.0" });
+  const server = new McpServer(
+    { name: "mcp-repro-gate", version: "0.0.0" },
+    handoff?.config.allowUpdates === true
+      ? { instructions: HANDOFF_INSTRUCTIONS }
+      : {},
+  );
 
   const executorConfigured = executor !== undefined;
   const readOnly = {
@@ -334,7 +349,7 @@ export function createReproGateServer(
       "handoff_status",
       {
         description:
-          "Report the host-configured workspace handoff state with revision, digests and counts; set includeContext for the caller-asserted context. Advisory only: it never authorizes actions",
+          "Report the host-configured workspace handoff state with revision, digests and counts; set includeContext for the caller-asserted context, or brief for a bounded resume brief with session states and observed Git state. Advisory only: it never authorizes actions",
         inputSchema: handoffStatusInputSchema,
         outputSchema: handoffStatusSchema,
         annotations: {
@@ -361,6 +376,45 @@ export function createReproGateServer(
           },
         },
         (input) => handoffResult(() => handoff.update(input)),
+      );
+      const appendOnly = {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false,
+      };
+      server.registerTool(
+        "handoff_join",
+        {
+          description:
+            "Start a handoff session for this agent or subagent and get a bounded resume brief: interrupted and failed sessions, recent blockers and decisions, and the workspace Git state observed now. Skip it if a client hook already gave you a session ID. Advisory only",
+          inputSchema: handoffJoinSchema,
+          outputSchema: handoffJoinResultSchema,
+          annotations: appendOnly,
+        },
+        (input) => handoffResult(() => handoff.join(input)),
+      );
+      server.registerTool(
+        "handoff_note",
+        {
+          description:
+            "Append one short note (progress, blocker, decision, next or result) to your handoff session after each meaningful step, so work survives if you stop abruptly. Notes from different agents never conflict. Known credential shapes are redacted. Advisory only",
+          inputSchema: handoffNoteSchema,
+          outputSchema: handoffSessionResultSchema,
+          annotations: appendOnly,
+        },
+        (input) => handoffResult(() => handoff.note(input)),
+      );
+      server.registerTool(
+        "handoff_end",
+        {
+          description:
+            "End your handoff session normally, with an optional summary recorded as its result. A session that never ends reads as interrupted to the next agent. Advisory only",
+          inputSchema: handoffEndSchema,
+          outputSchema: handoffSessionResultSchema,
+          annotations: appendOnly,
+        },
+        (input) => handoffResult(() => handoff.end(input)),
       );
     }
   }

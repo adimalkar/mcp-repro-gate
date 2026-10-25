@@ -18,6 +18,10 @@ import {
   canonicalHandoffPath,
   type HandoffDatabaseBinding,
 } from "./handoff-filesystem.js";
+import {
+  HANDOFF_SESSION_SCHEMA,
+  HandoffSessionLedger,
+} from "./handoff-sessions.js";
 import { envelopeDigest, verifyActionEnvelope } from "./envelope.js";
 import type { PlanStore, PlannedAction } from "./kernel.js";
 import { parseHeldApproval, type HeldApprovalV1 } from "./held-approval.js";
@@ -258,6 +262,7 @@ export class SqliteExecutionStore implements PlanStore, TokenUseStore {
         BEGIN SELECT RAISE(ABORT, 'Immutable handoff instance'); END;
       CREATE TRIGGER IF NOT EXISTS handoff_instance_no_delete BEFORE DELETE ON handoff_instance
         BEGIN SELECT RAISE(ABORT, 'Immutable handoff instance'); END;
+      ${HANDOFF_SESSION_SCHEMA}
     `,
       () => {
         this.#database
@@ -269,6 +274,14 @@ export class SqliteExecutionStore implements PlanStore, TokenUseStore {
     );
     binding.verify();
     this.#handoffBinding = binding;
+  }
+
+  /** Session lifecycle and notes, on this verified handoff connection. */
+  handoffSessions(): HandoffSessionLedger {
+    this.#verifyHandoff();
+    return new HandoffSessionLedger(this.#database, () => {
+      this.#verifyHandoff();
+    });
   }
 
   /** Random per-database identifier; it scopes history pruning. */

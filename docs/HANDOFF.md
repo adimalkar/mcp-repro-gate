@@ -70,8 +70,176 @@ Errors from the handoff service return `isError` with only a stable code: `inval
 
 The contracts are published as JSON Schema in [`schemas/handoff-config.schema.json`](../schemas/handoff-config.schema.json) and [`schemas/handoff.schema.json`](../schemas/handoff.schema.json) (`$defs/update`, `$defs/statusInput`, `$defs/status`, and the persisted record at the root). The implementation additionally enforces UTF-8 byte limits and rejects accessors, proxies and sparse arrays.
 
+## Sessions: many agents, abrupt stops
+
+A single handoff document fails in two common situations: many agents working at once, and an agent that stops before writing it, because of a rate limit, a crash, a closed terminal or context compaction. Sessions cover both. Each agent or subagent gets its own session. Agents add short notes to their own session, and ReproGate records lifecycle events itself, so the next agent learns what happened even if the previous one never wrote a word.
+
+### What is observed and what is asserted
+
+| Source                                            | Provenance        | Examples                                                       |
+| ------------------------------------------------- | ----------------- | -------------------------------------------------------------- |
+| Session lifecycle from MCP calls and client hooks | `observed`        | started, last seen, stopped on `rate_limit`, ended, subagent   |
+| Workspace Git state, read when a brief is built   | `observed`        | branch, divergence, merge or rebase in progress, changed paths |
+| Notes, summaries, the handoff document            | `caller_asserted` | "half of the migration is done", "decided to use WAL"          |
+
+"Observed" means ReproGate saw the event or read the state itself. It does not mean the agent's work is correct, and a session ID does not authenticate an agent.
+
+### Session states
+
+| State         | Meaning                                                                                                                                     |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `active`      | Seen within the lease (default 300 seconds)                                                                                                 |
+| `idle`        | The client reported that its turn finished; the session is waiting for input                                                                |
+| `quiet`       | Silent for longer than the lease, but within the grace period (default 600 seconds)                                                         |
+| `interrupted` | Silent for longer than lease plus grace, with no reported end; it probably stopped without handing off                                      |
+| `failed`      | The client reported that the turn stopped on an error such as `rate_limit`, `overloaded` or `billing_error`                                 |
+| `ended`       | Ended normally (`completed`), by its client (`client_ended`), as a finished subagent, or because its MCP connection closed (`disconnected`) |
+
+Only `failed`, `idle` and `ended` are facts reported by a client or the server. `quiet` and `interrupted` are inferred from silence, so a long model turn can look quiet; any later call from the session makes it `active` again. Lease and grace lengths are set in the configuration's optional `sessions` block.
+
+### Tools
+
+When `allowUpdates` is true, three more tools are registered, and the server's MCP instructions tell clients when to use them:
+
+- `handoff_join { handoffVersion, agent, kind?, parentSessionId?, task?, briefBytes? }` starts a session and returns its `sessionId` with a resume brief.
+- `handoff_note { handoffVersion, sessionId, kind, text }` appends one note: `progress`, `blocker`, `decision`, `next` or `result`. Notes go to the agent's own session, so concurrent agents never conflict, unlike whole-document updates.
+- `handoff_end { handoffVersion, sessionId, summary? }` ends the session; the summary is stored as a `result` note.
+
+`handoff_status { handoffVersion: 1, brief: true, briefBytes? }` adds a brief to the status. A brief lists the sessions that need attention first (failed, interrupted, quiet), recent blocker and decision notes, the goal and next steps from the latest handoff revision, and the Git state observed now. It is cut to `briefBytes` (default 8 KiB), and every omission is counted.
+
+When the MCP connection closes, the server ends the sessions joined through it as `disconnected`.
+
+### Client hooks: recording without a model call
+
+`reprogate handoff hook --config <handoff.json>` reads a Claude Code hook payload on standard input and records the event. It needs no model quota, so it still runs after a rate limit. It ignores payloads whose `cwd` is outside the configured workspace, so it can be configured for every project. It never blocks the client: failures go to standard error with exit code 0.
+
+| Claude Code event  | Recorded                                                                                                               |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------------- |
+| `SessionStart`     | Starts or resumes the session; prints the brief and the session ID as `additionalContext`, so the agent starts with it |
+| `UserPromptSubmit` | Activity, with the turn open. The prompt is not stored                                                                 |
+| `Stop`             | The turn finished: `idle`                                                                                              |
+| `StopFailure`      | The turn stopped on the reported error: `failed`                                                                       |
+| `SubagentStart`    | Starts a subagent session under its parent; gives the subagent its session ID and the goal only, not the whole brief   |
+| `SubagentStop`     | Ends the subagent session                                                                                              |
+| `PreCompact`       | Activity                                                                                                               |
+| `SessionEnd`       | Ends the session with the client's reason; it reads no Git state, so it fits the default 1.5 second budget             |
+
+Add the hooks to the project's or user's Claude Code settings (adjust the paths):
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "reprogate handoff hook --config /absolute/private/dir/handoff.json"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "reprogate handoff hook --config /absolute/private/dir/handoff.json"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "reprogate handoff hook --config /absolute/private/dir/handoff.json"
+          }
+        ]
+      }
+    ],
+    "StopFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "reprogate handoff hook --config /absolute/private/dir/handoff.json"
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "reprogate handoff hook --config /absolute/private/dir/handoff.json"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "reprogate handoff hook --config /absolute/private/dir/handoff.json"
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "reprogate handoff hook --config /absolute/private/dir/handoff.json"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "reprogate handoff hook --config /absolute/private/dir/handoff.json"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+For Codex, set its turn-completion notification program, which receives the notification as its last argument:
+
+```toml
+notify = ["reprogate", "handoff", "hook", "--config", "/absolute/private/dir/handoff.json", "--client", "codex"]
+```
+
+Each completed Codex turn marks the thread's session `idle`. Codex does not report errors or session ends this way, so a Codex session that stops mid-turn reads as `idle` after its last finished turn, and the observed Git state shows what changed since.
+
+`reprogate handoff brief --config <handoff.json> [--json] [--bytes <n>]` prints the brief for any agent or person: text limited to `n` characters (default 9000), or JSON limited to `n` bytes.
+
+### Messages from the model
+
+By default nothing the model writes is collected automatically. With `"sessions": { "captureMessages": true }`, the last reply of each turn (`Stop`, Codex notifications) and each subagent's final reply (`SubagentStop`) are stored, up to 1 KiB, after redaction. They help the next agent see what a session said last, but they are model output, so they may contain anything the model saw.
+
+### Redaction and bounds
+
+Notes, summaries, tasks and captured messages pass through a redactor for well-known credential shapes before they are stored: private-key blocks, GitHub, GitLab, Slack, AWS, Google, OpenAI-style, Stripe and npm tokens, JWTs, ReproGate capability tokens, `Bearer`/`Basic` credentials and passwords in URLs. The number of redactions is returned. This is a backstop for accidental pastes, not a secret scanner.
+
+Each session keeps its newest 64 notes and a total count. A workspace keeps its newest 256 sessions, dropping ended ones first; a session seen in the last minute is never dropped. Hook payloads over 1 MiB are ignored.
+
+### Git observation
+
+With `observeGit` (on by default), ReproGate reads the workspace's Git state through its hardened runner each time it builds a brief: `git status --porcelain=v2` without optional locks, so it never takes the index lock from an agent working at the same time. It also checks for a merge, rebase, cherry-pick, revert or bisect in progress, and lists up to 10 commits since the newest other session started. It records no file contents or diffs. Each Git call has a time and output bound. A workspace that is not a repository, contains submodules, or uses unsupported line-ending configuration reads as `unavailable`.
+
 ## Limits
 
 - SQLite and the Markdown file are not one atomic transaction. A revision can be durable while its projection is `pending`. The status reports this honestly. External drift fails closed and keeps both the stored snapshot and the actual file.
-- Agent identity, completed work and touched paths are declarations. Nothing collects source, diffs, environment variables or command output automatically.
+- Agent identity, completed work and touched paths are declarations. Nothing collects source, diffs, environment variables or command output automatically; model replies are collected only with `captureMessages`.
+- Session states other than `failed`, `idle` and `ended` are inferred from silence. Hooks must be configured for client events to be recorded; without them, only MCP calls are seen.
 - Identity and permission checks narrow, but cannot remove, races with a hostile writer running as the same user.

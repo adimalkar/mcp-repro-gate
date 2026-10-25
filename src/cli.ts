@@ -20,6 +20,7 @@ import {
 } from "./research/search.js";
 import { createResearchServer } from "./research/server.js";
 import { createHandoffService, type HandoffService } from "./handoff.js";
+import { readStdin, runHandoffCli } from "./handoff-cli.js";
 import {
   loadHandoffConfig,
   prepareHandoffDatabase,
@@ -392,6 +393,14 @@ async function main(): Promise<void> {
     );
     return;
   }
+  if (command === "handoff") {
+    process.exitCode = runHandoffCli(process.argv.slice(3), {
+      stdout: (text) => process.stdout.write(text),
+      stderr: (text) => process.stderr.write(text),
+      stdin: readStdin,
+    });
+    return;
+  }
   if (command === "git-review") {
     process.exitCode = runGitReviewCli(process.argv.slice(3), {
       stdout: (text) => process.stdout.write(text),
@@ -400,7 +409,7 @@ async function main(): Promise<void> {
     return;
   }
   process.stderr.write(
-    "Usage: reprogate [serve [--config <absolute-path>] [--handoff-config <absolute-path>]|demo|approve [--config <absolute-path>] <target> <action-id>|verify-receipt [--config <absolute-path>] <receipt.json>|catalog import --config <absolute-path> --backend <name> --effects <effects> ...|artifact digest <absolute-path>|bench facade [--json]|research-server [--allow-host <host>]... [--search-endpoint <url> [--search-endpoint-private]]|bench research [--html <file> --query <text>] [--json]|git-review <prepare|sign|import|check|revoke> ...]\n",
+    "Usage: reprogate [serve [--config <absolute-path>] [--handoff-config <absolute-path>]|demo|approve [--config <absolute-path>] <target> <action-id>|verify-receipt [--config <absolute-path>] <receipt.json>|catalog import --config <absolute-path> --backend <name> --effects <effects> ...|artifact digest <absolute-path>|bench facade [--json]|research-server [--allow-host <host>]... [--search-endpoint <url> [--search-endpoint-private]]|bench research [--html <file> --query <text>] [--json]|handoff <hook|brief> --config <absolute-path> ...|git-review <prepare|sign|import|check|revoke> ...]\n",
   );
   process.exitCode = 2;
 }

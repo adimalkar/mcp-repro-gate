@@ -2,11 +2,21 @@ import { isAbsolute } from "node:path";
 import { isProxy } from "node:util/types";
 import { z } from "zod/v4";
 
+import {
+  HANDOFF_UNSAFE_TEXT,
+  HANDOFF_UUID_PATTERN,
+  handoffUuidSchema,
+} from "./handoff-primitives.js";
+import {
+  handoffBriefSchema,
+  handoffSessionsConfigSchema,
+} from "./handoff-session-contract.js";
+
+export { HANDOFF_UNSAFE_TEXT, HANDOFF_UUID_PATTERN, handoffUuidSchema };
+
 export const MAX_HANDOFF_BYTES = 64 * 1024;
 export const MAX_HANDOFF_DOCUMENT_BYTES = 96 * 1024;
 export const HANDOFF_DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$(?![\s\S])/u;
-export const HANDOFF_UUID_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$(?![\s\S])/u;
 const text = (bytes: number) =>
   z
     .string()
@@ -16,15 +26,9 @@ const text = (bytes: number) =>
         Buffer.byteLength(value) <= bytes &&
         Buffer.from(value).toString("utf8") === value,
     );
-// Terminal escapes and bidi overrides would render deceptively when an agent
-// or operator prints the projection; only tab, LF and CR remain.
-export const HANDOFF_UNSAFE_TEXT =
-  // eslint-disable-next-line no-control-regex -- Matching control characters is the purpose.
-  /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/u;
 const contextText = (bytes: number) =>
   text(bytes).refine((value) => !HANDOFF_UNSAFE_TEXT.test(value));
 export const handoffDigestSchema = z.string().regex(HANDOFF_DIGEST_PATTERN);
-export const handoffUuidSchema = z.string().regex(HANDOFF_UUID_PATTERN);
 const revisionSchema = z
   .number()
   .int()
@@ -58,6 +62,7 @@ export const handoffConfigSchema = z.strictObject({
   workspaceRoot: pathSchema.refine(isAbsolute),
   databasePath: pathSchema.refine(isAbsolute),
   allowUpdates: z.boolean(),
+  sessions: handoffSessionsConfigSchema.optional(),
 });
 export const handoffUpdateSchema = z.strictObject({
   handoffVersion: z.literal(1),
@@ -70,6 +75,8 @@ export const handoffUpdateSchema = z.strictObject({
 export const handoffStatusInputSchema = z.strictObject({
   handoffVersion: z.literal(1),
   includeContext: z.boolean().optional(),
+  brief: z.boolean().optional(),
+  briefBytes: z.number().int().min(1024).max(65536).optional(),
 });
 const timestampSchema = z
   .string()
@@ -125,6 +132,7 @@ export const handoffStatusSchema = z.strictObject({
   }),
   context: handoffContextSchema.optional(),
   references: z.array(handoffReferenceSchema).max(16).optional(),
+  brief: handoffBriefSchema.optional(),
 });
 export type HandoffConfigV1 = z.infer<typeof handoffConfigSchema>;
 export type HandoffUpdateV1 = z.infer<typeof handoffUpdateSchema>;
@@ -136,6 +144,8 @@ export type HandoffErrorCode =
   | "document_conflict"
   | "update_conflict"
   | "unknown_plan"
+  | "unknown_session"
+  | "session_ended"
   | "read_only"
   | "drifted"
   | "unavailable";
