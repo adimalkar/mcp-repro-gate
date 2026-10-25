@@ -56,12 +56,14 @@ Real Git, SQLite and Ed25519 fixtures, for both SHA-1 and SHA-256 repositories:
 - Rejections at the gate record `failed` and release the fence: a policy change injected after the precheck, and expiry at the exact deadline. (Ref and trust changes at the gate share the same checks but have no dedicated test.)
 - A compare-and-swap that loses a race injected just before dispatch records `indeterminate` and retains the fence. Recovery then releases the fence and leaves the outcome unchanged.
 - Hard-killed worker processes before and after admission recover to `failed` (`abandoned`) and `indeterminate` (`interrupted`), and an admitted attempt cannot be promoted again.
+- The SQL guards reject updates, deletes, duplicates and the invalid outcome combinations above. Recovery without the quiescence assertion is rejected. Revocation stays refused.
+- Full check, audit and package check; independent review before merge.
 
 ## Review
 
 An independent review requested changes; none were HIGH.
 
-- **Medium (fixed): durability.** Git's default does not sync refs or loose objects, so after a power loss the journal could say `confirmed` while the ref had reverted. Fix: the runner forces `core.fsync=committed` and `core.fsyncMethod=fsync` on every command.
+- **Medium (fixed): durability.** Git's default does not sync refs or loose objects, so after a power loss the journal could say `confirmed` while the ref had reverted. Fix: the runner forces `core.fsync=committed,reference` and `core.fsyncMethod=fsync` on every command.
 - **Medium (fixed): unbounded dispatch.** After admission only the fence was rechecked, so a stalled promoter could write after its deadline, or after recovery had concluded. Fix: dispatch re-reads the attempt under the fence and writes only with an admission, no outcome and time left before the deadline. A checked-out destination or a passed deadline records the new `indeterminate` reason `not_dispatched`.
 - **Medium (fixed): tests.** New tests (`tests/git-promotion-dispatch.test.ts`) cover:
   - workers killed after `update-ref` and after the outcome;
@@ -81,5 +83,3 @@ An independent review requested changes; none were HIGH.
   - a destination checked out after admission is caught before dispatch;
   - `null` acknowledgements get the intended error;
   - the docs state the wall-clock and SQLite-busy limits.
-- The SQL guards reject updates, deletes, duplicates and the invalid outcome combinations above. Recovery without the quiescence assertion is rejected. Revocation stays refused.
-- Full check, audit and package check; independent review before merge.

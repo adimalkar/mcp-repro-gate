@@ -461,7 +461,7 @@ test("runner makes refs and loose objects durable whatever the repository says",
     execFileSync("git", ["-C", root, "config", "core.fsyncMethod", "batch"]);
     const read = (key: string) =>
       runGit(["-C", root, "config", "--get", key]).toString().trim();
-    assert.equal(read("core.fsync"), "committed");
+    assert.equal(read("core.fsync"), "committed,reference");
     assert.equal(read("core.fsyncMethod"), "fsync");
   } finally {
     rmSync(root, { recursive: true, force: true });
