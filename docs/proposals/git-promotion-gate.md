@@ -53,8 +53,33 @@ Real Git, SQLite and Ed25519 fixtures, for both SHA-1 and SHA-256 repositories:
 
 - An exact promotion is confirmed. The ref moves to the candidate while source HEAD, index, worktree and other refs stay unchanged. The fence is released. A second promote is refused, and status reads back as `confirmed` after reopening the ledger.
 - Precheck rejections record nothing: wrong fence owner or token, a different config, a destination moved or checked out in a linked worktree, a policy change, an expired admission.
-- Rejections at the gate record `failed` and release the fence: policy, ref or trust changes injected after the precheck, and expiry at the exact deadline.
+- Rejections at the gate record `failed` and release the fence: a policy change injected after the precheck, and expiry at the exact deadline. (Ref and trust changes at the gate share the same checks but have no dedicated test.)
 - A compare-and-swap that loses a race injected just before dispatch records `indeterminate` and retains the fence. Recovery then releases the fence and leaves the outcome unchanged.
 - Hard-killed worker processes before and after admission recover to `failed` (`abandoned`) and `indeterminate` (`interrupted`), and an admitted attempt cannot be promoted again.
+
+## Review
+
+An independent review requested changes; none were HIGH.
+
+- **Medium (fixed): durability.** Git's default does not sync refs or loose objects, so after a power loss the journal could say `confirmed` while the ref had reverted. Fix: the runner forces `core.fsync=committed` and `core.fsyncMethod=fsync` on every command.
+- **Medium (fixed): unbounded dispatch.** After admission only the fence was rechecked, so a stalled promoter could write after its deadline, or after recovery had concluded. Fix: dispatch re-reads the attempt under the fence and writes only with an admission, no outcome and time left before the deadline. A checked-out destination or a passed deadline records the new `indeterminate` reason `not_dispatched`.
+- **Medium (fixed): tests.** New tests (`tests/git-promotion-dispatch.test.ts`) cover:
+  - workers killed after `update-ref` and after the outcome;
+  - two racing promoters;
+  - an outcome committed by recovery during a stall;
+  - an expired deadline or new checkout after admission;
+  - a fence lost after admission;
+  - a source moved during dispatch;
+  - a failed outcome write;
+  - a clock stepped back;
+  - a transient ledger failure at the gate.
+
+  Every guard the review mutated now fails a test. The one exception is the locked `assertUnresolved`, which the admission primary key backs up.
+
+- **Low (fixed):**
+  - transient Git or SQLite failures at the gate no longer record a rejection;
+  - a destination checked out after admission is caught before dispatch;
+  - `null` acknowledgements get the intended error;
+  - the docs state the wall-clock and SQLite-busy limits.
 - The SQL guards reject updates, deletes, duplicates and the invalid outcome combinations above. Recovery without the quiescence assertion is rejected. Revocation stays refused.
 - Full check, audit and package check; independent review before merge.

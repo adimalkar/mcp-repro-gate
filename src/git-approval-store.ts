@@ -26,7 +26,7 @@ import {
   type GitPromotionHostControl,
   type GitPromotionHostControlConfig,
 } from "./git-promotion-host-control.js";
-import { runGit } from "./git-runner.js";
+import { GitRunnerUnavailableError, runGit } from "./git-runner.js";
 import type { PreparedGitPromotionObjectsV1 } from "./git-promotion-objects.js";
 import { DatabaseSync } from "node:sqlite";
 
@@ -412,6 +412,36 @@ function promotionDatabaseOpenPath(path: string): string {
 }
 
 /** Host-side approval ledger. Call grant only after an operator decision. */
+/**
+ * A failure to run a check, not a check that failed: Git could not run, or
+ * the ledger could not be read. The gate must not record a rejection (which
+ * consumes the approval) for these; nothing has been dispatched.
+ */
+function transientFailure(error: unknown): boolean {
+  for (let cause = error, depth = 0; cause && depth < 8; depth++) {
+    if (cause instanceof GitRunnerUnavailableError) return true;
+    if (
+      cause instanceof Error &&
+      "code" in cause &&
+      typeof cause.code === "string" &&
+      cause.code.startsWith("ERR_SQLITE")
+    )
+      return true;
+    cause = cause instanceof Error ? cause.cause : undefined;
+  }
+  return false;
+}
+
+/** Whether any registered worktree has the branch checked out. */
+function destinationCheckedOut(
+  repositoryPath: string,
+  destinationRef: string,
+): boolean {
+  return parseGitWorktreeList(
+    runGit(["-C", repositoryPath, "worktree", "list", "--porcelain", "-z"]),
+  ).some((worktree) => worktree.branch === destinationRef);
+}
+
 export class SqliteGitApprovalStore {
   readonly #database: DatabaseSync;
   readonly #promotionDatabasePath: string | undefined;
@@ -600,7 +630,7 @@ export class SqliteGitApprovalStore {
         CHECK (COALESCE((observed_oid IS NULL AND json_type(record_json, '$.observedDestinationOid') = 'null') OR (json_type(record_json, '$.observedDestinationOid') = 'text' AND json_extract(record_json, '$.observedDestinationOid') = observed_oid), 0)),
         CHECK ((state = 'confirmed' AND reason = 'ref_updated' AND observed_oid IS NOT NULL)
           OR (state = 'failed' AND reason IN ('admission_expired', 'authority_rejected', 'approval_rejected', 'candidate_rejected', 'abandoned'))
-          OR (state = 'indeterminate' AND reason IN ('dispatch_uncertain', 'readback_mismatch', 'interrupted')))
+          OR (state = 'indeterminate' AND reason IN ('dispatch_uncertain', 'readback_mismatch', 'interrupted', 'not_dispatched')))
       ) STRICT;
       CREATE TRIGGER IF NOT EXISTS git_promotion_admission_bindings
         BEFORE INSERT ON git_promotion_admissions
@@ -1253,6 +1283,30 @@ export class SqliteGitApprovalStore {
       this.#writeTransaction(() => {
         checkFence();
         const destinationRef = attempt.proposal.workspace.destinationRef;
+        // Recovery may have concluded while this process stalled between
+        // the admission commit and here; never write after that.
+        const current = this.getGitPromotionStatus(attemptId);
+        if (!current?.admission || current.outcome)
+          throw new Error(
+            "Promotion was resolved before dispatch; nothing was written",
+          );
+        // Expiry bounds the write as well as admission, and a branch checked
+        // out since admission must not move behind its worktree.
+        if (
+          !(Date.now() < deadline) ||
+          destinationCheckedOut(repositoryPath, destinationRef)
+        ) {
+          this.#insertOutcome({
+            outcomeVersion: 1,
+            attemptId,
+            state: "indeterminate",
+            reason: "not_dispatched",
+            decidedAt: journalTime(Date.now(), current.admission.admittedAt),
+            observedDestinationOid:
+              promotionDestination(repositoryPath, destinationRef) ?? null,
+          });
+          return;
+        }
         let dispatched = false;
         try {
           runGit([
@@ -1459,7 +1513,8 @@ export class SqliteGitApprovalStore {
       // Rederiving re-observes the V2 workspace: source HEAD, tree and
       // cleanliness, the destination ref, and every registered worktree.
       authority = deriveGitApprovalAuthorityFromPlan(proposal, context);
-    } catch {
+    } catch (error) {
+      if (transientFailure(error)) throw error;
       return reject("authority_rejected");
     }
     if (digestCanonical(authority) !== attempt.authorityDigest)
@@ -1480,7 +1535,8 @@ export class SqliteGitApprovalStore {
         !this.#authenticates(reviewed, proposal, authority, trust)
       )
         return reject("approval_rejected");
-    } catch {
+    } catch (error) {
+      if (transientFailure(error)) throw error;
       return reject("approval_rejected");
     }
     try {
@@ -1489,7 +1545,8 @@ export class SqliteGitApprovalStore {
         repositoryPath,
         attempt.prepared as PreparedGitPromotionObjectsV1,
       );
-    } catch {
+    } catch (error) {
+      if (transientFailure(error)) throw error;
       return reject("candidate_rejected");
     }
     // The checks above take time; the deadline applies when they finish.

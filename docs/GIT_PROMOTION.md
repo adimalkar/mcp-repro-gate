@@ -54,18 +54,18 @@ node dist/src/cli.js git-review recover --config /trusted/review.json --attempt-
 
 ## Reading outcomes
 
-| State           | Meaning                                                                                                           | Fence                    |
-| --------------- | ----------------------------------------------------------------------------------------------------------------- | ------------------------ |
-| `confirmed`     | The destination moved from the expected old commit to the candidate, and the readback was exact.                  | released                 |
-| `failed`        | Rejected at the gate before any Git write, or abandoned by recovery. The approval stays consumed.                 | released                 |
-| `indeterminate` | The write was admitted, but its effect is not proven: a lost compare-and-swap, an error, or a non-exact readback. | retained until `recover` |
-| `prepared`      | Reserved but not resolved: a precheck rejected it, or it was interrupted.                                         | held by the attempt      |
+| State           | Meaning                                                                                                                                                                                                                                                    | Fence                    |
+| --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------ |
+| `confirmed`     | The destination moved from the expected old commit to the candidate, and the readback was exact.                                                                                                                                                           | released                 |
+| `failed`        | Rejected at the gate before any Git write, or abandoned by recovery. The approval stays consumed.                                                                                                                                                          | released                 |
+| `indeterminate` | The write was admitted, but its effect is not proven: a lost compare-and-swap, an error, or a non-exact readback. With reason `not_dispatched`, the gate declined to write after admission because the deadline passed or the destination was checked out. | retained until `recover` |
+| `prepared`      | Reserved but not resolved: a precheck rejected it, or it was interrupted.                                                                                                                                                                                  | held by the attempt      |
 
 A `failed` or `indeterminate` attempt cannot be retried, so get a new approval for a new proposal. After an `indeterminate` result, inspect the destination yourself. The recorded `observedDestinationOid` is an observation, not proof of who moved the ref.
 
 ## Effects and limits
 
 - A confirmed promotion moves only the destination ref and appends a reflog entry `reprogate promotion <attemptId>`. Candidate preparation can leave unreachable objects. Source HEAD, index and worktree are not written.
-- Expiry bounds admission, not the instant of the ref write. Git and SQLite are not one atomic transaction.
+- Expiry is checked at admission and again just before the ref write, which is not atomic with that check. Git and SQLite are not one atomic transaction.
 - The claim is scoped to the Git ref, under trusted host configuration, ledger, process, key and clock, and cooperating fence ownership. See the [threat model](THREAT_MODEL.md#final-git-promotion-gate-boundary).
 - Portable signed promotion receipts and offline verification are future work.

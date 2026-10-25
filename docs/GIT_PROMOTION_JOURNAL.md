@@ -26,17 +26,20 @@ Only `prepared` may be inserted into the attempt table. Updates, deletes, replac
 
 `promoteGitPromotionAttempt` runs only for a prepared attempt whose fence is held by its exact persisted owner. Each step's checks and results:
 
-1. **Precheck, outside the SQLite lock.** It verifies the installed candidate objects, rederives plan authority (which re-observes the V2 workspace: source HEAD and tree, cleanliness, the destination ref, and every registered worktree), authenticates the linked signed review under current trust, and checks the admission deadline. A rejection throws and records nothing. Nothing was dispatched, so the attempt can be retried, for example after a moved destination is restored.
+1. **Precheck, outside the SQLite lock.** It verifies the installed candidate objects, rederives plan authority (which re-observes the V2 workspace: source HEAD and tree, cleanliness, the destination ref, and every registered worktree), authenticates the linked signed review under current trust, and checks the admission deadline. A rejection throws and records nothing. Nothing was dispatched, so the attempt can be retried, for example after a moved destination is restored. A check that could not run at all (Git could not be spawned or timed out, or the ledger could not be read) also throws without recording anything, at either step, so a transient failure never consumes the approval.
 2. **Admission, under `BEGIN IMMEDIATE` and the fence.** The same checks run again. A rejection now records a `failed` outcome and releases the fence; the approval stays consumed. Otherwise the gate commits an **admission** record with `synchronous=FULL`. `admittedAt` is the authorization check time.
-3. **Dispatch.** In a new transaction the gate runs `update-ref --no-deref <destination> <candidate> <expected-old>` through the hardened runner, which disables hooks, then reads back the destination, source HEAD and branch, and the worktree list.
+3. **Dispatch.** In a new transaction, under the fence, the gate first re-reads the attempt.
+   - If an outcome already exists, for example because recovery concluded while this process stalled after admission, nothing is written.
+   - If the admission deadline has passed, or the destination has been checked out in a worktree since admission, it records `indeterminate` (`not_dispatched`) and writes nothing.
+   - Otherwise it runs `update-ref --no-deref <destination> <candidate> <expected-old>` through the hardened runner, then reads back the destination, source HEAD and branch, and the worktree list. The runner disables hooks and forces `core.fsync=committed` and `core.fsyncMethod=fsync`, so the ref and the candidate objects are on disk before the outcome is recorded.
    - A zero exit with exact readback records `confirmed` and releases the fence.
-   - Any other result records `indeterminate` and **retains** the fence: a nonzero exit (`dispatch_uncertain`, which includes a lost compare-and-swap, since the runner does not distinguish it), or a readback that is not exact (`readback_mismatch`).
+   - Any other result records `indeterminate` and **retains** the fence: a nonzero exit (`dispatch_uncertain`, which includes a lost compare-and-swap, since the runner does not distinguish it), a readback that is not exact (`readback_mismatch`), or a write declined before dispatch (`not_dispatched`).
    - A destination already at the candidate without a successful dispatch by this attempt is never confirmed.
    - If recording the outcome fails, the attempt stays admitted with no outcome and the fence stays held.
 
 Dispatch only ever follows a durable admission. A missing admission therefore proves that this library never dispatched the attempt, and an admitted attempt can never be promoted a second time.
 
-Effects of a confirmed promotion: the destination ref moves to the candidate commit, and Git appends a reflog entry `reprogate promotion <attemptId>`. Source HEAD, index, worktree and other refs are not written. Expiry is the deadline for admission; Git's compare-and-swap does not evaluate the clock, signature or ledger.
+Effects of a confirmed promotion: the destination ref moves to the candidate commit, and Git appends a reflog entry `reprogate promotion <attemptId>`. Source HEAD, index, worktree and other refs are not written. Expiry is the deadline for admission and is checked again immediately before dispatch; Git's compare-and-swap itself does not evaluate the clock, signature or ledger. Times come from the host's wall clock: a clock stepped back can admit an attempt that has really expired, and recorded times are floored at the reservation so the journal stays ordered.
 
 ## Recovery and status
 
@@ -50,7 +53,7 @@ Effects of a confirmed promotion: the destination ref moves to the candidate com
 
 Recovery never retries the write, rolls back or overwrites refs, clears consumption, or turns an uncertain outcome into `confirmed`.
 
-`getGitPromotionStatus` returns the strict canonical readback of the attempt with its optional admission and outcome, from one SQL snapshot. It is idempotent, so a confirmed promotion whose response was lost still reads back as `confirmed`. It is not authorization or recovery.
+`getGitPromotionStatus` returns the strict canonical readback of the attempt with its optional admission and outcome, from two reads: the immutable attempt row, then its admission and outcome in one statement. It is idempotent, so a confirmed promotion whose response was lost still reads back as `confirmed`. It is not authorization or recovery.
 
 Admissions and outcomes are separate insert-only tables keyed by attempt ID, so the immutable intent row and its guards are unchanged. SQL triggers reject:
 
