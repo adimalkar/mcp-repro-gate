@@ -182,7 +182,7 @@ test("nextStep reflects only the decision and executor configuration", async (co
     const deniedServer = await connect(context, executor, denied);
     const result = await deniedServer.call("action.plan", {
       toolRef: "demo.publish",
-      arguments: {},
+      arguments: { content: "hello" },
     });
     const plan = actionPlanOutputSchema.parse(result.structuredContent);
     assert.equal(plan.detail === "compact" && plan.decision, "deny");
