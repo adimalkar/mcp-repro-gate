@@ -34,6 +34,8 @@ All notable changes will be documented in this file. The project follows [Semant
 
 ### Fixed
 
+- Research fetches decode pages in their declared encoding (byte order mark, `Content-Type` charset or HTML meta charset) instead of always as UTF-8, which garbled non-UTF-8 pages and broke query matching on them.
+- Research refusals for HTTP errors now include the `status`, and `retryAfterSeconds` after a 429 or 503, so a rate-limited agent can tell "wait" from "missing". Search endpoint failures keep the same details.
 - `@modelcontextprotocol/client` is now a runtime dependency. The configured stdio downstream connector already imported it at runtime, so production installs without dev dependencies could not start configured backends.
 
 ### Changed

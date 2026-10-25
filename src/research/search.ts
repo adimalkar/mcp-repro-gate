@@ -145,7 +145,11 @@ export function createEndpointSearch(options: {
       // Address refusals stay visible; every other failure is one code.
       if (error instanceof ResearchError && error.code === "blocked_address")
         throw error;
-      throw new ResearchError("search_failed");
+      // A rate-limited provider's status and wait stay visible.
+      throw new ResearchError(
+        "search_failed",
+        error instanceof ResearchError ? error.details : {},
+      );
     }
     return parseSearchResults(body, maxResults);
   };

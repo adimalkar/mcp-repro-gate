@@ -17,12 +17,46 @@ export type ResearchErrorCode =
   | "search_failed"
   | "no_results";
 
+/**
+ * Numbers from the response that tell an agent what to do next: the HTTP
+ * status, and how long a rate-limited server asked it to wait.
+ */
+export interface ResearchErrorDetails {
+  status?: number;
+  retryAfterSeconds?: number;
+}
+
 /** A refusal with a stable code; it never carries response content. */
 export class ResearchError extends Error {
-  constructor(readonly code: ResearchErrorCode) {
+  constructor(
+    readonly code: ResearchErrorCode,
+    readonly details: ResearchErrorDetails = {},
+  ) {
     super(`Research fetch refused: ${code}`);
     this.name = "ResearchError";
   }
+}
+
+const MAX_RETRY_AFTER_SECONDS = 86_400;
+
+/** Retry-After as seconds from now: delta-seconds or an HTTP date. */
+export function retryAfterSeconds(
+  header: string | undefined,
+  now = Date.now(),
+): number | undefined {
+  if (header === undefined) return undefined;
+  const value = header.trim();
+  let seconds: number;
+  if (/^\d{1,10}$/u.test(value)) seconds = Number(value);
+  else {
+    // An HTTP date names its weekday and month; Date.parse alone would also
+    // accept "-5" as a year.
+    if (!/[A-Za-z]{3}/u.test(value)) return undefined;
+    const date = Date.parse(value);
+    if (!Number.isFinite(date)) return undefined;
+    seconds = Math.ceil((date - now) / 1000);
+  }
+  return Math.min(Math.max(seconds, 0), MAX_RETRY_AFTER_SECONDS);
 }
 
 export interface FetchOptions {
@@ -170,12 +204,17 @@ export async function fetchText(
     }
     if (status < 200 || status >= 300) {
       response.destroy();
-      throw new ResearchError("http_status");
+      const retryAfter =
+        status === 429 || status === 503
+          ? retryAfterSeconds(response.headers["retry-after"])
+          : undefined;
+      throw new ResearchError("http_status", {
+        status,
+        ...(retryAfter === undefined ? {} : { retryAfterSeconds: retryAfter }),
+      });
     }
-    const contentType = (response.headers["content-type"] ?? "")
-      .split(";")[0]
-      ?.trim()
-      .toLowerCase();
+    const contentTypeHeader = response.headers["content-type"] ?? "";
+    const contentType = contentTypeHeader.split(";")[0]?.trim().toLowerCase();
     if (
       contentType === undefined ||
       !(options.contentTypes ?? TEXT_TYPES).has(contentType)
@@ -188,7 +227,11 @@ export async function fetchText(
       response.destroy();
       throw new ResearchError("too_large");
     }
-    const body = await readBody(response, maxBytes, deadline);
+    const body = decodeBody(
+      await readBody(response, maxBytes, deadline),
+      contentTypeHeader,
+      contentType === "text/html" || contentType === "application/xhtml+xml",
+    );
     return { url: value, finalUrl: url.toString(), contentType, body };
   }
 }
@@ -240,11 +283,54 @@ function open(
   });
 }
 
+// The label from a Content-Type charset parameter or an HTML meta tag.
+const CHARSET = /charset\s*=\s*["']?([A-Za-z0-9._:-]{1,40})/iu;
+
+/**
+ * Decode a body the way browsers choose an encoding, in order: a byte order
+ * mark, the Content-Type charset, an HTML meta charset in the first 1024
+ * bytes, then UTF-8. Unknown labels fall back to UTF-8; invalid bytes
+ * become replacement characters rather than failing the fetch.
+ */
+export function decodeBody(
+  bytes: Buffer,
+  contentTypeHeader: string,
+  html: boolean,
+): string {
+  let label: string | undefined;
+  if (bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf)
+    label = "utf-8";
+  else if (bytes[0] === 0xfe && bytes[1] === 0xff) label = "utf-16be";
+  else if (bytes[0] === 0xff && bytes[1] === 0xfe) label = "utf-16le";
+  label ??= CHARSET.exec(contentTypeHeader)?.[1];
+  if (label === undefined && html) {
+    // Only an ASCII-compatible meta tag can be read before decoding.
+    const head = bytes.subarray(0, 1024).toString("latin1");
+    const meta = /<meta\b[^>]{0,512}>/giu;
+    for (const tag of head.match(meta) ?? []) {
+      const found = CHARSET.exec(tag)?.[1];
+      if (found !== undefined) {
+        label = found;
+        break;
+      }
+    }
+  }
+  let decoder: TextDecoder;
+  try {
+    decoder = new TextDecoder(label ?? "utf-8");
+  } catch {
+    // Unknown labels, and those of the "replacement" encoding such as
+    // ISO-2022-KR, which TextDecoder refuses.
+    decoder = new TextDecoder("utf-8");
+  }
+  return decoder.decode(bytes);
+}
+
 function readBody(
   response: IncomingMessage,
   maxBytes: number,
   deadline: number,
-): Promise<string> {
+): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let total = 0;
@@ -272,7 +358,7 @@ function readBody(
     });
     response.once("end", () => {
       clearTimeout(timer);
-      resolve(Buffer.concat(chunks).toString("utf8"));
+      resolve(Buffer.concat(chunks));
     });
   });
 }

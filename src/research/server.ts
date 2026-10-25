@@ -67,8 +67,15 @@ function shownUrl(url: string): string {
 
 function refusal(error: unknown, fallback: ResearchErrorCode) {
   const code = error instanceof ResearchError ? error.code : fallback;
+  // Status and wait are numbers the fetch read itself, never page content.
+  const details = error instanceof ResearchError ? error.details : {};
   return {
-    content: [{ type: "text" as const, text: JSON.stringify({ error: code }) }],
+    content: [
+      {
+        type: "text" as const,
+        text: JSON.stringify({ error: code, ...details }),
+      },
+    ],
     isError: true,
   };
 }

@@ -17,8 +17,10 @@ import {
 import {
   ResearchError,
   checkUrl,
+  decodeBody,
   fetchText,
   redirectAllowed,
+  retryAfterSeconds,
 } from "../src/research/fetch.js";
 import {
   createResearchServer,
@@ -184,6 +186,162 @@ test("fetching follows checked redirects and enforces type, size, status and tim
   await assert.rejects(
     fetchText(`${base}/slow`, { ...options, timeoutMs: 200 }),
     refused("timeout"),
+  );
+});
+
+test("pages are decoded in the encoding they declare, not always as UTF-8", async (context) => {
+  const pages: Record<string, [string, Buffer]> = {
+    "/latin1": [
+      "text/html; charset=ISO-8859-1",
+      Buffer.from("<p>café crème</p>", "latin1"),
+    ],
+    // Windows-1252 curly quotes, declared only in the page's meta tag.
+    "/meta": [
+      "text/html",
+      Buffer.concat([
+        Buffer.from('<html><head><meta charset="windows-1252"></head><p>'),
+        Buffer.from([0x93, 0x68, 0x69, 0x94]),
+        Buffer.from("</p>"),
+      ]),
+    ],
+    "/http-equiv": [
+      "text/html",
+      Buffer.concat([
+        Buffer.from(
+          '<meta http-equiv="Content-Type" content="text/html; charset=shift_jis"><p>',
+        ),
+        Buffer.from([0x93, 0xfa, 0x96, 0x7b]),
+      ]),
+    ],
+    "/sjis": [
+      'text/plain; charset="Shift_JIS"',
+      Buffer.from([0x93, 0xfa, 0x96, 0x7b]),
+    ],
+    "/bom": [
+      "text/plain; charset=iso-8859-1",
+      Buffer.from([0xff, 0xfe, 0x68, 0x00, 0x69, 0x00]),
+    ],
+    "/unknown": ["text/plain; charset=x-made-up", Buffer.from("naïve")],
+    "/replacement": ["text/plain; charset=iso-2022-kr", Buffer.from("plain")],
+    "/utf8": ["text/plain", Buffer.from("日本 naïve")],
+  };
+  const base = await serve(context, (request, response) => {
+    const page = pages[request.url ?? ""];
+    if (page === undefined) {
+      response.writeHead(404);
+      response.end();
+      return;
+    }
+    response.setHeader("content-type", page[0]);
+    response.end(page[1]);
+  });
+  const options = {
+    isAllowedAddress: (address: string) => address === "127.0.0.1",
+  };
+  const body = async (path: string) =>
+    (await fetchText(`${base}${path}`, options)).body;
+  assert.match(await body("/latin1"), /café crème/u);
+  assert.match(await body("/meta"), /\u201chi\u201d/u);
+  assert.match(await body("/http-equiv"), /日本/u);
+  assert.equal(await body("/sjis"), "日本");
+  assert.equal(await body("/bom"), "hi");
+  assert.equal(await body("/unknown"), "naïve");
+  assert.equal(await body("/replacement"), "plain");
+  assert.equal(await body("/utf8"), "日本 naïve");
+  // A meta tag past the first 1024 bytes is not used, as in browsers.
+  const late = Buffer.concat([
+    Buffer.from(`<p>${"x".repeat(1100)}</p><meta charset="windows-1252">`),
+    Buffer.from([0x93]),
+  ]);
+  assert.match(decodeBody(late, "text/html", true), /\ufffd$/u);
+  // Plain text never reads a meta tag.
+  assert.equal(
+    decodeBody(
+      Buffer.from([
+        0x3c, 0x6d, 0x65, 0x74, 0x61, 0x20, 0x63, 0x68, 0x61, 0x72, 0x73, 0x65,
+        0x74, 0x3d, 0x6c, 0x61, 0x74, 0x69, 0x6e, 0x31, 0x3e, 0xe9,
+      ]),
+      "text/plain",
+      false,
+    ),
+    "<meta charset=latin1>\ufffd",
+  );
+});
+
+test("an HTTP refusal says which status, and how long a rate-limited server asked to wait", async (context) => {
+  const base = await serve(context, (request, response) => {
+    if (request.url === "/limited") {
+      response.writeHead(429, { "retry-after": "120" });
+      response.end();
+    } else if (request.url === "/busy") {
+      response.writeHead(503, {
+        "retry-after": new Date(Date.now() + 30_000).toUTCString(),
+      });
+      response.end();
+    } else if (request.url === "/gone") {
+      response.writeHead(410, { "retry-after": "5" });
+      response.end();
+    } else {
+      response.writeHead(404);
+      response.end();
+    }
+  });
+  const options = {
+    isAllowedAddress: (address: string) => address === "127.0.0.1",
+  };
+  const details = async (path: string) => {
+    try {
+      await fetchText(`${base}${path}`, options);
+    } catch (error) {
+      assert.ok(error instanceof ResearchError);
+      assert.equal(error.code, "http_status");
+      return error.details;
+    }
+    assert.fail("expected a refusal");
+  };
+  assert.deepEqual(await details("/limited"), {
+    status: 429,
+    retryAfterSeconds: 120,
+  });
+  const busy = await details("/busy");
+  assert.equal(busy.status, 503);
+  assert.ok(
+    (busy.retryAfterSeconds ?? -1) >= 28 &&
+      (busy.retryAfterSeconds ?? 99) <= 31,
+  );
+  // Retry-After matters only for rate limiting and unavailability.
+  assert.deepEqual(await details("/gone"), { status: 410 });
+  assert.deepEqual(await details("/missing"), { status: 404 });
+
+  const now = Date.parse("2026-10-25T10:00:00Z");
+  assert.equal(retryAfterSeconds(undefined, now), undefined);
+  assert.equal(retryAfterSeconds("soon", now), undefined);
+  assert.equal(retryAfterSeconds(" 7 ", now), 7);
+  assert.equal(retryAfterSeconds("Sun, 25 Oct 2026 09:00:00 GMT", now), 0);
+  assert.equal(retryAfterSeconds("99999999", now), 86_400);
+  assert.equal(retryAfterSeconds("-5", now), undefined);
+
+  // The MCP refusal carries the numbers, never response content.
+  const client = await connect(
+    context,
+    createResearchServer({
+      fetchPage: () =>
+        Promise.reject(
+          new ResearchError("http_status", {
+            status: 429,
+            retryAfterSeconds: 9,
+          }),
+        ),
+    }),
+  );
+  const result = await client.callTool({
+    name: "fetch_distilled",
+    arguments: { url: "https://example.com/", query: "x" },
+  });
+  assert.equal(result.isError, true);
+  assert.deepEqual(
+    JSON.parse((result.content as { text: string }[])[0]?.text ?? ""),
+    { error: "http_status", status: 429, retryAfterSeconds: 9 },
   );
 });
 
