@@ -246,7 +246,8 @@ export function runGit(
       // Git's default leaves refs and loose objects unsynced. A promotion
       // records "confirmed" only after update-ref returns, so both must be
       // durable first; a repository's own core.fsync=none is overridden.
-      ["core.fsync", "committed"],
+      // "reference" joined the "committed" aggregate only in Git 2.37.
+      ["core.fsync", "committed,reference"],
       ["core.fsyncMethod", "fsync"],
       ["core.alternateRefsCommand", ""],
       ["core.unsetenvvars", ""],

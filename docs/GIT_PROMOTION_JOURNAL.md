@@ -31,7 +31,7 @@ Only `prepared` may be inserted into the attempt table. Updates, deletes, replac
 3. **Dispatch.** In a new transaction, under the fence, the gate first re-reads the attempt.
    - If an outcome already exists, for example because recovery concluded while this process stalled after admission, nothing is written.
    - If the admission deadline has passed, or the destination has been checked out in a worktree since admission, it records `indeterminate` (`not_dispatched`) and writes nothing.
-   - Otherwise it runs `update-ref --no-deref <destination> <candidate> <expected-old>` through the hardened runner, then reads back the destination, source HEAD and branch, and the worktree list. The runner disables hooks and forces `core.fsync=committed` and `core.fsyncMethod=fsync`, so the ref and the candidate objects are on disk before the outcome is recorded.
+   - Otherwise it runs `update-ref --no-deref <destination> <candidate> <expected-old>` through the hardened runner, then reads back the destination, source HEAD and branch, and the worktree list. The runner disables hooks and forces `core.fsync=committed,reference` and `core.fsyncMethod=fsync`, so the ref and the candidate objects are on disk before the outcome is recorded.
    - A zero exit with exact readback records `confirmed` and releases the fence.
    - Any other result records `indeterminate` and **retains** the fence: a nonzero exit (`dispatch_uncertain`, which includes a lost compare-and-swap, since the runner does not distinguish it), a readback that is not exact (`readback_mismatch`), or a write declined before dispatch (`not_dispatched`).
    - A destination already at the candidate without a successful dispatch by this attempt is never confirmed.
