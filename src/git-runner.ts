@@ -31,21 +31,28 @@ function executeGit(
     result.status === 1 &&
     result.stdout.length === 0 &&
     result.stderr.length === 0;
+  // Do not expose unrestricted repository/patch/config diagnostics.
   if (
     result.error ||
     result.signal ||
     typeof result.status !== "number" ||
-    (result.status !== 0 && !emptyProbe) ||
     result.stdout.length > maxOutputBytes ||
     result.stderr.length > maxOutputBytes
-  ) {
-    // Do not expose unrestricted repository/patch/config diagnostics.
-    throw new Error(
-      `Git staging command failed: ${result.error ? "time or output bound exceeded, or spawn failed" : "nonzero command result"}`,
+  )
+    throw new GitRunnerUnavailableError(
+      "Git staging command failed: time or output bound exceeded, or spawn failed",
     );
-  }
+  if (result.status !== 0 && !emptyProbe)
+    throw new Error("Git staging command failed: nonzero command result");
   return { stdout: result.stdout, status: result.status };
 }
+
+/**
+ * Git could not run to completion (spawn failure, signal, timeout or output
+ * bound), as opposed to Git answering "no". Callers deciding whether a check
+ * genuinely failed must not treat this as a negative answer.
+ */
+export class GitRunnerUnavailableError extends Error {}
 
 /** Exact plumbing reads used by witnesses/fence checks; every other shape probes. */
 function isMetadataRead(
@@ -236,6 +243,12 @@ export function runGit(
         "post-rewrite",
       ].map((event): [string, string] => [`hook.${event}.enabled`, "false"]),
       ["core.fsmonitor", "false"],
+      // Git's default leaves refs and loose objects unsynced. A promotion
+      // records "confirmed" only after update-ref returns, so both must be
+      // durable first; a repository's own core.fsync=none is overridden.
+      // "reference" joined the "committed" aggregate only in Git 2.37.
+      ["core.fsync", "committed,reference"],
+      ["core.fsyncMethod", "fsync"],
       ["core.alternateRefsCommand", ""],
       ["core.unsetenvvars", ""],
       ["trace2.normalTarget", "0"],

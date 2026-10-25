@@ -12,7 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { runGit } from "../src/git-runner.js";
+import { GitRunnerUnavailableError, runGit } from "../src/git-runner.js";
 
 function git(root: string, ...args: string[]): Buffer {
   return execFileSync("git", ["-C", root, ...args], {
@@ -450,5 +450,38 @@ test("metadata classification and dispatch use one owned argument snapshot", () 
     assert.equal(revisionReads, 1);
   } finally {
     rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("runner makes refs and loose objects durable whatever the repository says", () => {
+  const root = mkdtempSync(join(tmpdir(), "reprogate-runner-fsync-"));
+  try {
+    execFileSync("git", ["init", "--quiet", root]);
+    execFileSync("git", ["-C", root, "config", "core.fsync", "none"]);
+    execFileSync("git", ["-C", root, "config", "core.fsyncMethod", "batch"]);
+    const read = (key: string) =>
+      runGit(["-C", root, "config", "--get", key]).toString().trim();
+    assert.equal(read("core.fsync"), "committed,reference");
+    assert.equal(read("core.fsyncMethod"), "fsync");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a Git process that cannot run is distinct from a negative answer", () => {
+  const root = mkdtempSync(join(tmpdir(), "reprogate-runner-errors-"));
+  try {
+    execFileSync("git", ["init", "--quiet", root]);
+    assert.throws(
+      () => runGit(["-C", root, "cat-file", "-e", "0".repeat(40)]),
+      (error: Error) => !(error instanceof GitRunnerUnavailableError),
+    );
+    assert.throws(
+      () =>
+        runGit(["-C", root, "rev-parse", "--absolute-git-dir"], undefined, 1),
+      GitRunnerUnavailableError,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });
