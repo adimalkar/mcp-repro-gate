@@ -106,7 +106,12 @@
           "const": "indeterminate"
         },
         "reason": {
-          "enum": ["dispatch_uncertain", "readback_mismatch", "interrupted"]
+          "enum": [
+            "dispatch_uncertain",
+            "readback_mismatch",
+            "interrupted",
+            "not_dispatched"
+          ]
         },
         "observedDestinationOid": {
           "oneOf": [
