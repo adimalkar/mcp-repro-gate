@@ -1,5 +1,6 @@
 import { Ajv2020 } from "ajv/dist/2020.js";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import {
   createPrivateKey,
   createPublicKey,
@@ -12,7 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 
-import { digestCanonical } from "../src/digest.js";
+import { digestCanonical, sha256 } from "../src/digest.js";
 import {
   gitOperatorKeyId,
   gitOperatorReviewDigest,
@@ -173,10 +174,60 @@ function resign(bundle: Json, key: KeyObject): Json {
   };
 }
 
+/** The same-length signature with one character in the middle changed. */
+function flip(value: string): string {
+  const middle = value.charAt(40) === "A" ? "B" : "A";
+  return `${value.slice(0, 40)}${middle}${value.slice(41)}`;
+}
+
 function edit(bundle: Json, change: (manifest: Json) => void): Json {
   const copy = JSON.parse(JSON.stringify(bundle)) as Json;
   change(copy.manifest as Json);
   return copy;
+}
+
+function operatorKey(s: Setup): KeyObject {
+  return createPrivateKey({
+    key: Buffer.from(s.f.privateKeyBytes),
+    format: "der",
+    type: "pkcs8",
+  });
+}
+
+/**
+ * After a forged change to the manifest, re-derive the effect digest and
+ * have the (colluding) operator key sign a matching review.
+ */
+function reReview(
+  s: Setup,
+  m: Json,
+  change: (payload: GitOperatorReviewPayloadV1) => void = () => undefined,
+): void {
+  const attempt = m.attempt as Json;
+  const prepared = attempt.prepared as Json;
+  const effectDigest = digestCanonical(prepared.staged);
+  prepared.effectDigest = effectDigest;
+  attempt.effectDigest = effectDigest;
+  const payload = {
+    ...((m.review as Json).payload as GitOperatorReviewPayloadV1),
+    effectDigest,
+  };
+  change(payload);
+  m.review = signGitOperatorReview(payload, operatorKey(s));
+  const reviewDigest = gitOperatorReviewDigest(payload);
+  attempt.reviewDigest = reviewDigest;
+  if (m.admission) (m.admission as Json).reviewDigest = reviewDigest;
+}
+
+/** Point every record at a different candidate commit in the repository. */
+function setCandidate(s: Setup, m: Json, commit: string): void {
+  const prepared = (m.attempt as Json).prepared as Json;
+  prepared.candidateCommitOid = commit;
+  prepared.hostCommitMetadataDigest = sha256(
+    git(s.f.root, "cat-file", "commit", commit),
+  );
+  (m.admission as Json).candidateCommitOid = commit;
+  (m.outcome as Json).observedDestinationOid = commit;
 }
 
 test("a confirmed promotion exports, and verifies offline with public keys only", (t) => {
@@ -281,7 +332,7 @@ test("tampering is detected at the check that covers it", (t) => {
         ...bundle,
         signature: {
           ...signature,
-          value: `${String(signature.value).slice(0, -2)}AA`,
+          value: flip(String(signature.value)),
         },
       }),
     ),
@@ -319,7 +370,7 @@ test("tampering is detected at the check that covers it", (t) => {
       (m) => {
         const review = m.review as Json;
         const value = String((review.signature as Json).value);
-        (review.signature as Json).value = `${value.slice(0, -2)}AA`;
+        (review.signature as Json).value = flip(value);
       },
     ],
   ];
@@ -476,7 +527,7 @@ test("a staged diff digest that does not match the real trees is caught", (t) =>
   );
 });
 
-test("a failed attempt verifies as indeterminate; nothing in flight exports", (t) => {
+test("a failed attempt verifies as not promoted; nothing in flight exports", (t) => {
   const s = setup(t);
   reserve(s.f);
   const inFlight = cli([
@@ -500,7 +551,7 @@ test("a failed attempt verifies as indeterminate; nothing in flight exports", (t
   const bundle = exportBundle(s, s.f.prepared.attemptId);
   assert.equal((bundle.manifest as Json).admission, undefined);
   const report = verify(s, bundle, { repositoryPath: s.f.root });
-  assert.equal(report.result, "indeterminate", JSON.stringify(report));
+  assert.equal(report.result, "not_promoted", JSON.stringify(report));
   assert.equal(report.outcome, "failed");
   assert.ok(report.checks.every((check) => check.ok));
 });
@@ -578,4 +629,291 @@ test("exported bundles match the published JSON Schema", (t) => {
     ),
     false,
   );
+});
+
+test("the review must be valid at reservation and admission, not at verification", (t) => {
+  const s = setup(t);
+  const bundle = exportBundle(s, promote(s));
+  // Long after the review expired, the bundle still verifies.
+  t.mock.method(Date, "now", () => Date.parse("2099-01-01T00:00:00.000Z"));
+  assert.equal(
+    verify(s, bundle, { repositoryPath: s.f.root }).result,
+    "verified",
+  );
+  t.mock.restoreAll();
+
+  const payload = (bundle.manifest as Json).review as Json;
+  const issuedAt = Date.parse(String((payload.payload as Json).issuedAt));
+  const attempt = (bundle.manifest as Json).attempt as Json;
+  const created = Date.parse(String((attempt.proposal as Json).createdAt));
+  assert.ok(created < issuedAt - 1);
+  // A host claiming it reserved and admitted before the review existed.
+  const early = new Date(issuedAt - 1).toISOString();
+  const backdated = edit(bundle, (m) => {
+    const a = m.attempt as Json;
+    (a.prepared as Json).createdAt = early;
+    a.precheckedAt = early;
+    a.reservedAt = early;
+    (m.admission as Json).admittedAt = early;
+  });
+  assert.equal(
+    failedAt(verify(s, resign(backdated, s.host.privateKey))),
+    "operator_review",
+  );
+  // Only the reservation backdated: admission alone would still pass.
+  const reservedEarly = edit(bundle, (m) => {
+    const a = m.attempt as Json;
+    (a.prepared as Json).createdAt = early;
+    a.precheckedAt = early;
+    a.reservedAt = early;
+  });
+  assert.equal(
+    failedAt(verify(s, resign(reservedEarly, s.host.privateKey))),
+    "operator_review",
+  );
+
+  // A colluding operator key still cannot make these consistent.
+  const denied = edit(bundle, (m) => {
+    reReview(s, m, (p) => {
+      p.decision = "deny";
+    });
+  });
+  assert.equal(
+    failedAt(verify(s, resign(denied, s.host.privateKey))),
+    "review_links",
+  );
+  const short = edit(bundle, (m) => {
+    const admittedAt = Date.parse(String((m.admission as Json).admittedAt));
+    reReview(s, m, (p) => {
+      p.expiresAt = new Date(admittedAt + 1).toISOString();
+    });
+  });
+  assert.equal(
+    failedAt(verify(s, resign(short, s.host.privateKey))),
+    "review_links",
+  );
+});
+
+test("the candidate commit must be exactly the staged tree on the expected parent", (t) => {
+  const s = setup(t);
+  const bundle = exportBundle(s, promote(s));
+  const prepared = ((bundle.manifest as Json).attempt as Json).prepared as Json;
+  const tree = String(prepared.candidateTreeOid);
+  const parent = String(prepared.expectedOldOid);
+  const other = git(s.f.root, "commit-tree", "-p", parent, "-m", "other", tree)
+    .toString()
+    .trim();
+  const merge = git(
+    s.f.root,
+    "commit-tree",
+    "-p",
+    parent,
+    "-p",
+    other,
+    "-m",
+    "two parents",
+    tree,
+  )
+    .toString()
+    .trim();
+  git(
+    s.f.root,
+    "tag",
+    "-a",
+    "-m",
+    "tag",
+    "evidence-tag",
+    String(prepared.candidateCommitOid),
+  );
+  const tag = git(s.f.root, "rev-parse", "evidence-tag").toString().trim();
+  const orphan = git(s.f.root, "commit-tree", "-p", other, "-m", "orphan", tree)
+    .toString()
+    .trim();
+  const forgeries: [string, (m: Json) => void][] = [
+    [
+      "wrong parent",
+      (m) => {
+        setCandidate(s, m, orphan);
+      },
+    ],
+    [
+      "two parents",
+      (m) => {
+        setCandidate(s, m, merge);
+      },
+    ],
+    [
+      "wrong metadata",
+      (m) => {
+        ((m.attempt as Json).prepared as Json).hostCommitMetadataDigest =
+          `sha256:${"b".repeat(64)}`;
+      },
+    ],
+    [
+      "tag object",
+      (m) => {
+        setCandidate(s, m, String(prepared.candidateCommitOid));
+        const p = (m.attempt as Json).prepared as Json;
+        p.candidateCommitOid = tag;
+        (m.admission as Json).candidateCommitOid = tag;
+        (m.outcome as Json).observedDestinationOid = tag;
+      },
+    ],
+  ];
+  for (const [name, change] of forgeries)
+    assert.equal(
+      failedAt(
+        verify(s, resign(edit(bundle, change), s.host.privateKey), {
+          repositoryPath: s.f.root,
+        }),
+      ),
+      "candidate_commit",
+      name,
+    );
+});
+
+test("the patch must reproduce the staged tree the operator signed", (t) => {
+  const s = setup(t);
+  const bundle = exportBundle(s, promote(s));
+  const prepared = ((bundle.manifest as Json).attempt as Json).prepared as Json;
+  // A different tree: the staged one plus an extra file.
+  const blob = execFileSync(
+    "git",
+    ["-C", s.f.root, "hash-object", "-w", "--stdin"],
+    { input: "extra\n" },
+  )
+    .toString()
+    .trim();
+  const listing = git(s.f.root, "ls-tree", String(prepared.candidateTreeOid));
+  const tree = execFileSync("git", ["-C", s.f.root, "mktree"], {
+    input: Buffer.concat([
+      listing,
+      Buffer.from(`100644 blob ${blob}\textra.txt\n`),
+    ]),
+  })
+    .toString()
+    .trim();
+  const commit = git(
+    s.f.root,
+    "commit-tree",
+    "-p",
+    String(prepared.expectedOldOid),
+    "-m",
+    "forged",
+    tree,
+  )
+    .toString()
+    .trim();
+  // The staged diff digest of that tree, computed the way staging does.
+  const scratch = mkdtempSync(join(tmpdir(), "reprogate-evidence-forge-"));
+  t.after(() => {
+    rmSync(scratch, { recursive: true, force: true });
+  });
+  git(scratch, "init", "--quiet");
+  writeFileSync(
+    join(scratch, ".git", "objects", "info", "alternates"),
+    `${join(s.f.root, ".git", "objects")}\n`,
+  );
+  git(scratch, "read-tree", tree);
+  const diff = git(
+    scratch,
+    "diff",
+    "--cached",
+    "--binary",
+    "--no-ext-diff",
+    "--no-textconv",
+    String(prepared.baseCommit),
+    "--",
+  );
+  const forged = edit(bundle, (m) => {
+    const p = (m.attempt as Json).prepared as Json;
+    const staged = p.staged as Json;
+    staged.candidateTreeOid = tree;
+    staged.stagedPatchDigest = sha256(diff);
+    p.candidateTreeOid = tree;
+    setCandidate(s, m, commit);
+    reReview(s, m);
+  });
+  const signed = resign(forged, s.host.privateKey);
+  // Everything about the commit is consistent; only the patch disagrees.
+  assert.equal(
+    verify(s, signed, { repositoryPath: s.f.root }).result,
+    "verified",
+  );
+  assert.equal(
+    failedAt(verify(s, signed, { repositoryPath: s.f.root, patch: s.f.patch })),
+    "patch_applies",
+  );
+});
+
+test("a fetched clone that only has the objects under remote refs verifies", (t) => {
+  const s = setup(t);
+  const clone = join(s.f.scratch, "verifier-clone");
+  execFileSync("git", ["clone", "--quiet", "--no-checkout", s.f.root, clone]);
+  const bundle = exportBundle(s, promote(s));
+  git(clone, "fetch", "--quiet", "origin");
+  const report = verify(s, bundle, { repositoryPath: clone, patch: s.f.patch });
+  assert.equal(report.result, "verified", JSON.stringify(report));
+});
+
+test("encodings, keys and manifest shapes are strict", (t) => {
+  const s = setup(t);
+  const bundle = exportBundle(s, promote(s));
+  const signature = bundle.signature as Json;
+  const value = String(signature.value);
+  const last = value.at(-1) ?? "A";
+  // Same decoded bytes, different spelling of the unused low bits.
+  const alias = String.fromCharCode(last.charCodeAt(0) + 1);
+  assert.equal(
+    failedAt(
+      verify(s, {
+        ...bundle,
+        signature: { ...signature, value: `${value.slice(0, -1)}${alias}` },
+      }),
+    ),
+    "bundle_schema",
+  );
+  assert.equal(
+    failedAt(
+      verify(
+        s,
+        JSON.parse(
+          JSON.stringify(bundle).replace(
+            '"manifest":{',
+            '"manifest":{"__proto__":{"evil":"unsigned"},',
+          ),
+        ) as Json,
+      ),
+    ),
+    "bundle_schema",
+  );
+  const privatePem = s.host.privateKey
+    .export({ type: "pkcs8", format: "pem" })
+    .toString();
+  assert.equal(
+    failedAt(
+      verify(
+        s,
+        bundle,
+        {},
+        {
+          ...s.trust,
+          hostKeys: [{ keyId: s.host.keyId, publicKeyPem: privatePem }],
+        },
+      ),
+    ),
+    "trust",
+  );
+  // A missing required option is still a usage error for other commands.
+  const usage = cli([
+    "promote",
+    "--config",
+    s.configPath,
+    "--proposal",
+    s.proposalPath,
+    "--approval-id",
+    s.f.approval.approvalId,
+  ]);
+  assert.equal(usage.code, 2);
+  assert.match(usage.stderr, /Missing required option --patch/u);
 });

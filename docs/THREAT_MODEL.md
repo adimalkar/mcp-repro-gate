@@ -153,7 +153,7 @@ The host signature is not an independent witness. A compromised host or evidence
 - `--repo` reads objects from a clone the verifier trusts, through the same hardened Git runner;
 - a patch is applied only in a disposable clone.
 
-The coverage statement fixes the claim to the Git ref transition. Filesystem, process, network and credential effects are not covered, and a `verified` result says nothing about them. The bundle omits host paths and the fence token, but it does contain the proposal's paths and digests.
+The verifier applies its own current operator trust, not the trust in force at promotion, and the bundle carries no revocation list: that the approval was unrevoked at admission is host-attested. It does not read the live destination ref. Effect checks run in an empty repository that borrows the trusted clone's objects, so that clone's working tree, attributes and configuration cannot change the result. The coverage statement fixes the claim to the Git ref transition. Filesystem, process, network and credential effects are not covered, and a `verified` result says nothing about them. The bundle omits host paths and the fence token, but it does contain the proposal's paths and digests.
 
 ## Known gaps before execution is production-safe
 

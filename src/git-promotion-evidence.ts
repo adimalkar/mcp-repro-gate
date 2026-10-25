@@ -1,11 +1,12 @@
 import { createPublicKey, sign, verify, type KeyObject } from "node:crypto";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import * as z from "zod/v4";
 
 import { canonicalJson } from "./canonical-json.js";
+import type { GitApprovalAuthority } from "./git-approval-store.js";
 import { digestSchema } from "./git-change-contract.js";
 import type { GitChangeProposal } from "./git-change-proposal.js";
 import { digestCanonical, sha256 } from "./digest.js";
@@ -15,6 +16,8 @@ import {
   gitOperatorReviewDigest,
   parseGitOperatorReview,
   parseGitOperatorReviewTrust,
+  PUBLIC_PEM_PATTERN,
+  signatureSchema,
   type GitOperatorReviewV1,
 } from "./git-operator-review.js";
 import {
@@ -123,12 +126,14 @@ export function exportGitPromotionEvidence(input: {
   };
 }
 
-const publicKeyPemSchema = z.string().min(1).max(4096);
 const trustSchema = z.strictObject({
   evidenceTrustVersion: z.literal(1),
   hostKeys: z
     .array(
-      z.strictObject({ keyId: digestSchema, publicKeyPem: publicKeyPemSchema }),
+      z.strictObject({
+        keyId: digestSchema,
+        publicKeyPem: z.string().max(4096).regex(PUBLIC_PEM_PATTERN),
+      }),
     )
     .min(1)
     .max(64),
@@ -178,16 +183,18 @@ const manifestSchema = z.strictObject({
 });
 const bundleSchema = z.strictObject({
   bundleVersion: z.literal(1),
-  manifest: z.record(z.string(), z.unknown()),
+  manifest: z.unknown(),
   manifestDigest: digestSchema,
   signature: z.strictObject({
     algorithm: z.literal("ed25519"),
-    value: z.string().regex(/^[A-Za-z0-9_-]{86}$/u),
+    value: signatureSchema,
   }),
 });
+// Keys JSON.parse keeps as own properties but object schemas may drop.
+const PROTOTYPE_KEYS = ["__proto__", "constructor", "prototype"];
 
 export type GitPromotionEvidenceResult =
-  "verified" | "unchecked_effect" | "indeterminate" | "failed";
+  "verified" | "unchecked_effect" | "not_promoted" | "indeterminate" | "failed";
 
 export interface GitPromotionEvidenceCheck {
   check: string;
@@ -207,9 +214,9 @@ class CheckFailed extends Error {}
 
 /**
  * Verify a promotion bundle offline with public keys only. Checks stop at
- * the first failure. The effect checks read objects from a repository the
- * verifier trusts (never a working tree) and, with a patch, recompute the
- * staged tree in a disposable clone.
+ * the first failure. The effect checks run in a disposable repository that
+ * borrows the trusted repository's object store, so no working tree,
+ * attributes or repository configuration of that clone is involved.
  */
 export function verifyGitPromotionEvidence(
   bundle: unknown,
@@ -240,12 +247,25 @@ export function verifyGitPromotionEvidence(
     const parsed = attemptTo("bundle_schema", () => {
       if (Buffer.byteLength(JSON.stringify(bundle)) > MAX_BUNDLE_BYTES)
         throw new Error("Bundle is too large");
-      return bundleSchema.parse(bundle);
+      const b = bundleSchema.parse(bundle);
+      const manifest = b.manifest;
+      if (
+        manifest === null ||
+        typeof manifest !== "object" ||
+        Array.isArray(manifest) ||
+        PROTOTYPE_KEYS.some((key) => Object.hasOwn(manifest, key))
+      )
+        throw new Error("Manifest must be a plain object");
+      return { ...b, manifest: manifest as Record<string, unknown> };
     });
     report.manifestDigest = parsed.manifestDigest;
+    // The digest covers the manifest exactly as received, not a parsed copy.
     check(
       "manifest_digest",
-      digestCanonical(parsed.manifest) === parsed.manifestDigest,
+      attemptTo(
+        "manifest_digest",
+        () => digestCanonical(parsed.manifest) === parsed.manifestDigest,
+      ),
     );
     const hostKey = trust.hostKeys.get(String(parsed.manifest.hostKeyId));
     check(
@@ -292,33 +312,35 @@ export function verifyGitPromotionEvidence(
       "review_links",
       gitOperatorReviewDigest(review.payload) === attempt.reviewDigest &&
         review.payload.decision === "approve" &&
-        digestCanonical(attempt.prepared.staged) === attempt.effectDigest,
+        // The reservation's deadline never outlives the approval.
+        Date.parse(attempt.admissionDeadline) <=
+          Date.parse(review.payload.expiresAt),
     );
-    // Validity at the moment the host admitted the attempt; an attempt that
-    // was never admitted is judged at its reservation.
-    const at = Date.parse(admission?.admittedAt ?? attempt.reservedAt);
+    // The review must have been valid when the host reserved the attempt
+    // and, if it was admitted, at the admission the host recorded.
+    const times = [
+      attempt.reservedAt,
+      ...(admission === undefined ? [] : [admission.admittedAt]),
+    ];
     check(
       "operator_review",
-      authenticateGitOperatorReview(
-        review,
-        // The verifier only reads these frozen snapshots.
-        attempt.proposal as GitChangeProposal,
-        attempt.authority,
-        attempt.effectDigest,
-        trust.review,
-        at,
-      ) !== undefined,
-      admission === undefined
-        ? "checked at reservation; the attempt was never admitted"
-        : undefined,
+      times.every(
+        (time) =>
+          authenticateGitOperatorReview(
+            review,
+            // The verifier only reads these frozen snapshots.
+            attempt.proposal as GitChangeProposal,
+            attempt.authority as GitApprovalAuthority,
+            attempt.effectDigest,
+            trust.review,
+            Date.parse(time),
+          ) !== undefined,
+      ),
     );
 
     if (outcome.state !== "confirmed") {
-      report.result = "indeterminate";
-      return report;
-    }
-    if (options.repositoryPath === undefined && options.patch === undefined) {
-      report.result = "unchecked_effect";
+      report.result =
+        outcome.state === "failed" ? "not_promoted" : "indeterminate";
       return report;
     }
     if (options.patch !== undefined)
@@ -326,13 +348,18 @@ export function verifyGitPromotionEvidence(
         "patch_digest",
         sha256(options.patch) === attempt.proposal.patchDigest,
       );
-    if (options.repositoryPath !== undefined) {
-      const repository = options.repositoryPath;
-      const prepared = attempt.prepared;
+    if (options.repositoryPath === undefined) {
+      // A patch digest alone says nothing about the resulting commit.
+      report.result = "unchecked_effect";
+      return report;
+    }
+    const prepared = attempt.prepared;
+    const patch = options.patch;
+    withBorrowedObjects(options.repositoryPath, (repo) => {
       attemptTo("candidate_commit", () => {
         const raw = runGit([
           "-C",
-          repository,
+          repo,
           "cat-file",
           "commit",
           prepared.candidateCommitOid,
@@ -341,7 +368,14 @@ export function verifyGitPromotionEvidence(
         const parents = header
           .split("\n")
           .filter((line) => line.startsWith("parent "));
+        const rehashed = runGit(
+          ["-C", repo, "hash-object", "-t", "commit", "--stdin"],
+          raw,
+        )
+          .toString("utf8")
+          .trim();
         if (
+          rehashed !== prepared.candidateCommitOid ||
           sha256(raw) !== prepared.hostCommitMetadataDigest ||
           !header.startsWith(`tree ${prepared.candidateTreeOid}\n`) ||
           parents.length !== 1 ||
@@ -353,37 +387,37 @@ export function verifyGitPromotionEvidence(
         checks.push({ check: "candidate_commit", ok: true });
       });
       attemptTo("staged_diff", () => {
+        // Exactly the staging computation: the candidate tree in an index,
+        // diffed against the base commit.
+        runGit(["-C", repo, "read-tree", prepared.candidateTreeOid]);
         const diff = runGit([
           "-C",
-          repository,
+          repo,
           "diff",
+          "--cached",
           "--binary",
           "--no-ext-diff",
           "--no-textconv",
           prepared.baseCommit,
-          prepared.candidateTreeOid,
           "--",
         ]);
         if (sha256(diff) !== prepared.staged.stagedPatchDigest)
           throw new Error("Diff does not match the staged patch digest");
         checks.push({ check: "staged_diff", ok: true });
       });
-      if (options.patch !== undefined) {
-        const patch = options.patch;
+      if (patch !== undefined)
         attemptTo("patch_applies", () => {
-          if (
-            applyPatchTree(repository, prepared.baseCommit, patch) !==
-            prepared.candidateTreeOid
-          )
+          runGit(["-C", repo, "read-tree", prepared.baseCommit]);
+          runGit(["-C", repo, "apply", "--cached", "--binary", "-"], patch);
+          const tree = runGit(["-C", repo, "write-tree"])
+            .toString("utf8")
+            .trim();
+          if (tree !== prepared.candidateTreeOid)
             throw new Error("Patch does not reproduce the staged tree");
           checks.push({ check: "patch_applies", ok: true });
         });
-      }
-      report.result = "verified";
-    } else {
-      // A patch digest alone says nothing about the resulting commit.
-      report.result = "unchecked_effect";
-    }
+    });
+    report.result = "verified";
     return report;
   } catch (error) {
     if (!(error instanceof CheckFailed)) throw error;
@@ -392,27 +426,40 @@ export function verifyGitPromotionEvidence(
   }
 }
 
-/** Apply a patch to a base commit in a disposable clone; return the tree. */
-function applyPatchTree(
+/**
+ * Run with an empty disposable repository that borrows the trusted
+ * repository's objects through alternates: every object is visible, but no
+ * working tree, attributes, index or repository configuration of the trusted
+ * clone takes part.
+ */
+function withBorrowedObjects(
   repositoryPath: string,
-  baseCommit: string,
-  patch: Uint8Array,
-): string {
+  run: (repo: string) => void,
+): void {
+  const root = realpathSync.native(repositoryPath);
+  const common = runGit([
+    "-C",
+    root,
+    "rev-parse",
+    "--path-format=absolute",
+    "--git-common-dir",
+  ])
+    .toString("utf8")
+    .trim();
+  const format = runGit(["-C", root, "rev-parse", "--show-object-format"])
+    .toString("utf8")
+    .trim();
+  if (format !== "sha1" && format !== "sha256")
+    throw new Error("Unsupported Git object format");
   const scratch = mkdtempSync(join(tmpdir(), "reprogate-evidence-"));
   try {
-    const clone = join(scratch, "clone");
-    runGit([
-      "clone",
-      "--no-local",
-      "--no-checkout",
-      "--quiet",
-      "--",
-      realpathSync.native(repositoryPath),
-      clone,
-    ]);
-    runGit(["-C", clone, "read-tree", baseCommit]);
-    runGit(["-C", clone, "apply", "--cached", "--binary", "-"], patch);
-    return runGit(["-C", clone, "write-tree"]).toString("utf8").trim();
+    const repo = join(scratch, "repo");
+    runGit(["init", "--quiet", `--object-format=${format}`, "--", repo]);
+    writeFileSync(
+      join(repo, ".git", "objects", "info", "alternates"),
+      `${join(common, "objects")}\n`,
+    );
+    run(repo);
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }

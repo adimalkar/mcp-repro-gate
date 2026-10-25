@@ -123,3 +123,35 @@ node dist/src/cli.js verify-evidence --bundle bundle.json --trust trust.json [--
 - **Attempt record:** the attempt is exported without `repositoryPath` and `fenceOwner`, because the fence owner carries the fence token. `parseGitPromotionAttemptEvidence` applies the same proposal, prepared-object and authority checks as the journal parser. `parseGitPromotionRecords` shares the admission and outcome binding checks with the journal readback.
 - **Review time:** `authenticateGitOperatorReview` gained an optional reference time, so the review is judged at admission, or at reservation for an attempt that was never admitted. The default is still the current time.
 - **Staged diff equivalence:** staging hashes `git diff --cached --binary --no-ext-diff --no-textconv <base>` over the candidate index. The verifier hashes the tree-to-tree diff with the same options. The round-trip test shows the two agree on a real repository.
+
+## Review
+
+The first independent review found no HIGH issues and requested changes.
+
+- **Medium (fixed): CLI options.** `OPTIONAL` was global, so `--patch` became optional for every command. Options are now optional per command, only for `verify-evidence`, and there is a test.
+- **Medium (fixed): fetched clones and attributes.** The effect checks cloned the trusted repository, which misses objects reachable only from remote refs. They also ran `git diff` in that clone, where worktree attributes and repository configuration can change the bytes. Fix: they now run in an empty disposable repository that borrows the clone's objects through alternates, and the staged diff is computed exactly as staging computes it (`read-tree` of the candidate, then `diff --cached`).
+- **Medium (fixed): tests.** New tests cover:
+  - verifying after the review expired;
+  - a reservation or admission backdated before the review;
+  - deny and short-lived reviews re-signed by the operator key;
+  - candidate commits with a wrong parent, two parents, wrong metadata, or a tag OID;
+  - a forged tree that the patch does not reproduce;
+  - a fetched clone;
+  - non-canonical signatures, prototype keys, and private-key PEMs.
+
+  Every verifier check now fails a test when removed.
+
+- **Low (fixed):**
+  - the digest covers the manifest exactly as received, and prototype keys are rejected;
+  - signatures must be canonical base64url;
+  - host keys must be public-key PEMs;
+  - the candidate commit is re-hashed against its OID;
+  - the review is authenticated at reservation as well as admission;
+  - the admission deadline must fall within the review's validity;
+  - a `failed` outcome reports `not_promoted`;
+  - the docs say what `verified` does not cover.
+- **Corrections to the plan above:**
+  - `--patch` alone gives `unchecked_effect`, not `verified`;
+  - changed paths are covered by the staged diff digest, not recomputed separately;
+  - the patch check re-runs staging's `read-tree`/`apply --cached`/`write-tree` in the borrowed-object repository rather than calling the staging code;
+  - a "reordered key" is not a tamper case under canonical JSON.

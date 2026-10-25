@@ -114,23 +114,31 @@ The patch itself is not included. `manifestDigest` is the SHA-256 of the manifes
 
 **Checks, in order.** Checking stops at the first failure.
 
-| Check              | What it proves                                                                                                                                                                                                |
-| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `manifest_digest`  | The manifest is unchanged.                                                                                                                                                                                    |
-| `host_signature`   | A trusted host key signed it.                                                                                                                                                                                 |
-| `manifest_schema`  | Every record is strict, and the proposal, prepared objects, authority, admission and outcome bind together as the ledger requires.                                                                            |
-| `review_links`     | The review is the one the attempt reserved: an approval for this effect.                                                                                                                                      |
-| `operator_review`  | The review authenticates under `trust.review` (operator and key enabled, audience, permission for this repository and ref) and was valid at the recorded admission time, or at reservation if never admitted. |
-| `candidate_commit` | With `--repo`: the candidate commit's bytes match the recorded digest, its tree is the staged tree and its only parent is the expected old commit.                                                            |
-| `staged_diff`      | With `--repo`: the diff between the base commit and the candidate tree hashes to the digest the operator signed. It covers every path, mode and change kind.                                                  |
-| `patch_digest`     | With `--patch`: the patch is the one the proposal names.                                                                                                                                                      |
-| `patch_applies`    | With `--patch` and `--repo`: applying the patch to the base commit in a disposable clone reproduces the staged tree.                                                                                          |
+| Check              | What it proves                                                                                                                                                                                        |
+| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `manifest_digest`  | The manifest is unchanged.                                                                                                                                                                            |
+| `host_signature`   | A trusted host key signed it.                                                                                                                                                                         |
+| `manifest_schema`  | Every record is strict, and the proposal, prepared objects, authority, admission and outcome bind together as the ledger requires.                                                                    |
+| `review_links`     | The review is the one the attempt reserved: an approval for this effect, valid at least until the admission deadline.                                                                                 |
+| `operator_review`  | The review authenticates under `trust.review` (operator and key enabled, audience, permission for this repository and ref) at the recorded reservation time and, if admitted, at the admission time.  |
+| `candidate_commit` | With `--repo`: the candidate commit's bytes hash to its OID and match the recorded digest, its tree is the staged tree and its only parent is the expected old commit.                                |
+| `staged_diff`      | With `--repo`: the diff of the base commit against the candidate tree, computed exactly as staging computes it, hashes to the digest the operator signed. It covers every path, mode and change kind. |
+| `patch_digest`     | With `--patch`: the patch is the one the proposal names.                                                                                                                                              |
+| `patch_applies`    | With `--patch` and `--repo`: applying the patch to the base commit reproduces the staged tree.                                                                                                        |
 
 **Results.** The command exits 0 only for `verified`.
 
 - **`verified`:** every check passed, including the effect checks against `--repo`.
 - **`unchecked_effect`:** the authorization and attestation checks passed, but no repository was given.
-- **`indeterminate`:** the outcome is `failed` or `indeterminate`, so no ref transition is claimed. Signatures and links are still checked.
+- **`not_promoted`:** the outcome is `failed`: the gate rejected the attempt before any write, or recovery abandoned it. Signatures and links are still checked.
+- **`indeterminate`:** the outcome is `indeterminate`: the write was admitted but its effect is not proven. Signatures and links are still checked.
 - **`failed`:** a check failed. The report names it.
 
-`--repo` must be a clone you trust. The verifier reads objects, never a working tree. A destination that moved after promotion is not evidence against it.
+`--repo` must be a clone you trust; any clone that has the objects works, including one that only fetched them. The effect checks run in an empty disposable repository that borrows that clone's object store through Git alternates, so the clone's working tree, attributes, index and configuration never take part.
+
+What a `verified` result does not cover:
+
+- **The live destination ref.** It is not read. The claim that the ref moved rests on the host's signed outcome. A destination that moved after promotion is not evidence against it.
+- **Trust at the time.** Operator keys and permissions are checked against your current `trust.json`, not the trust in force at promotion.
+- **Revocation.** The bundle holds no revocation list; that the approval was unrevoked at admission is the host's attestation.
+- **Path privacy.** The proposal's workspace digests are unsalted SHA-256 hashes of absolute host paths, so they can confirm a guessed path.

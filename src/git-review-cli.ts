@@ -118,8 +118,10 @@ const COMMANDS = {
   "verify-evidence": ["bundle", "trust", "repo", "patch"],
 } as const;
 
-// Options a command may omit.
-const OPTIONAL: ReadonlySet<string> = new Set(["repo", "patch"]);
+// Options a command may omit; every other listed option is required.
+const OPTIONAL: Partial<Record<Command, ReadonlySet<string>>> = {
+  "verify-evidence": new Set(["repo", "patch"]),
+};
 
 // Options that are present-or-absent flags rather than "--name value".
 const FLAGS: ReadonlySet<string> = new Set(["confirm-quiescent"]);
@@ -260,7 +262,7 @@ function parseOptions(command: Command, args: string[]): Options {
     options.set(name, value);
   }
   for (const name of allowed) {
-    if (!options.has(name) && !OPTIONAL.has(name)) {
+    if (!options.has(name) && !OPTIONAL[command]?.has(name)) {
       throw new UsageError(`Missing required option --${name}`);
     }
   }
