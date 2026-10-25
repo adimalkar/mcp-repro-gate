@@ -361,11 +361,17 @@ export const GIT_PROMOTION_FAILED_REASONS = [
   "candidate_rejected",
   "abandoned",
 ] as const;
-/** A dispatched or possibly dispatched write whose effect is not proven. */
+/**
+ * An admitted attempt that did not end confirmed: a dispatched or possibly
+ * dispatched write whose effect is not proven, or (not_dispatched) one the
+ * gate admitted but then declined to write because the deadline passed or
+ * the destination was checked out before dispatch.
+ */
 export const GIT_PROMOTION_INDETERMINATE_REASONS = [
   "dispatch_uncertain",
   "readback_mismatch",
   "interrupted",
+  "not_dispatched",
 ] as const;
 export type GitPromotionFailedReason =
   (typeof GIT_PROMOTION_FAILED_REASONS)[number];
