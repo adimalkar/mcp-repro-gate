@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -21,6 +22,7 @@ import { createHandoffService, type HandoffService } from "../src/handoff.js";
 import { HandoffError } from "../src/handoff-contract.js";
 import { fitBrief, renderBriefText } from "../src/handoff-brief.js";
 import { runHandoffCli } from "../src/handoff-cli.js";
+import { observeGit } from "../src/handoff-observe.js";
 import { redactHandoffText } from "../src/handoff-redact.js";
 import {
   MAX_NOTES_PER_SESSION,
@@ -221,7 +223,11 @@ test("a rate-limited Claude Code session is reported to the next session without
     output.hookSpecificOutput.additionalContext,
   )?.[1];
   assert.ok(sessionId);
-  f.hook({ hook_event_name: "UserPromptSubmit", prompt: "do the thing" });
+  assert.equal(start.stderr, "");
+  assert.deepEqual(
+    f.hook({ hook_event_name: "UserPromptSubmit", prompt: "do the thing" }),
+    { code: 0, stdout: "", stderr: "" },
+  );
   f.service().note({
     handoffVersion: 1,
     sessionId,
@@ -318,8 +324,12 @@ test("subagents get their own sessions, a short context and a recorded result wh
 test("SessionEnd ends the session with the client's reason and is idempotent", (t) => {
   const f = fixture(t);
   f.hook({ hook_event_name: "SessionStart", source: "startup" });
-  f.hook({ hook_event_name: "SessionEnd", reason: "prompt_input_exit" });
-  f.hook({ hook_event_name: "SessionEnd", reason: "other" });
+  for (const reason of ["prompt_input_exit", "other"])
+    assert.deepEqual(f.hook({ hook_event_name: "SessionEnd", reason }), {
+      code: 0,
+      stdout: "",
+      stderr: "",
+    });
   const [session] = f.service().brief().sessions;
   assert.equal(session?.state, "ended");
   assert.equal(session.endReason, "client_ended");
@@ -344,20 +354,29 @@ test("hooks ignore other projects, malformed payloads and oversized input, and n
   const garbage = f.cli(["hook", "--config", f.configPath], "{not json");
   assert.equal(garbage.code, 0);
   assert.match(garbage.stderr, /invalid_payload/u);
+  let hugeError = "";
   const huge = runHandoffCli(["hook", "--config", f.configPath], {
     now: f.clock.now,
     stdout: () => undefined,
-    stderr: () => undefined,
+    stderr: (text) => {
+      hugeError += text;
+    },
     stdin: () => undefined,
   });
   assert.equal(huge, 0);
+  assert.match(hugeError, /payload_too_large/u);
   assert.equal(f.service().brief().sessions.length, 0);
-  // Misuse of the command line is still an error.
-  assert.equal(f.cli(["hook"]).code, 2);
-  assert.equal(
-    f.cli(["hook", "--config", f.configPath, "--client", "x"]).code,
-    2,
-  );
+  // Claude Code treats exit code 2 as "block", so even command-line misuse
+  // exits 1: a typo in a user-level hook must not block every prompt.
+  for (const args of [
+    ["hook"],
+    ["hook", "--config", f.configPath, "--client", "x"],
+    ["hook", "--config", f.configPath, "--unknown-flag"],
+    ["hook", "--config", f.configPath, "extra"],
+    ["hok", "--config", f.configPath],
+    ["brief", "--bytes", "1"],
+  ])
+    assert.equal(f.cli(args).code, 1, args.join(" "));
   // A read-only configuration records nothing.
   const readOnlyPath = join(f.scratch, "state", "read-only.json");
   writeFileSync(
@@ -370,8 +389,226 @@ test("hooks ignore other projects, malformed payloads and oversized input, and n
     session_id: "s",
     hook_event_name: "SessionStart",
   });
-  assert.equal(readOnly.code, 0);
+  assert.equal(readOnly.code, 1);
   assert.match(readOnly.stderr, /read_only/u);
+});
+
+test("a hook from another project never opens or creates the database", (t) => {
+  const f = fixture(t);
+  const fresh = join(f.scratch, "state", "fresh.sqlite");
+  const freshConfig = join(f.scratch, "state", "fresh.json");
+  writeFileSync(
+    freshConfig,
+    JSON.stringify({ ...f.config, databasePath: fresh }),
+    { mode: 0o600 },
+  );
+  const result = f.cli(["hook", "--config", freshConfig], {
+    cwd: f.scratch,
+    session_id: "elsewhere",
+    hook_event_name: "SessionStart",
+  });
+  assert.deepEqual(result, { code: 0, stdout: "", stderr: "" });
+  assert.equal(existsSync(fresh), false);
+});
+
+test("a session that hit a rate limit stays failed after the user quits, and outlives ended sessions", (t) => {
+  const f = fixture(t);
+  f.hook({ hook_event_name: "SessionStart", source: "startup" });
+  f.hook({ hook_event_name: "StopFailure", error: "rate_limit" });
+  f.hook({ hook_event_name: "SessionEnd", reason: "prompt_input_exit" });
+  const service = f.service();
+  const [session] = service.brief().sessions;
+  assert.equal(session?.state, "failed");
+  assert.equal(session.endReason, "client_ended");
+  assert.match(
+    service.briefText(),
+    /stopped on rate_limit 0s ago, then ended \(client_ended: prompt_input_exit\); its work may be unfinished/u,
+  );
+  // A normal end after the session resumed clears the failure.
+  const { sessionId } = service.join({ handoffVersion: 1, agent: "ok" });
+  service.end({ handoffVersion: 1, sessionId });
+  // Fill the workspace with ended sessions; pruning drops them first.
+  for (let index = 0; index < MAX_SESSIONS_PER_WORKSPACE; index++) {
+    const joined = service.join({
+      handoffVersion: 1,
+      agent: `filler${String(index)}`,
+    });
+    service.end({ handoffVersion: 1, sessionId: joined.sessionId });
+    f.clock.advance(1);
+  }
+  f.clock.advance(120);
+  service.join({ handoffVersion: 1, agent: "last" });
+  assert.ok(
+    service
+      .brief(65536)
+      .sessions.some(
+        (candidate) =>
+          candidate.state === "failed" && candidate.client === "claude-code",
+      ),
+  );
+});
+
+test("pruning never drops the parent being joined or a session seen in the last minute", (t) => {
+  const f = fixture(t);
+  const service = f.service();
+  const parent = service.join({ handoffVersion: 1, agent: "parent" });
+  service.end({ handoffVersion: 1, sessionId: parent.sessionId });
+  f.clock.advance(3600);
+  const recent: string[] = [];
+  for (let index = 1; index < MAX_SESSIONS_PER_WORKSPACE; index++) {
+    const joined = service.join({
+      handoffVersion: 1,
+      agent: `s${String(index)}`,
+    });
+    service.end({ handoffVersion: 1, sessionId: joined.sessionId });
+    recent.push(joined.sessionId);
+  }
+  // The table is full; the oldest ended session is the parent itself.
+  const child = service.join({
+    handoffVersion: 1,
+    agent: "child",
+    parentSessionId: parent.sessionId,
+  });
+  const db = new DatabaseSync(f.config.databasePath, { readOnly: true });
+  f.defer(() => {
+    db.close();
+  });
+  const ids = new Set(
+    db
+      .prepare("SELECT session_id FROM handoff_sessions")
+      .all()
+      .map((row) => row.session_id),
+  );
+  assert.ok(ids.has(parent.sessionId));
+  assert.ok(ids.has(child.sessionId));
+  // Everything else was seen within the last minute, so nothing was pruned.
+  assert.ok(recent.every((id) => ids.has(id)));
+  assert.equal(ids.size, MAX_SESSIONS_PER_WORKSPACE + 1);
+});
+
+test("a resumed subagent and a prompted ended session are reopened, and Stop after an end changes nothing", (t) => {
+  const f = fixture(t);
+  f.hook({ hook_event_name: "SessionStart", source: "startup" });
+  const start = () =>
+    /session is ([0-9a-f-]{36})/u.exec(
+      f.hook({
+        hook_event_name: "SubagentStart",
+        agent_id: "agent-7",
+        agent_type: "Plan",
+      }).stdout,
+    )?.[1];
+  const first = start();
+  f.hook({
+    hook_event_name: "SubagentStop",
+    agent_id: "agent-7",
+    agent_type: "Plan",
+  });
+  const second = start();
+  assert.ok(first !== undefined && first === second);
+  const service = f.service();
+  assert.equal(
+    service.note({
+      handoffVersion: 1,
+      sessionId: second,
+      kind: "progress",
+      text: "resumed work",
+    }).session.state,
+    "active",
+  );
+  f.hook({ hook_event_name: "SessionEnd", reason: "other" });
+  const late = f.hook({ hook_event_name: "Stop" });
+  assert.deepEqual(late, { code: 0, stdout: "", stderr: "" });
+  const main = () =>
+    f
+      .service()
+      .brief()
+      .sessions.find((s) => s.kind === "agent");
+  assert.equal(main()?.state, "ended");
+  assert.deepEqual(
+    f.hook({ hook_event_name: "UserPromptSubmit", prompt: "again" }),
+    { code: 0, stdout: "", stderr: "" },
+  );
+  assert.equal(main()?.state, "active");
+});
+
+test("internal agents that never started do not become subagent sessions", (t) => {
+  const f = fixture(t, { captureMessages: true });
+  f.hook({ hook_event_name: "SessionStart", source: "startup" });
+  for (const agent_id of ["suggest-1", "btw-2"])
+    f.hook({
+      hook_event_name: "SubagentStop",
+      agent_id,
+      agent_type: "",
+      last_assistant_message: "internal",
+    });
+  f.hook({ hook_event_name: "SubagentStart", agent_id: "x", agent_type: "" });
+  f.hook({ hook_event_name: "PreCompact", agent_id: "ghost", trigger: "auto" });
+  const sessions = f.service().brief().sessions;
+  assert.deepEqual(
+    sessions.map((s) => s.kind),
+    ["agent"],
+  );
+});
+
+test("credential-shaped labels are refused or replaced, and huge captured replies stay fast", (t) => {
+  const f = fixture(t, { captureMessages: true });
+  const service = f.service();
+  assert.throws(
+    () =>
+      service.join({
+        handoffVersion: 1,
+        agent: "ghp_abcdefghijklmnopqrstuvwxyz0123456789",
+      }),
+    errorCode("invalid_input"),
+  );
+  assert.throws(
+    () =>
+      service.join({ handoffVersion: 1, agent: "a", task: "esc \u001b[2J" }),
+    errorCode("invalid_input"),
+  );
+  f.hook({ hook_event_name: "SessionStart", source: "startup" });
+  f.hook({
+    hook_event_name: "SubagentStart",
+    agent_id: "a1",
+    agent_type: "ghp_abcdefghijklmnopqrstuvwxyz0123456789",
+  });
+  f.hook({
+    hook_event_name: "StopFailure",
+    error: "ghp_abcdefghijklmnopqrstuvwxyz0123456789",
+  });
+  const started = performance.now();
+  f.hook({
+    hook_event_name: "Stop",
+    last_assistant_message: "-eyJ".repeat(256 * 1024),
+  });
+  assert.ok(performance.now() - started < 2000);
+  const sessions = f.service().brief(65536).sessions;
+  assert.equal(sessions.find((s) => s.kind === "subagent")?.agent, "subagent");
+  const dump = JSON.stringify(sessions);
+  assert.equal(dump.includes("ghp_"), false);
+  assert.ok(
+    Buffer.byteLength(
+      sessions.find((s) => s.kind === "agent")?.lastMessage ?? "",
+    ) <= 1024,
+  );
+});
+
+test("Codex lifecycle hooks on standard input are recorded under the codex client", (t) => {
+  const f = fixture(t);
+  const codex = (payload: Record<string, unknown>) =>
+    f.cli(["hook", "--config", f.configPath, "--client", "codex"], {
+      cwd: f.workspaceRoot,
+      session_id: "019a-thread",
+      ...payload,
+    });
+  const started = codex({ hook_event_name: "SessionStart", source: "startup" });
+  assert.match(started.stdout, /"hookEventName":"SessionStart"/u);
+  codex({ hook_event_name: "UserPromptSubmit", turn_id: "t1", prompt: "x" });
+  codex({ hook_event_name: "Interrupt", turn_id: "t1" });
+  const [session] = f.service().brief().sessions;
+  assert.equal(session?.client, "codex");
+  assert.equal(session.agent, "codex");
+  assert.equal(session.state, "idle");
 });
 
 test("Codex turn notifications track a thread from the command-line payload", (t) => {
@@ -772,4 +1009,170 @@ test("published schemas accept session values", (t) => {
   const end = { handoffVersion: 1, sessionId: joined.sessionId, summary: "ok" };
   check("handoff.schema.json#/$defs/end", end);
   check("handoff.schema.json#/$defs/sessionResult", service.end(end));
+});
+
+test("briefs keep every budget, even with long escaped notes, and flag what was cut", (t) => {
+  const f = fixture(t);
+  const service = f.service();
+  const { sessionId } = service.join({
+    handoffVersion: 1,
+    agent: "quoter",
+    task: "t".repeat(512),
+  });
+  service.note({
+    handoffVersion: 1,
+    sessionId,
+    kind: "blocker",
+    text: '"'.repeat(2048),
+  });
+  for (const budget of [1024, 2048, 4096]) {
+    const brief = service.brief(budget);
+    assert.ok(
+      Buffer.byteLength(JSON.stringify(brief)) <= budget,
+      String(budget),
+    );
+    assert.equal(brief.truncated, true);
+  }
+  const status = service.status({
+    handoffVersion: 1,
+    brief: true,
+    briefBytes: 1024,
+  });
+  assert.ok(Buffer.byteLength(JSON.stringify(status.brief)) <= 1024);
+  assert.ok(service.briefText(1500).length <= 1500);
+  // Without pressure nothing is cut, and omissions are exact.
+  for (let index = 0; index < 29; index++)
+    service.join({ handoffVersion: 1, agent: `a${String(index)}` });
+  const roomy = service.brief(65536);
+  assert.equal(roomy.truncated, false);
+  assert.equal(roomy.sessions.length, 24);
+  assert.equal(roomy.omittedSessions, 6);
+  assert.equal(roomy.omittedNotes, 0);
+});
+
+test("commits since the oldest unfinished agent session are shown, whatever joined later", (t) => {
+  const f = fixture(t, {
+    observeGit: true,
+    leaseSeconds: 60,
+    graceSeconds: 60,
+  });
+  const root = f.workspaceRoot;
+  git(root, "init", "-q", "-b", "main");
+  writeFileSync(join(root, "a.txt"), "one\n");
+  git(root, "add", "a.txt");
+  git(root, "commit", "-q", "-m", "base");
+  const service = f.service();
+  const a = service.join({ handoffVersion: 1, agent: "a" });
+  writeFileSync(join(root, "a.txt"), "two\n");
+  git(root, "commit", "-q", "-am", "work by a");
+  service.join({
+    handoffVersion: 1,
+    agent: "helper",
+    parentSessionId: a.sessionId,
+  });
+  f.clock.advance(30);
+  service.join({ handoffVersion: 1, agent: "b" });
+  f.clock.advance(600);
+  const { brief } = service.join({ handoffVersion: 1, agent: "c" });
+  assert.equal(brief.git.commitsSince?.count, 1);
+  assert.match(brief.git.commitsSince.subjects[0] ?? "", /work by a/u);
+});
+
+test("Git observation detects a rebase, reports renames once and escapes control characters in paths", (t) => {
+  const f = fixture(t, { observeGit: true });
+  const root = f.workspaceRoot;
+  git(root, "init", "-q", "-b", "main");
+  writeFileSync(join(root, "a.txt"), "base\n");
+  writeFileSync(join(root, "old name.txt"), "rename me\n");
+  git(root, "add", ".");
+  git(root, "commit", "-q", "-m", "base");
+  git(root, "checkout", "-q", "-b", "topic");
+  writeFileSync(join(root, "a.txt"), "topic\n");
+  git(root, "commit", "-q", "-am", "topic");
+  git(root, "checkout", "-q", "main");
+  writeFileSync(join(root, "a.txt"), "main\n");
+  git(root, "commit", "-q", "-am", "main");
+  git(root, "checkout", "-q", "topic");
+  spawnSync("git", [
+    "-C",
+    root,
+    "-c",
+    "user.name=T",
+    "-c",
+    "user.email=t@e.invalid",
+    "rebase",
+    "main",
+  ]);
+  git(root, "mv", "old name.txt", "new name.txt");
+  writeFileSync(join(root, "evil\u001b[2Jname.txt"), "x\n");
+  const observed = f.service().brief(65536).git;
+  assert.equal(observed.operation, "rebase");
+  const renamed = observed.paths.filter((p) => p.path.includes("name.txt"));
+  assert.deepEqual(renamed.map((p) => p.path).sort(), [
+    "evil�[2Jname.txt",
+    "new name.txt",
+  ]);
+  assert.match(
+    f.service().briefText(),
+    /^Attention: a rebase is in progress/mu,
+  );
+});
+
+test("an invalid base never reaches Git as an argument", (t) => {
+  const f = fixture(t, { observeGit: true });
+  const root = f.workspaceRoot;
+  git(root, "init", "-q", "-b", "main");
+  writeFileSync(join(root, "a.txt"), "one\n");
+  git(root, "add", "a.txt");
+  git(root, "commit", "-q", "-m", "base");
+  const target = join(f.scratch, "written-by-git");
+  const observed = observeGit(root, `--output=${target}`);
+  assert.equal(observed.state, "observed");
+  assert.equal(observed.commitsSince, null);
+  assert.equal(existsSync(target), false);
+});
+
+test("every handoff module loads on its own", () => {
+  for (const name of [
+    "handoff-session-contract",
+    "handoff-observe",
+    "handoff-brief",
+    "handoff-sessions",
+    "handoff-redact",
+    "handoff-contract",
+    "handoff-cli",
+  ]) {
+    const url = new URL(`../src/${name}.js`, import.meta.url).href;
+    const result = spawnSync(
+      process.execPath,
+      ["--input-type=module", "-e", `await import(${JSON.stringify(url)});`],
+      { encoding: "utf8" },
+    );
+    assert.equal(result.status, 0, `${name}: ${result.stderr}`);
+  }
+});
+
+test("a read-only configuration refuses session writes", (t) => {
+  const f = fixture(t);
+  const service = f.service({ allowUpdates: false });
+  const id = "00000000-0000-4000-8000-000000000000";
+  assert.throws(
+    () => service.join({ handoffVersion: 1, agent: "x" }),
+    errorCode("read_only"),
+  );
+  assert.throws(
+    () =>
+      service.note({
+        handoffVersion: 1,
+        sessionId: id,
+        kind: "progress",
+        text: "x",
+      }),
+    errorCode("read_only"),
+  );
+  assert.throws(
+    () => service.end({ handoffVersion: 1, sessionId: id }),
+    errorCode("read_only"),
+  );
+  assert.equal(service.brief().sessions.length, 0);
 });

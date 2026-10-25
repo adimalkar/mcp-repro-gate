@@ -783,6 +783,7 @@
         "notes",
         "omittedNotes",
         "git",
+        "truncated",
         "provenance"
       ],
       "properties": {
@@ -878,6 +879,9 @@
         },
         "git": {
           "$ref": "#/$defs/gitObservation"
+        },
+        "truncated": {
+          "type": "boolean"
         },
         "provenance": {
           "type": "object",

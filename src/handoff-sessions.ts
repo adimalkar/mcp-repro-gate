@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 
-import { HandoffError } from "./handoff-contract.js";
+import { HandoffError } from "./handoff-primitives.js";
 import {
   HANDOFF_CLIENTS,
   HANDOFF_END_REASONS,
@@ -15,15 +15,16 @@ import {
   type HandoffNoteKind,
 } from "./handoff-session-contract.js";
 
-const list = (values: readonly string[]) =>
-  values.map((value) => `'${value}'`).join(", ");
-
-/** Additive tables, created with the handoff schema. */
+/**
+ * Additive tables, created with the handoff schema. Enumerated columns are
+ * checked for shape only and validated on read, so a later version can add
+ * a client, end reason or note kind without rebuilding a STRICT table.
+ */
 export const HANDOFF_SESSION_SCHEMA = `
   CREATE TABLE IF NOT EXISTS handoff_sessions (
     session_id TEXT PRIMARY KEY CHECK(length(session_id) = 36),
     workspace_id TEXT NOT NULL,
-    client TEXT NOT NULL CHECK(client IN (${list(HANDOFF_CLIENTS)})),
+    client TEXT NOT NULL CHECK(length(client) BETWEEN 1 AND 32),
     client_session TEXT NOT NULL CHECK(length(client_session) <= 128),
     client_agent TEXT NOT NULL CHECK(length(client_agent) <= 128),
     agent TEXT NOT NULL CHECK(length(agent) BETWEEN 1 AND 64),
@@ -36,7 +37,7 @@ export const HANDOFF_SESSION_SCHEMA = `
     turn_open INTEGER CHECK(turn_open IS NULL OR turn_open IN (0, 1)),
     failure TEXT CHECK(failure IS NULL OR length(failure) <= 64),
     ended_at INTEGER,
-    end_reason TEXT CHECK(end_reason IS NULL OR end_reason IN (${list(HANDOFF_END_REASONS)})),
+    end_reason TEXT CHECK(end_reason IS NULL OR length(end_reason) BETWEEN 1 AND 32),
     client_reason TEXT CHECK(client_reason IS NULL OR length(client_reason) <= 64),
     last_message TEXT CHECK(last_message IS NULL OR length(CAST(last_message AS BLOB)) <= ${String(MAX_MESSAGE_BYTES)}),
     note_count INTEGER NOT NULL DEFAULT 0,
@@ -50,7 +51,7 @@ export const HANDOFF_SESSION_SCHEMA = `
   CREATE TABLE IF NOT EXISTS handoff_notes (
     note_id INTEGER PRIMARY KEY,
     session_id TEXT NOT NULL REFERENCES handoff_sessions(session_id) ON DELETE CASCADE,
-    kind TEXT NOT NULL CHECK(kind IN (${list(HANDOFF_NOTE_KINDS)})),
+    kind TEXT NOT NULL CHECK(length(kind) BETWEEN 1 AND 32),
     text TEXT NOT NULL CHECK(length(CAST(text AS BLOB)) BETWEEN 1 AND ${String(MAX_NOTE_BYTES)}),
     redactions INTEGER NOT NULL CHECK(redactions >= 0),
     created_at INTEGER NOT NULL
@@ -97,6 +98,12 @@ export interface HandoffSessionStart {
   now: number;
 }
 
+function noteKind(value: string): HandoffNoteKind {
+  if (!(HANDOFF_NOTE_KINDS as readonly string[]).includes(value))
+    throw new HandoffError("unavailable");
+  return value as HandoffNoteKind;
+}
+
 const SESSION_COLUMNS = `session_id, client, client_session, client_agent, agent, kind,
   parent_session_id, task, started_at, start_head, last_seen_at, turn_open, failure,
   ended_at, end_reason, client_reason, last_message, note_count`;
@@ -119,15 +126,29 @@ function sessionRow(row: Record<string, unknown>): HandoffSessionRow {
       throw new HandoffError("unavailable");
     return value;
   };
+  const member = <T extends string>(
+    key: string,
+    values: readonly T[],
+  ): T | null => {
+    const value = optional(key);
+    if (value !== null && !(values as readonly string[]).includes(value))
+      throw new HandoffError("unavailable");
+    return value as T | null;
+  };
   const turn = row.turn_open;
   const ended = row.ended_at;
+  const kind = string("kind");
+  if (kind !== "agent" && kind !== "subagent")
+    throw new HandoffError("unavailable");
+  const client = member("client", HANDOFF_CLIENTS);
+  if (client === null) throw new HandoffError("unavailable");
   return {
     sessionId: string("session_id"),
-    client: string("client") as HandoffClient,
+    client,
     clientSession: string("client_session"),
     clientAgent: string("client_agent"),
     agent: string("agent"),
-    kind: string("kind") as "agent" | "subagent",
+    kind,
     parentSessionId: optional("parent_session_id"),
     task: optional("task"),
     startedAt: integer("started_at"),
@@ -136,7 +157,7 @@ function sessionRow(row: Record<string, unknown>): HandoffSessionRow {
     turnOpen: turn === null ? null : turn === 1,
     failure: optional("failure"),
     endedAt: ended === null ? null : integer("ended_at"),
-    endReason: optional("end_reason") as HandoffEndReason | null,
+    endReason: member("end_reason", HANDOFF_END_REASONS),
     clientReason: optional("client_reason"),
     lastMessage: optional("last_message"),
     noteCount: integer("note_count"),
@@ -223,7 +244,7 @@ export class HandoffSessionLedger {
           };
         }
       }
-      this.#prune(workspaceId, input.now);
+      this.#prune(workspaceId, input.now, input.parentSessionId);
       const sessionId = randomUUID();
       this.database
         .prepare(
@@ -249,9 +270,10 @@ export class HandoffSessionLedger {
     });
   }
 
-  // Keep the newest sessions. Ended sessions go first, then the longest
-  // silent ones; a session seen within the last minute is never pruned.
-  #prune(workspaceId: string, now: number): void {
+  // Keep the newest sessions. Ended sessions without a reported failure go
+  // first, then the longest silent ones. A session seen within the last
+  // minute, and the parent of the session being started, are never pruned.
+  #prune(workspaceId: string, now: number, keep: string | null): void {
     const count = this.database
       .prepare(
         "SELECT count(*) AS n FROM handoff_sessions WHERE workspace_id = ?",
@@ -264,10 +286,11 @@ export class HandoffSessionLedger {
     this.database
       .prepare(
         `DELETE FROM handoff_sessions WHERE session_id IN (
-          SELECT session_id FROM handoff_sessions WHERE workspace_id = ? AND last_seen_at < ?
-          ORDER BY ended_at IS NULL, last_seen_at LIMIT ?)`,
+          SELECT session_id FROM handoff_sessions
+          WHERE workspace_id = ? AND last_seen_at < ? AND session_id != ?
+          ORDER BY ended_at IS NULL OR failure IS NOT NULL, last_seen_at LIMIT ?)`,
       )
-      .run(workspaceId, now - 60_000, excess);
+      .run(workspaceId, now - 60_000, keep ?? "", excess);
   }
 
   /** Record activity; `turnOpen` is known only from client hooks. */
@@ -474,7 +497,7 @@ export class HandoffSessionLedger {
           throw new HandoffError("unavailable");
         return {
           sessionId: row.session_id,
-          kind: row.kind as HandoffNoteKind,
+          kind: noteKind(row.kind),
           text: row.text,
           createdAt: row.created_at,
         };
@@ -502,7 +525,7 @@ export class HandoffSessionLedger {
         throw new HandoffError("unavailable");
       result.set(row.session_id, {
         sessionId: row.session_id,
-        kind: row.kind as HandoffNoteKind,
+        kind: noteKind(row.kind),
         text: row.text,
         createdAt: row.created_at,
       });

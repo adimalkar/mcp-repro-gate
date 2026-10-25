@@ -25,8 +25,11 @@ export function sessionState(
   now: number,
   liveness: HandoffLiveness,
 ): HandoffSessionState {
+  // A failure outranks an end the client reported afterwards: a user who
+  // quits after a rate limit has still left the work unfinished.
+  if (session.failure !== null && session.endReason !== "completed")
+    return "failed";
   if (session.endedAt !== null) return "ended";
-  if (session.failure !== null) return "failed";
   if (session.turnOpen === false) return "idle";
   const silent = now - session.lastSeenAt;
   if (silent <= liveness.leaseMs) return "active";
@@ -136,6 +139,7 @@ export function buildBrief(input: BriefInput): HandoffBriefV1 {
     })),
     omittedNotes: input.notes.length - notes.length,
     git: input.git,
+    truncated: false,
     provenance: {
       handoff: "caller_asserted",
       notes: "caller_asserted",
@@ -147,8 +151,10 @@ export function buildBrief(input: BriefInput): HandoffBriefV1 {
 
 /**
  * Shrink a brief until `measure` fits the budget. The least useful entries
- * go first, and every removal is counted, so a reader always knows that
- * something was left out. Ends with long texts cut short.
+ * go first: dropped entries are counted, and anything else removed or cut
+ * short sets `truncated`, so a reader always knows something is missing.
+ * The last step leaves only the skeleton, which fits every budget from
+ * MIN_BRIEF_BYTES up.
  */
 export function fitBrief(
   brief: HandoffBriefV1,
@@ -157,14 +163,76 @@ export function fitBrief(
 ): HandoffBriefV1 {
   const fitted = structuredClone(brief);
   const fits = () => measure(fitted) <= budget;
+  // Cut every text in a group to `bytes`; false when nothing was longer.
+  const cutAll = (
+    texts: { get(): string | null; set(value: string): void }[],
+    bytes: number,
+  ) => {
+    let changed = false;
+    for (const text of texts) {
+      const value = text.get();
+      if (value !== null && Buffer.byteLength(value) > bytes) {
+        text.set(truncateBytes(value, bytes));
+        changed = true;
+      }
+    }
+    if (changed) fitted.truncated = true;
+    return changed;
+  };
+  const sessionTexts = () =>
+    fitted.sessions.flatMap((session) => [
+      {
+        get: () => session.task,
+        set: (value: string) => {
+          session.task = value;
+        },
+      },
+      {
+        get: () => session.lastNote?.text ?? null,
+        set: (value: string) => {
+          if (session.lastNote !== null) session.lastNote.text = value;
+        },
+      },
+      {
+        get: () => session.lastMessage,
+        set: (value: string) => {
+          session.lastMessage = value;
+        },
+      },
+    ]);
+  const noteTexts = () =>
+    fitted.notes.map((note) => ({
+      get: () => note.text,
+      set: (value: string) => {
+        note.text = value;
+      },
+    }));
+  const handoffTexts = () => [
+    {
+      get: () => fitted.handoff.goal,
+      set: (value: string) => {
+        fitted.handoff.goal = value;
+      },
+    },
+    ...fitted.handoff.nextSteps.map((_, index) => ({
+      get: () => fitted.handoff.nextSteps[index] ?? null,
+      set: (value: string) => {
+        fitted.handoff.nextSteps[index] = value;
+      },
+    })),
+    ...fitted.handoff.blockers.map((_, index) => ({
+      get: () => fitted.handoff.blockers[index] ?? null,
+      set: (value: string) => {
+        fitted.handoff.blockers[index] = value;
+      },
+    })),
+  ];
   const steps: (() => boolean)[] = [
     () => {
-      if (
-        fitted.git.commitsSince === null ||
-        fitted.git.commitsSince.subjects.length === 0
-      )
-        return false;
-      fitted.git.commitsSince.subjects.pop();
+      const subjects = fitted.git.commitsSince?.subjects;
+      if (subjects === undefined || subjects.length === 0) return false;
+      subjects.pop();
+      fitted.truncated = true;
       return true;
     },
     () => {
@@ -194,8 +262,11 @@ export function fitBrief(
       );
       if (session === undefined) return false;
       session.lastMessage = null;
+      fitted.truncated = true;
       return true;
     },
+    () => cutAll([...sessionTexts(), ...noteTexts()], 256),
+    () => cutAll(handoffTexts(), 256),
     () => {
       if (fitted.sessions.length <= 1) return false;
       fitted.sessions.pop();
@@ -203,34 +274,61 @@ export function fitBrief(
       return true;
     },
     () => {
-      if (fitted.handoff.nextSteps.length <= 1) return false;
-      fitted.handoff.nextSteps.pop();
+      const list =
+        fitted.handoff.nextSteps.length > 1
+          ? fitted.handoff.nextSteps
+          : fitted.handoff.blockers.length > 1
+            ? fitted.handoff.blockers
+            : undefined;
+      if (list === undefined) return false;
+      list.pop();
+      fitted.truncated = true;
       return true;
     },
     () => {
-      if (fitted.handoff.blockers.length <= 1) return false;
-      fitted.handoff.blockers.pop();
-      return true;
-    },
-    () => {
-      const texts = [
-        fitted.handoff.goal,
-        ...fitted.handoff.nextSteps,
-        ...fitted.handoff.blockers,
-      ];
-      if (
-        texts.every((text) => text === null || Buffer.byteLength(text) <= 256)
-      )
-        return false;
-      const cut = (text: string) => truncateBytes(text, 256);
-      if (fitted.handoff.goal !== null)
-        fitted.handoff.goal = cut(fitted.handoff.goal);
-      fitted.handoff.nextSteps = fitted.handoff.nextSteps.map(cut);
-      fitted.handoff.blockers = fitted.handoff.blockers.map(cut);
-      for (const session of fitted.sessions)
-        if (session.lastNote !== null)
-          session.lastNote.text = cut(session.lastNote.text);
-      return true;
+      // Skeleton: no entries, every remaining text cut short.
+      const entries =
+        fitted.sessions.length +
+        fitted.notes.length +
+        fitted.git.paths.length +
+        fitted.handoff.nextSteps.length +
+        fitted.handoff.blockers.length +
+        (fitted.git.commitsSince === null ? 0 : 1);
+      fitted.omittedSessions += fitted.sessions.length;
+      fitted.omittedNotes += fitted.notes.length;
+      fitted.git.omittedPaths += fitted.git.paths.length;
+      fitted.sessions = [];
+      fitted.notes = [];
+      fitted.git.paths = [];
+      fitted.git.commitsSince = null;
+      fitted.handoff.nextSteps = [];
+      fitted.handoff.blockers = [];
+      const cut = cutAll(
+        [
+          ...handoffTexts(),
+          {
+            get: () => fitted.handoff.activeAgent,
+            set: (value: string) => {
+              fitted.handoff.activeAgent = value;
+            },
+          },
+          {
+            get: () => fitted.git.branch,
+            set: (value: string) => {
+              fitted.git.branch = value;
+            },
+          },
+          {
+            get: () => fitted.git.upstream,
+            set: (value: string) => {
+              fitted.git.upstream = value;
+            },
+          },
+        ],
+        64,
+      );
+      if (entries > 0) fitted.truncated = true;
+      return entries > 0 || cut;
     },
   ];
   for (const step of steps) {
@@ -260,7 +358,7 @@ function describeSession(session: HandoffSessionView, now: string): string {
   let state: string;
   switch (session.state) {
     case "failed":
-      state = `stopped on ${session.failure ?? "an error"} ${ago(session.lastSeenAt, now)}`;
+      state = `stopped on ${session.failure ?? "an error"} ${ago(session.lastSeenAt, now)}${session.endedAt === null ? "" : `, then ended (${session.endReason ?? "unknown"}${session.clientReason === null ? "" : `: ${session.clientReason}`})`}; its work may be unfinished`;
       break;
     case "interrupted":
       state = `no activity since ${ago(session.lastSeenAt, now)}, stopped without ending`;
@@ -294,6 +392,14 @@ export function renderBriefText(brief: HandoffBriefV1): string {
   const now = brief.generatedAt;
   const out: string[] = ["ReproGate handoff brief"];
   const { handoff, git } = brief;
+  // An operation left in progress blocks other work, so it comes first.
+  if (git.operation !== null)
+    out.push(
+      "",
+      `Attention: a ${git.operation.replace("_", "-")} is in progress in the workspace. Finish or abort it before other work.`,
+    );
+  if (brief.truncated || brief.omittedSessions > 0 || brief.omittedNotes > 0)
+    out.push("", "This brief was shortened to fit its budget.");
   out.push(
     "",
     `Handoff (asserted by agents, revision ${String(handoff.revision)}${handoff.updatedAt === null ? "" : `, ${ago(handoff.updatedAt, now)} by ${handoff.activeAgent ?? "unknown"}`}):`,
@@ -329,9 +435,7 @@ export function renderBriefText(brief: HandoffBriefV1): string {
       `- ${git.detached ? "Detached HEAD" : `Branch ${git.branch ?? "unknown"}`} at ${git.head?.slice(0, 12) ?? "no commit"}${git.upstream === null ? "" : `, ${String(git.ahead ?? 0)} ahead and ${String(git.behind ?? 0)} behind ${git.upstream}`}`,
     );
     if (git.operation !== null)
-      out.push(
-        `- A ${git.operation.replace("_", "-")} is in progress. Finish or abort it before other work.`,
-      );
+      out.push(`- A ${git.operation.replace("_", "-")} is in progress.`);
     const c = git.changes;
     out.push(
       `- ${String(c.staged)} staged, ${String(c.unstaged)} unstaged, ${String(c.untracked)} untracked, ${String(c.conflicted)} conflicted`,

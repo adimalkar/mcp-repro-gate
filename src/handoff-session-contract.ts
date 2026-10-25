@@ -1,10 +1,10 @@
 import { z } from "zod/v4";
 
-// Used only inside functions: handoff-contract imports this module.
-import { HandoffError, ownHandoffValue } from "./handoff-contract.js";
 import {
   HANDOFF_UNSAFE_TEXT,
+  HandoffError,
   handoffUuidSchema,
+  ownHandoffValue,
 } from "./handoff-primitives.js";
 
 export const DEFAULT_LEASE_SECONDS = 300;
@@ -176,6 +176,8 @@ export const handoffBriefSchema = z.strictObject({
   notes: z.array(handoffNoteViewSchema),
   omittedNotes: z.number().int().min(0),
   git: handoffGitObservationSchema,
+  /** Set when anything beyond the counted omissions was removed or cut. */
+  truncated: z.boolean(),
   provenance: z.strictObject({
     handoff: z.literal("caller_asserted"),
     notes: z.literal("caller_asserted"),

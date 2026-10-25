@@ -42,6 +42,7 @@ import {
   parseHandoffJoin,
   parseHandoffNote,
   printableText,
+  truncateBytes,
   type HandoffBriefV1,
   type HandoffClient,
   type HandoffSessionView,
@@ -76,7 +77,7 @@ export interface HandoffService {
   end(input: unknown): HandoffSessionResult;
   brief(budgetBytes?: number): HandoffBriefV1;
   briefText(maxChars?: number): string;
-  hook(client: HandoffClient, payload: unknown): HandoffHookResult;
+  hook(client: "claude-code" | "codex", payload: unknown): HandoffHookResult;
   close(): void;
 }
 export interface HandoffServiceOptions {
@@ -91,19 +92,49 @@ const CLIENT_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$(?![\s\S])/u;
 function clientId(value: unknown): string | undefined {
   return typeof value === "string" && CLIENT_ID.test(value) ? value : undefined;
 }
+// Hook-supplied labels and tokens are stored and shown; one that looks
+// like a credential is replaced rather than redacted in place.
 function agentLabel(value: unknown, fallback: string): string {
   if (typeof value !== "string") return fallback;
   const label = value
     .replace(/[^A-Za-z0-9._-]+/gu, "-")
     .replace(/^[^A-Za-z0-9]+/u, "")
     .slice(0, 64);
-  return label === "" ? fallback : label;
+  return label === "" || redactHandoffText(label).redactions > 0
+    ? fallback
+    : label;
 }
 function shortToken(value: unknown): string | undefined {
   return typeof value === "string" &&
-    /^[A-Za-z0-9_.-]{1,64}$(?![\s\S])/u.test(value)
+    /^[A-Za-z0-9_.-]{1,64}$(?![\s\S])/u.test(value) &&
+    redactHandoffText(value).redactions === 0
     ? value
     : undefined;
+}
+/** Captured model text is cut before redaction, so redaction stays fast. */
+const MAX_REDACTED_INPUT_BYTES = 16 * 1024;
+
+/**
+ * Whether `cwd` lies inside the workspace. User-level hooks fire in every
+ * project, so the hook command checks this before opening the database.
+ */
+export function workspaceContains(
+  workspaceRoot: string,
+  cwd: unknown,
+): boolean {
+  if (typeof cwd !== "string" || !isAbsolute(cwd)) return false;
+  try {
+    const path = relative(
+      canonicalHandoffPath(workspaceRoot),
+      canonicalHandoffPath(cwd),
+    );
+    return (
+      path === "" ||
+      (path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path))
+    );
+  } catch {
+    return false;
+  }
 }
 
 export function createHandoffService(
@@ -157,7 +188,9 @@ export function createHandoffService(
       }
     };
     const redacted = (text: string, maxBytes: number) => {
-      const result = redactHandoffText(text);
+      const result = redactHandoffText(
+        truncateBytes(text, MAX_REDACTED_INPUT_BYTES),
+      );
       return {
         text: printableText(result.text, maxBytes),
         redactions: result.redactions,
@@ -167,16 +200,25 @@ export function createHandoffService(
 
     const composeBrief = (exclude?: string): HandoffBriefV1 => {
       const sessions = ledger.sessions(workspaceId);
-      // Commits since the newest other session began show what happened
-      // after the previous agent started, whatever it recorded.
-      const previous = sessions
-        .filter(
-          (session) =>
-            session.sessionId !== exclude && session.startHead !== null,
-        )
-        .sort((a, b) => b.startedAt - a.startedAt)[0];
+      const time = now().getTime();
+      // Commits since the oldest unfinished agent session began cover the
+      // work of every agent that may have stopped mid-task, whatever it
+      // recorded. With none unfinished, the newest ended session is used.
+      // Subagents start from their parent's state, so they are skipped.
+      const candidates = sessions.filter(
+        (session) =>
+          session.sessionId !== exclude &&
+          session.kind === "agent" &&
+          session.startHead !== null,
+      );
+      const unfinished = candidates
+        .filter((session) => sessionState(session, time, liveness) !== "ended")
+        .sort((a, b) => a.startedAt - b.startedAt)[0];
+      const previous =
+        unfinished ??
+        [...candidates].sort((a, b) => b.startedAt - a.startedAt)[0];
       return buildBrief({
-        now: now().getTime(),
+        now: time,
         liveness,
         latest: contextStore.latestHandoff(workspaceId)?.record,
         sessions,
@@ -263,44 +305,33 @@ export function createHandoffService(
       };
     };
 
-    // Find a client's session, starting one if its start was never seen:
-    // a hook added mid-session, or a start hook that failed.
-    const ensureClientSession = (
+    // A client's main session, created if its start was never seen (a hook
+    // added mid-session, or a start hook that failed). `revive` reopens an
+    // ended session: a client that starts or prompts it is using it again.
+    const mainSession = (
       client: HandoffClient,
       clientSession: string,
-      clientAgent: string,
       agent: string,
-      parentSessionId: string | null,
-      startHead: () => string | null,
-    ): HandoffSessionRow =>
-      ledger.find(workspaceId, client, clientSession, clientAgent) ??
-      ledger.start(workspaceId, {
+      revive: boolean,
+    ): HandoffSessionRow => {
+      const found = ledger.find(workspaceId, client, clientSession, "");
+      if (found !== undefined && (found.endedAt === null || !revive))
+        return found;
+      return ledger.start(workspaceId, {
         client,
         clientSession,
-        clientAgent,
+        clientAgent: "",
         agent,
-        kind: clientAgent === "" ? "agent" : "subagent",
-        parentSessionId,
+        kind: "agent",
+        parentSessionId: null,
         task: null,
-        startHead: startHead(),
+        startHead: found === undefined ? head() : null,
         now: now().getTime(),
       }).session;
-
-    // User-level hooks fire in every project; record only this workspace.
-    const insideWorkspace = (cwd: unknown): boolean => {
-      if (typeof cwd !== "string" || !isAbsolute(cwd)) return false;
-      try {
-        const path = relative(files.workspaceRoot, canonicalHandoffPath(cwd));
-        return (
-          path === "" ||
-          (path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path))
-        );
-      } catch {
-        return false;
-      }
     };
 
-    const claudeHook = (
+    const lifecycleHook = (
+      client: "claude-code" | "codex",
       payload: Record<string, unknown>,
     ): HandoffHookResult => {
       const event = payload.hook_event_name;
@@ -308,6 +339,8 @@ export function createHandoffService(
       if (typeof event !== "string" || sessionKey === undefined)
         return { recorded: false };
       const agentKey = clientId(payload.agent_id) ?? "";
+      const agentType =
+        typeof payload.agent_type === "string" ? payload.agent_type : "";
       const time = () => now().getTime();
       // Model output is collected only when the host opted in.
       const message = (key: string) => {
@@ -316,39 +349,36 @@ export function createHandoffService(
           ? redacted(value, MAX_MESSAGE_BYTES)
           : undefined;
       };
-      const parent = () =>
-        ensureClientSession(
-          "claude-code",
-          sessionKey,
-          "",
-          "claude-code",
-          null,
-          head,
-        );
-      const current = () =>
-        agentKey === ""
-          ? parent()
-          : ensureClientSession(
-              "claude-code",
-              sessionKey,
-              agentKey,
-              agentLabel(payload.agent_type, "subagent"),
-              parent().sessionId,
-              () => null,
-            );
+      const main = (revive: boolean) =>
+        mainSession(client, sessionKey, client, revive);
+      // A subagent's session. Only SubagentStart creates one: Claude Code
+      // also reports internal agents (prompt suggestions, /btw) that never
+      // started, and those must not become sessions.
+      const subagent = (create: boolean): HandoffSessionRow | undefined => {
+        const found = ledger.find(workspaceId, client, sessionKey, agentKey);
+        if (!create || found?.endedAt === null) return found;
+        return ledger.start(workspaceId, {
+          client,
+          clientSession: sessionKey,
+          clientAgent: agentKey,
+          agent: agentLabel(agentType, "subagent"),
+          kind: "subagent",
+          parentSessionId: main(true).sessionId,
+          task: null,
+          startHead: null,
+          now: time(),
+        }).session;
+      };
+      // The session an ordinary event belongs to, or none to record.
+      const target = (revive: boolean) => {
+        const session = agentKey === "" ? main(revive) : subagent(false);
+        return session === undefined || (session.endedAt !== null && !revive)
+          ? undefined
+          : session;
+      };
       switch (event) {
         case "SessionStart": {
-          const { session } = ledger.start(workspaceId, {
-            client: "claude-code",
-            clientSession: sessionKey,
-            clientAgent: "",
-            agent: agentLabel(payload.agent_type, "claude-code"),
-            kind: "agent",
-            parentSessionId: null,
-            task: null,
-            startHead: head(),
-            now: time(),
-          });
+          const session = main(true);
           const footer = `\nYour ReproGate handoff session is ${session.sessionId}. Record progress, blockers and decisions with handoff_note, and finish with handoff_end.\n`;
           return {
             recorded: true,
@@ -359,9 +389,9 @@ export function createHandoffService(
           };
         }
         case "SubagentStart": {
-          if (agentKey === "") return { recorded: false };
-          const owner = parent();
-          const session = current();
+          if (agentKey === "" || agentType === "") return { recorded: false };
+          const session = subagent(true);
+          if (session === undefined) return { recorded: false };
           // A subagent gets its session and the goal, not the whole brief:
           // twenty subagents must not each pay for it.
           const goal =
@@ -369,35 +399,49 @@ export function createHandoffService(
           return {
             recorded: true,
             hookEventName: event,
-            additionalContext: `Your ReproGate handoff session is ${session.sessionId} (a subagent of ${owner.sessionId}). Record progress and blockers with handoff_note; your final reply is recorded when you stop.${goal === undefined ? "" : `\nOverall goal: ${printableText(goal, 1024)}`}\n`,
+            additionalContext: `Your ReproGate handoff session is ${session.sessionId} (a subagent of ${session.parentSessionId ?? "an unknown session"}). Record progress and blockers with handoff_note; your final reply is recorded when you stop.${goal === undefined ? "" : `\nOverall goal: ${printableText(goal, 1024)}`}\n`,
           };
         }
-        case "UserPromptSubmit":
-          ledger.touch(workspaceId, current().sessionId, time(), true);
+        case "UserPromptSubmit": {
+          const session = target(true);
+          if (session === undefined) return { recorded: false };
+          ledger.touch(workspaceId, session.sessionId, time(), true);
           return { recorded: true };
+        }
         case "Stop":
+        case "Interrupt": {
+          // Codex reports a user interrupt; either way the turn is over.
+          const session = target(false);
+          if (session === undefined) return { recorded: false };
           ledger.touch(
             workspaceId,
-            current().sessionId,
+            session.sessionId,
             time(),
             false,
-            message("last_assistant_message")?.text,
+            event === "Stop"
+              ? message("last_assistant_message")?.text
+              : undefined,
           );
           return { recorded: true };
-        case "StopFailure":
+        }
+        case "StopFailure": {
+          const session = agentKey === "" ? main(false) : subagent(false);
+          if (session === undefined) return { recorded: false };
           ledger.fail(
             workspaceId,
-            current().sessionId,
+            session.sessionId,
             shortToken(payload.error) ?? "unknown",
             time(),
           );
           return { recorded: true };
+        }
         case "SubagentStop": {
-          if (agentKey === "") return { recorded: false };
+          const session = agentKey === "" ? undefined : subagent(false);
+          if (session === undefined) return { recorded: false };
           const result = message("last_assistant_message");
           ledger.end(
             workspaceId,
-            current().sessionId,
+            session.sessionId,
             "subagent_stopped",
             time(),
             result === undefined ? {} : { result },
@@ -405,12 +449,7 @@ export function createHandoffService(
           return { recorded: true };
         }
         case "SessionEnd": {
-          const session = ledger.find(
-            workspaceId,
-            "claude-code",
-            sessionKey,
-            "",
-          );
+          const session = ledger.find(workspaceId, client, sessionKey, "");
           if (session === undefined) return { recorded: false };
           const reason = shortToken(payload.reason);
           ledger.end(workspaceId, session.sessionId, "client_ended", time(), {
@@ -420,37 +459,31 @@ export function createHandoffService(
         }
         default: {
           // PreCompact and any other event: activity only.
-          const session = current();
-          if (session.endedAt === null)
-            ledger.touch(workspaceId, session.sessionId, time());
+          const session = target(false);
+          if (session === undefined) return { recorded: false };
+          ledger.touch(workspaceId, session.sessionId, time());
           return { recorded: true };
         }
       }
     };
 
-    const codexHook = (payload: Record<string, unknown>): HandoffHookResult => {
+    // Codex's turn notification, passed as the last command argument.
+    const codexNotify = (
+      payload: Record<string, unknown>,
+    ): HandoffHookResult => {
       const thread = clientId(payload["thread-id"]);
-      if (payload.type !== "agent-turn-complete" || thread === undefined)
-        return { recorded: false };
-      const session = ensureClientSession(
-        "codex",
-        thread,
-        "",
-        "codex",
-        null,
-        head,
-      );
+      if (thread === undefined) return { recorded: false };
+      const session = mainSession("codex", thread, "codex", true);
       const reply = payload["last-assistant-message"];
-      if (session.endedAt === null)
-        ledger.touch(
-          workspaceId,
-          session.sessionId,
-          now().getTime(),
-          false,
-          capture && typeof reply === "string"
-            ? redacted(reply, MAX_MESSAGE_BYTES).text
-            : undefined,
-        );
+      ledger.touch(
+        workspaceId,
+        session.sessionId,
+        now().getTime(),
+        false,
+        capture && typeof reply === "string"
+          ? redacted(reply, MAX_MESSAGE_BYTES).text
+          : undefined,
+      );
       return { recorded: true };
     };
 
@@ -490,6 +523,8 @@ export function createHandoffService(
       join: (value: unknown) => {
         const input = parseHandoffJoin(value);
         writable();
+        if (redactHandoffText(input.agent).redactions > 0)
+          throw new HandoffError("invalid_input");
         return guard(() => {
           const { session } = ledger.start(workspaceId, {
             client: "mcp",
@@ -568,7 +603,7 @@ export function createHandoffService(
         live();
         return guard(() => briefText(maxChars));
       },
-      hook: (client: HandoffClient, payload: unknown) => {
+      hook: (client: "claude-code" | "codex", payload: unknown) => {
         writable();
         if (
           payload === null ||
@@ -577,9 +612,12 @@ export function createHandoffService(
         )
           return { recorded: false };
         const fields = payload as Record<string, unknown>;
-        if (!insideWorkspace(fields.cwd)) return { recorded: false };
+        if (!workspaceContains(files.workspaceRoot, fields.cwd))
+          return { recorded: false };
         return guard(() =>
-          client === "codex" ? codexHook(fields) : claudeHook(fields),
+          client === "codex" && fields.type === "agent-turn-complete"
+            ? codexNotify(fields)
+            : lifecycleHook(client, fields),
         );
       },
       close: () => {
