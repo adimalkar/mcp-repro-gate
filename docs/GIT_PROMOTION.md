@@ -68,4 +68,77 @@ A `failed` or `indeterminate` attempt cannot be retried, so get a new approval f
 - A confirmed promotion moves only the destination ref and appends a reflog entry `reprogate promotion <attemptId>`. Candidate preparation can leave unreachable objects. Source HEAD, index and worktree are not written.
 - Expiry is checked at admission and again just before the ref write, which is not atomic with that check. Git and SQLite are not one atomic transaction.
 - The claim is scoped to the Git ref, under trusted host configuration, ledger, process, key and clock, and cooperating fence ownership. See the [threat model](THREAT_MODEL.md#final-git-promotion-gate-boundary).
-- Portable signed promotion receipts and offline verification are future work.
+- A resolved promotion can be exported as signed portable evidence and verified offline; see [Portable evidence](#portable-evidence).
+
+## Portable evidence
+
+`export-evidence` writes one resolved attempt as a signed, content-addressed bundle ([schema](../schemas/git-promotion-evidence.schema.json)). `verify-evidence` checks a bundle offline. It needs no configuration, database or secret, only public keys.
+
+```bash
+node dist/src/cli.js git-review export-evidence --config /trusted/review.json --attempt-id <attempt-id> > bundle.json
+node dist/src/cli.js git-review verify-evidence --bundle bundle.json --trust trust.json --repo /trusted/clone [--patch change.patch]
+```
+
+**Export needs a host evidence key.** Add it to the version 2 configuration:
+
+```json
+"evidence": { "signingKeyPath": "/trusted/reprogate/evidence-key.pem" }
+```
+
+- The key is an unencrypted Ed25519 private key with the same file protections as an operator signing key.
+- It must not be an operator key.
+- Only an attempt with an outcome can be exported. An attempt still in flight is refused.
+
+**What the bundle holds:**
+
+- the signed operator review;
+- the attempt, without the host's repository path and fence owner (whose token is a local capability);
+- the admission, if there was one, and the outcome;
+- a fixed coverage statement: the Git ref transition is `enforced`, the candidate objects are `observed`, and filesystem, process, network and credential effects are `not_covered`.
+
+The patch itself is not included. `manifestDigest` is the SHA-256 of the manifest's canonical JSON. The host signs it under a domain prefix.
+
+**`trust.json` lists the keys the verifier accepts:**
+
+```json
+{
+  "evidenceTrustVersion": 1,
+  "hostKeys": [
+    { "keyId": "sha256:...", "publicKeyPem": "-----BEGIN PUBLIC KEY-----\n..." }
+  ],
+  "review": { "audience": "...", "maxReviewTtlMs": 600000, "operators": [] }
+}
+```
+
+`review` has the same shape as the configuration's `trust`. A host key that is also an operator key is rejected.
+
+**Checks, in order.** Checking stops at the first failure.
+
+| Check              | What it proves                                                                                                                                                                                        |
+| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `manifest_digest`  | The manifest is unchanged.                                                                                                                                                                            |
+| `host_signature`   | A trusted host key signed it.                                                                                                                                                                         |
+| `manifest_schema`  | Every record is strict, and the proposal, prepared objects, authority, admission and outcome bind together as the ledger requires.                                                                    |
+| `review_links`     | The review is the one the attempt reserved: an approval for this effect, valid at least until the admission deadline.                                                                                 |
+| `operator_review`  | The review authenticates under `trust.review` (operator and key enabled, audience, permission for this repository and ref) at the recorded reservation time and, if admitted, at the admission time.  |
+| `candidate_commit` | With `--repo`: the candidate commit's bytes hash to its OID and match the recorded digest, its tree is the staged tree and its only parent is the expected old commit.                                |
+| `staged_diff`      | With `--repo`: the diff of the base commit against the candidate tree, computed exactly as staging computes it, hashes to the digest the operator signed. It covers every path, mode and change kind. |
+| `patch_digest`     | With `--patch`: the patch is the one the proposal names.                                                                                                                                              |
+| `patch_applies`    | With `--patch` and `--repo`: applying the patch to the base commit reproduces the staged tree.                                                                                                        |
+
+**Results.** The command exits 0 only for `verified`.
+
+- **`verified`:** every check passed, including the effect checks against `--repo`.
+- **`unchecked_effect`:** the authorization and attestation checks passed, but no repository was given.
+- **`not_promoted`:** the outcome is `failed`: the gate rejected the attempt before any write, or recovery abandoned it. Signatures and links are still checked.
+- **`indeterminate`:** the outcome is `indeterminate`: the write was admitted but its effect is not proven. Signatures and links are still checked.
+- **`failed`:** a check failed. The report names it.
+
+`--repo` must be a clone you trust; any clone that has the objects works, including one that only fetched them. The effect checks run in an empty disposable repository that borrows that clone's object store through Git alternates, so the clone's working tree, attributes, index and configuration never take part.
+
+What a `verified` result does not cover:
+
+- **The live destination ref.** It is not read. The claim that the ref moved rests on the host's signed outcome. A destination that moved after promotion is not evidence against it.
+- **Trust at the time.** Operator keys and permissions are checked against your current `trust.json`, not the trust in force at promotion.
+- **Revocation.** The bundle holds no revocation list; that the approval was unrevoked at admission is the host's attestation.
+- **Path privacy.** The proposal's workspace digests are unsalted SHA-256 hashes of absolute host paths, so they can confirm a guessed path.

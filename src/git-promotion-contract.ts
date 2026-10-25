@@ -303,7 +303,6 @@ export function parseGitPromotionAttempt(
   const proposal = parseGitChangeProposalStructure(r.proposal, "review", 2);
   const prepared = parsePreparedGitPromotionObjects(r.prepared);
   const owner = parseGitPromotionFenceOwner(r.fenceOwner);
-  const authority = r.authority;
   if (
     Buffer.byteLength(canonicalJson(r)) > 16 * 1024 * 1024 ||
     !isAbsolute(r.repositoryPath) ||
@@ -318,9 +317,39 @@ export function parseGitPromotionAttempt(
       "Promotion physical path/record envelope bindings are inconsistent",
     );
   if (
+    r.attemptId !== owner.attemptId ||
+    Date.parse(owner.createdAt) > Date.parse(r.reservedAt)
+  )
+    throw new Error("Promotion intent bindings or timing are inconsistent");
+  checkAttemptBindings(r, proposal, prepared);
+  // JSON Schema caps are code-point based, as are Zod's string caps. Physical
+  // filesystem paths additionally require lossless UTF-8 and <=4096 BYTES in
+  // the concrete host-control module; schema acceptance is not path authority.
+  return freeze({ ...r, proposal, prepared, fenceOwner: owner });
+}
+
+type AttemptBindingFields = Pick<
+  z.infer<typeof attemptSchema>,
+  | "attemptId"
+  | "proposalId"
+  | "effectDigest"
+  | "authorityDigest"
+  | "authority"
+  | "precheckedAt"
+  | "reservedAt"
+  | "admissionDeadline"
+>;
+
+/** Bindings between an attempt's proposal, prepared objects and authority. */
+function checkAttemptBindings(
+  r: AttemptBindingFields,
+  proposal: GitChangeProposalV2,
+  prepared: PreparedGitPromotionObjectsV1,
+): void {
+  const authority = r.authority;
+  if (
     !verifyGitChangeProposal(proposal) ||
     r.attemptId !== prepared.attemptId ||
-    r.attemptId !== owner.attemptId ||
     r.proposalId !== proposal.proposalId ||
     r.proposalId !== prepared.proposalId ||
     r.effectDigest !== prepared.effectDigest ||
@@ -338,7 +367,6 @@ export function parseGitPromotionAttempt(
     Date.parse(r.precheckedAt) > Date.parse(r.reservedAt) ||
     Date.parse(prepared.createdAt) > Date.parse(r.precheckedAt) ||
     Date.parse(prepared.createdAt) < Date.parse(proposal.createdAt) ||
-    Date.parse(owner.createdAt) > Date.parse(r.reservedAt) ||
     Date.parse(r.reservedAt) >= Date.parse(r.admissionDeadline) ||
     Date.parse(r.admissionDeadline) >
       Math.min(
@@ -347,10 +375,55 @@ export function parseGitPromotionAttempt(
       )
   )
     throw new Error("Promotion intent bindings or timing are inconsistent");
-  // JSON Schema caps are code-point based, as are Zod's string caps. Physical
-  // filesystem paths additionally require lossless UTF-8 and <=4096 BYTES in
-  // the concrete host-control module; schema acceptance is not path authority.
-  return freeze({ ...r, proposal, prepared, fenceOwner: owner });
+}
+
+const attemptEvidenceSchema = attemptSchema.omit({
+  repositoryPath: true,
+  fenceOwner: true,
+});
+
+/**
+ * A promotion attempt as exported in portable evidence: every field except
+ * the host's repository path and fence owner (whose token is a local
+ * capability), with the same proposal, prepared-object and authority checks.
+ */
+export type GitPromotionAttemptEvidenceV1 = Omit<
+  GitPromotionAttemptV1,
+  "repositoryPath" | "fenceOwner"
+>;
+
+export function gitPromotionAttemptEvidence(
+  attempt: ImmutablePromotion<GitPromotionAttemptV1>,
+): ImmutablePromotion<GitPromotionAttemptEvidenceV1> {
+  // Listed explicitly so a new host-only attempt field is never exported.
+  return {
+    attemptVersion: attempt.attemptVersion,
+    state: attempt.state,
+    attemptId: attempt.attemptId,
+    approvalId: attempt.approvalId,
+    proposalId: attempt.proposalId,
+    reviewDigest: attempt.reviewDigest,
+    authorityDigest: attempt.authorityDigest,
+    effectDigest: attempt.effectDigest,
+    proposal: attempt.proposal,
+    prepared: attempt.prepared,
+    authority: attempt.authority,
+    precheckedAt: attempt.precheckedAt,
+    reservedAt: attempt.reservedAt,
+    admissionDeadline: attempt.admissionDeadline,
+  };
+}
+
+export function parseGitPromotionAttemptEvidence(
+  value: unknown,
+): ImmutablePromotion<GitPromotionAttemptEvidenceV1> {
+  const r = attemptEvidenceSchema.parse(value);
+  const proposal = parseGitChangeProposalStructure(r.proposal, "review", 2);
+  const prepared = parsePreparedGitPromotionObjects(r.prepared);
+  if (Buffer.byteLength(canonicalJson(r)) > 16 * 1024 * 1024)
+    throw new Error("Promotion evidence attempt is too large");
+  checkAttemptBindings(r, proposal, prepared);
+  return freeze({ ...r, proposal, prepared });
 }
 
 /** Final-gate rejection before any dispatch; the approval stays consumed. */
@@ -441,6 +514,29 @@ export function parseGitPromotionStatus(
   admissionJson: unknown,
   outcomeJson: unknown,
 ): ImmutablePromotion<GitPromotionStatusV1> {
+  const { admission, outcome } = parseGitPromotionRecords(
+    attempt,
+    admissionJson,
+    outcomeJson,
+  );
+  return freeze({
+    state: outcome?.state ?? "prepared",
+    attempt: attempt as GitPromotionAttemptV1,
+    ...(admission ? { admission } : {}),
+    ...(outcome ? { outcome } : {}),
+  });
+}
+
+/**
+ * Parse canonical admission and outcome JSON for an attempt and check every
+ * binding between them, as SQL triggers also do. Shared by the journal
+ * readback and the offline evidence verifier.
+ */
+export function parseGitPromotionRecords(
+  attempt: ImmutablePromotion<GitPromotionAttemptEvidenceV1>,
+  admissionJson: unknown,
+  outcomeJson: unknown,
+): { admission?: GitPromotionAdmissionV1; outcome?: GitPromotionOutcomeV1 } {
   const record = (json: unknown) => {
     if (json === null) return undefined;
     if (typeof json !== "string" || Buffer.byteLength(json) > 64 * 1024)
@@ -477,10 +573,8 @@ export function parseGitPromotionStatus(
         (outcome.state === "failed") !== (admission === undefined)))
   )
     throw new Error("Corrupt promotion journal outcome bindings");
-  return freeze({
-    state: outcome?.state ?? "prepared",
-    attempt: attempt as GitPromotionAttemptV1,
+  return {
     ...(admission ? { admission } : {}),
     ...(outcome ? { outcome } : {}),
-  });
+  };
 }

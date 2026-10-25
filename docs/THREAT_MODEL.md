@@ -140,6 +140,21 @@ retains complete responses and copies of the public pinned source. See
 
 Compact graph views are opt-in and keyed by exact catalog server/tool identities. They omit known diagnostic fields only from recognized successful replies whose shape is fully validated. Unknown fields, errors, extra content, re-spelled JSON (such as duplicate keys) and oversized replies keep the normal view, so a new field or channel is never silently dropped. The known free-form fields `docstring`, `signature` and `return_type` are omitted by design. Projection runs only when redaction finds nothing in the original text, and a structured mirror must serialize to that same text. The `graph_search_v1` and `graph_snippet_v1` markers describe the view; they do not authenticate content, and a downstream can imitate them. The signed `resultDigest` still covers the complete original result.
 
+## Promotion evidence boundary
+
+A promotion evidence bundle combines two signatures:
+
+- **The operator's review signature** authorizes the effect. A verifier checks it against its own operator trust, at the admission time the host recorded.
+- **The host's evidence signature** attests that the host's ledger admitted the attempt and recorded this outcome.
+
+The host signature is not an independent witness. A compromised host or evidence key can sign a false admission, outcome or admission time, though it cannot forge an operator review. The verifier treats the bundle as data:
+
+- digests, schemas and record bindings are checked before any Git read;
+- `--repo` reads objects from a clone the verifier trusts, through the same hardened Git runner;
+- effect checks and patch application run only in an empty disposable repository that borrows the clone's objects, with commit-graph caches disabled.
+
+The verifier applies its own current operator trust, not the trust in force at promotion, and the bundle carries no revocation list: that the approval was unrevoked at admission is host-attested. It does not read the live destination ref. Effect checks run in an empty repository that borrows the trusted clone's objects, so that clone's working tree, attributes and configuration cannot change the result. The coverage statement fixes the claim to the Git ref transition. Filesystem, process, network and credential effects are not covered, and a `verified` result says nothing about them. The bundle omits host paths and the fence token, but it does contain the proposal's paths and digests.
+
 ## Known gaps before execution is production-safe
 
 - SQLite is durable locally but has no replica lease/ownership protocol;

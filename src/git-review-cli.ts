@@ -32,6 +32,10 @@ import {
 import type { GitPlanBindingContext } from "./git-plan-binding.js";
 import type { GitPromotionResultV1 } from "./git-approval-store.js";
 import type { GitPromotionHostControlConfig } from "./git-promotion-host-control.js";
+import {
+  exportGitPromotionEvidence,
+  verifyGitPromotionEvidence,
+} from "./git-promotion-evidence.js";
 import { prepareGitPromotionObjects } from "./git-promotion-objects.js";
 import {
   assertOutsideProtectedRepository,
@@ -74,16 +78,21 @@ export const GIT_REVIEW_USAGE = `Usage:
   reprogate git-review resume --config <absolute-path> --attempt-id <uuid>
   reprogate git-review status --config <absolute-path> --attempt-id <uuid>
   reprogate git-review recover --config <absolute-path> --attempt-id <uuid> --confirm-quiescent
+  reprogate git-review export-evidence --config <absolute-path> --attempt-id <uuid>
+  reprogate git-review verify-evidence --bundle <bundle.json> --trust <trust.json> [--repo <path>] [--patch <change.patch>]
 
-Every listed option is required exactly once, as "--name value";
---confirm-quiescent takes no value. --config must be absolute; other paths
+Every listed option is required exactly once, as "--name value", except
+bracketed ones, which are optional; --confirm-quiescent takes no value. --config must be absolute; other paths
 resolve against the current working directory. Proposals must match the
-config version. promote, resume, status and recover need a version 2 config.
+config version. promote, resume, status, recover and export-evidence need a version 2
+config; export-evidence also needs its evidence signing key. verify-evidence
+needs no config: it checks a bundle offline against trust.json.
 --expires-at is canonical UTC such as 2030-01-01T00:00:00.000Z.
 JSON results go to stdout; sign shows the escaped staged diff on stderr.
 Exit status: 0 success or true (promote/resume: confirmed), 1 failure or a
 false result ({"valid":false}, {"revoked":false}, {"found":false}, or a
-promotion that is failed or indeterminate), 2 usage error.
+promotion that is failed or indeterminate, or evidence that is not
+"verified"), 2 usage error.
 `;
 
 const COMMANDS = {
@@ -105,7 +114,14 @@ const COMMANDS = {
   resume: ["config", "attempt-id"],
   status: ["config", "attempt-id"],
   recover: ["config", "attempt-id", "confirm-quiescent"],
+  "export-evidence": ["config", "attempt-id"],
+  "verify-evidence": ["bundle", "trust", "repo", "patch"],
 } as const;
+
+// Options a command may omit; every other listed option is required.
+const OPTIONAL: Partial<Record<Command, ReadonlySet<string>>> = {
+  "verify-evidence": new Set(["repo", "patch"]),
+};
 
 // Options that are present-or-absent flags rather than "--name value".
 const FLAGS: ReadonlySet<string> = new Set(["confirm-quiescent"]);
@@ -246,7 +262,7 @@ function parseOptions(command: Command, args: string[]): Options {
     options.set(name, value);
   }
   for (const name of allowed) {
-    if (!options.has(name)) {
+    if (!options.has(name) && !OPTIONAL[command]?.has(name)) {
       throw new UsageError(`Missing required option --${name}`);
     }
   }
@@ -998,7 +1014,72 @@ const RUNNERS: Record<
   resume: runResume,
   status: runStatus,
   recover: runRecover,
+  "export-evidence": runExportEvidence,
+  "verify-evidence": runVerifyEvidence,
 };
+
+const MAX_BUNDLE_BYTES = 32 * 1024 * 1024;
+
+function runExportEvidence(options: Options, io: GitReviewCliIo): number {
+  const attemptId = attemptIdOption(options);
+  const session = new GitReviewSession(option(options, "config"), {
+    requirePlanDatabase: false,
+    requireApprovalDatabase: true,
+  });
+  const config = session.snapshot.config;
+  if (config.configVersion !== 2 || config.evidence === undefined)
+    throw new Error(
+      "Evidence export needs a version 2 review config with evidence.signingKeyPath",
+    );
+  const approvals = session.openApprovals();
+  let bundle;
+  try {
+    const status = approvals.getGitPromotionStatus(attemptId);
+    const review = approvals.getGitPromotionReview(attemptId);
+    if (!status || !review) {
+      io.stdout(asciiJson({ found: false }));
+      return 1;
+    }
+    session.assertUnchanged();
+    const signingKey = loadSigningKey(
+      config.evidence.signingKeyPath,
+      session.snapshot.paths.protectedRoots,
+    );
+    const hostKeyId = gitOperatorKeyId(createPublicKey(signingKey));
+    if (
+      config.trust.operators.some((operator) =>
+        operator.keys.some((key) => key.keyId === hostKeyId),
+      )
+    )
+      throw new Error("The evidence signing key must not be an operator key");
+    bundle = exportGitPromotionEvidence({ status, review, signingKey });
+  } finally {
+    approvals.close();
+  }
+  io.stdout(asciiJson(bundle));
+  return 0;
+}
+
+function runVerifyEvidence(options: Options, io: GitReviewCliIo): number {
+  const bundle = readJsonFile(
+    option(options, "bundle"),
+    MAX_BUNDLE_BYTES,
+    "Evidence bundle",
+  );
+  const trust = readJsonFile(
+    option(options, "trust"),
+    MAX_BUNDLE_BYTES,
+    "Evidence trust",
+  );
+  const repo = options.get("repo");
+  const patchPath = options.get("patch");
+  const report = verifyGitPromotionEvidence(bundle, trust, {
+    ...(repo === undefined ? {} : { repositoryPath: resolve(repo) }),
+    ...(patchPath === undefined ? {} : { patch: readPatch(patchPath) }),
+  });
+  io.stdout(asciiJson(report));
+  return report.result === "verified" ? 0 : 1;
+}
 
 function isCommand(value: string | undefined): value is Command {
   return value !== undefined && Object.hasOwn(COMMANDS, value);

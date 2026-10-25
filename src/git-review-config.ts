@@ -59,6 +59,8 @@ export interface GitReviewConfigV2 extends Omit<
   configVersion: 2;
   destinationMode: "uncheckout_destination";
   ownership: { kind: "persistent_directory"; fencePath: string };
+  /** Ed25519 private key that signs exported promotion evidence. */
+  evidence?: { signingKeyPath: string } | undefined;
 }
 
 export type GitReviewConfig = GitReviewConfigV1 | GitReviewConfigV2;
@@ -176,6 +178,7 @@ const configSchema = z.discriminatedUnion("configVersion", [
       kind: z.literal("persistent_directory"),
       fencePath: pathSchema,
     }),
+    evidence: z.strictObject({ signingKeyPath: pathSchema }).optional(),
   }),
 ]);
 
@@ -564,6 +567,8 @@ export function resolveGitReviewStatePaths(
     throw new Error(
       "ownership.fencePath must be separate from the plan and approval databases",
     );
+  if (config.evidence !== undefined)
+    assertAbsolute(config.evidence.signingKeyPath, "evidence.signingKeyPath");
   return { protectedRoots, planDatabasePath, approvalDatabasePath, fencePath };
 }
 
