@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import childProcess from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test, { type TestContext } from "node:test";
@@ -372,5 +374,43 @@ test("a ledger read failure at the locked gate records nothing", (t) => {
   assert.equal(current.admission, undefined);
   assert.equal(current.outcome, undefined);
   // Nothing was consumed by the transient failure: the gate runs again.
+  assert.equal(promote(f).status.state, "confirmed");
+});
+
+test("a Git timeout at the locked gate records nothing", (t) => {
+  const f = fixture(t);
+  reserve(f);
+  const original = childProcess.spawnSync;
+  let calls = 0;
+  // The first symbolic-ref is the unlocked precheck, the second the locked
+  // recheck: make Git time out there.
+  childProcess.spawnSync = ((command: string, args: string[], options) => {
+    if (args.includes("symbolic-ref") && ++calls === 2)
+      return {
+        pid: 0,
+        output: [],
+        stdout: Buffer.alloc(0),
+        stderr: Buffer.alloc(0),
+        status: null,
+        signal: "SIGTERM",
+        error: Object.assign(new Error("spawnSync git ETIMEDOUT"), {
+          code: "ETIMEDOUT",
+        }),
+      };
+    return original(command, args, options);
+  }) as typeof childProcess.spawnSync;
+  syncBuiltinESMExports();
+  try {
+    assert.throws(
+      () => promote(f),
+      /Source HEAD must be a symbolic local branch/u,
+    );
+  } finally {
+    childProcess.spawnSync = original;
+    syncBuiltinESMExports();
+  }
+  const current = status(f);
+  assert.equal(current?.state, "prepared");
+  assert.equal(current.outcome, undefined);
   assert.equal(promote(f).status.state, "confirmed");
 });

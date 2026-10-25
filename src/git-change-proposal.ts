@@ -247,8 +247,10 @@ export function observeGitPromotionWorkspace(
     let headRef: string;
     try {
       headRef = gitLine(root, "symbolic-ref", "--quiet", "HEAD");
-    } catch {
-      throw new Error("Source HEAD must be a symbolic local branch");
+    } catch (error) {
+      throw new Error("Source HEAD must be a symbolic local branch", {
+        cause: error,
+      });
     }
     validateRef(root, headRef);
     if (headRef === destinationRef) {
