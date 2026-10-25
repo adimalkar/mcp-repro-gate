@@ -83,8 +83,11 @@ Only a zero exit with an exact readback is `confirmed`. A lost compare-and-swap,
 Residual limits:
 
 - Git and SQLite are not one atomic transaction. An interrupted dispatch stays `indeterminate`.
-- Expiry bounds admission, not the instant of the ref write.
-- Policy, plan or trust changes after admission do not cancel the bounded write.
+- Expiry is checked at admission and again immediately before the ref write, under the same fence; the write itself is not atomic with that check. The clock is the trusted host's wall clock.
+- Policy, plan or trust changes after admission do not cancel the write. A destination checked out after admission is caught just before dispatch (`not_dispatched`); one checked out during the write is caught only by the readback (`readback_mismatch`).
+- A promoter that resumes after recovery has concluded does not write, but recovery's quiescence acknowledgement is still the host's assertion.
+- Ref and object durability relies on Git honouring `core.fsync=committed` (Git 2.36 or later) and on the file system's fsync; older Git ignores the setting.
+- If SQLite stays busy beyond its timeout after admission, the attempt is left admitted without an outcome and recovery records `indeterminate` although nothing was written.
 - Writers that ignore the fence, a same-user attacker, and a raw writer of the trusted ledger, which could insert a consistent but false outcome, are outside the claim.
 - Reflog entries and unreachable candidate objects are retained effects.
 - The host-only `git-review` promotion commands add no authority of their own: `--confirm-quiescent` is an operator assertion, and a version 2 configuration is trusted host input. No portable signed promotion receipt exists yet.

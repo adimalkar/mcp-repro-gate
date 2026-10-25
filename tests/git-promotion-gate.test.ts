@@ -1,11 +1,9 @@
 import { Ajv2020 } from "ajv/dist/2020.js";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { chmodSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
-import { fileURLToPath } from "node:url";
 import { canonicalJson } from "../src/canonical-json.js";
 import {
   SqliteGitApprovalStore,
@@ -18,6 +16,7 @@ import {
   raw,
   reserve,
 } from "./helpers/git-promotion-journal.js";
+import { startGateWorker } from "./helpers/git-promotion-gate-worker.js";
 
 // Keep cases sequential within this file; Node isolates each suite.
 
@@ -308,81 +307,6 @@ test("recovery requires an explicit plain quiescence acknowledgement", (t) => {
     "prepared",
   );
 });
-
-function startGateWorker(
-  f: Fixture,
-  mode: "before-admission" | "after-admission",
-) {
-  const path = join(f.scratch, `gate-worker-${randomUUID()}.json`);
-  const context = {
-    repositoryPath: f.context.repositoryPath,
-    repositoryId: f.context.repositoryId,
-    destinationRef: f.context.destinationRef,
-    catalogTool: f.context.catalogTool,
-    currentPolicy: f.context.currentPolicy,
-  };
-  writeFileSync(
-    path,
-    JSON.stringify({
-      databasePath: f.databasePath,
-      plansPath: join(f.scratch, "plans.sqlite"),
-      mode,
-      request: {
-        attemptId: f.prepared.attemptId,
-        context,
-        trust: f.trust,
-        hostControl: f.hostControl,
-        owner: f.owner,
-      },
-    }),
-    { mode: 0o600 },
-  );
-  const child = spawn(
-    process.execPath,
-    [
-      fileURLToPath(
-        new URL("./fixtures/git-promotion-gate-worker.js", import.meta.url),
-      ),
-      path,
-    ],
-    { stdio: ["pipe", "pipe", "pipe"] },
-  );
-  let output = "";
-  child.stdout.setEncoding("utf8");
-  const closed = new Promise<void>((resolve) => {
-    child.once("close", () => {
-      resolve();
-    });
-  });
-  const kill = async () => {
-    if (child.exitCode === null && child.signalCode === null)
-      child.kill("SIGKILL");
-    await closed;
-  };
-  // Reap before the fixture deletes its scratch directory.
-  f.asyncClosers.push(kill);
-  const waitFor = (event: string) =>
-    new Promise<void>((resolve, reject) => {
-      const seen = () => output.includes(`{"event":"${event}"}`);
-      const timer = setTimeout(() => {
-        reject(new Error(`Gate worker did not emit ${event}`));
-      }, 90_000);
-      const onData = (chunk: string) => {
-        output += chunk;
-        if (seen()) {
-          clearTimeout(timer);
-          child.stdout.off("data", onData);
-          resolve();
-        }
-      };
-      child.stdout.on("data", onData);
-      void closed.then(() => {
-        clearTimeout(timer);
-        if (!seen()) reject(new Error(`Gate worker exited before ${event}`));
-      });
-    });
-  return { waitFor, kill };
-}
 
 test("a worker killed before admission recovers as abandoned", async (t) => {
   const f = fixture(t);
