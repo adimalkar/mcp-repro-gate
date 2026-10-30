@@ -51,7 +51,7 @@ Each slice is one PR with its own tests, docs, independent review and CHANGELOG 
 
 - Any handoff call carrying a `sessionId` renews its lease.
 - A stdio MCP server process serves one client. When its input closes, the server ends every session that connection opened and has not ended, with reason `disconnected`. No model call is needed.
-- A session whose lease lapses is shown as `quiet`, then `interrupted` after a grace period. A later call from it revives it as `resumed`. This avoids marking a long model turn as dead.
+- A session whose lease lapses is shown as `quiet`, then `interrupted` after a grace period. A later call from it makes it `active` again. This avoids marking a long model turn as dead.
 
 **Observed recovery snapshot.** When a session joins, or the host records a checkpoint, ReproGate reads, through the existing hardened Git runner:
 
@@ -121,9 +121,9 @@ Results are published in `docs/BENCHMARKS.md` with their limits. No claim is mad
 | Edge case                                     | Handling                                                                                                                                                         |
 | --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Rate limit mid-step, no handoff written       | Lease lapses, session marked `interrupted`; `StopFailure` hook records the reason without a model call; next agent's brief shows it with the observed Git state. |
-| Agent alive but thinking for minutes          | `quiet` before `interrupted`; any later call revives it as `resumed`; claims are offered back only after the grace period.                                       |
+| Agent alive but thinking for minutes          | `quiet` before `interrupted`; any later call makes it `active` again; claims are offered back only after the grace period.                                       |
 | User closes the terminal                      | stdin closes; the server ends the connection's open sessions as `disconnected`.                                                                                  |
-| Killed mid-rebase or mid-merge                | Snapshot reports the operation in progress and conflicted paths; the brief puts it first.                                                                        |
+| Killed mid-rebase or mid-merge                | Snapshot reports the operation in progress and conflicted paths; the text brief opens with it.                                                                   |
 | Uncommitted edits at death                    | Changed paths and counts are listed as observed; nothing is stashed or reset. Files changed after the last note are flagged "unconfirmed since last note".       |
 | Half-written file left by a dying agent       | ReproGate cannot know the file is broken; it only flags it as changed after the last note. The doc says so.                                                      |
 | 20 subagents writing at once                  | Notes append to separate lanes, no compare-and-swap; projection is coalesced.                                                                                    |
@@ -135,7 +135,7 @@ Results are published in `docs/BENCHMARKS.md` with their limits. No claim is mad
 | Secrets pasted into notes                     | Redacted before storage; count recorded.                                                                                                                         |
 | Huge repository                               | Git reads have timeouts and caps; the snapshot reports `truncated`.                                                                                              |
 | Not a Git repository                          | Observed Git section is `unavailable`; sessions and notes still work.                                                                                            |
-| Hook runs while the server holds the database | SQLite WAL with a bounded busy timeout; hook failures exit non-zero quietly and never block the client.                                                          |
+| Hook runs while the server holds the database | SQLite WAL with a bounded busy timeout; hook failures exit 1 (never 2, which Claude Code treats as blocking) with a short code on standard error.                |
 | Hook payload format changes                   | The CLI reads only documented fields, bounded, and ignores the rest; an unreadable payload still records a `manual` checkpoint.                                  |
 | Clock jumps                                   | Lease checks use the server's clock on one host; a backwards step only delays `interrupted`, it never ends a live session early.                                 |
 | Database lost or replaced                     | Existing binding checks report `unavailable`; the projection on disk is left alone and can be adopted.                                                           |
@@ -181,6 +181,18 @@ Ranked by value for the context-switching workflow:
 - **Git state is read when a brief is built, not at the moment of the stop.** The state at resume time is what the next agent needs, and it keeps `SessionEnd` within Claude Code's default 1.5 second hook budget. Each session records the HEAD it started at, for "commits since".
 - **Subagents get a short context.** `SubagentStart` gives a subagent its session ID and the goal, not the whole brief, so 20 subagents don't each pay for it.
 - **Model output is opt-in.** Captured replies (`captureMessages`) are off by default, which keeps the first slice's rule that nothing is collected automatically.
+- **Review fixes:** the first independent review asked for changes. Fixed:
+  - the hook never exits 2, and returns before opening the database for other projects;
+  - a session that hit a rate limit and then ended stays `failed`, and pruning keeps it longer than sessions that ended normally;
+  - briefs enforce every budget, with a skeleton fallback and a `truncated` flag;
+  - pruning never deletes the parent of the session being started;
+  - resumed subagents and prompted ended sessions reopen; a `Stop` after an end changes nothing;
+  - internal agents without `SubagentStart` are ignored;
+  - "commits since" uses the oldest unfinished agent session;
+  - the import cycle between the contracts is gone;
+  - captured text is cut before redaction; credential-shaped labels are refused or replaced;
+  - enumerated columns are checked for shape and validated on read, so later values need no table rebuild;
+  - Codex's newer lifecycle hooks are supported, with `Interrupt` as `idle`.
 - **Deferred to slice 2:** `.agent/sessions.md` (see Projection), per-session views in `handoff_status`, and the parent rollup counts.
 - **Edge cases covered by tests:** a rate-limited session reported to the next session; a finished turn reading as `idle`; 20 subagents with distinct sessions and short contexts; `SessionEnd` twice, then a resume; hooks from another project, malformed and oversized payloads; read-only configuration; Codex notifications; eight processes writing notes at once; lane and session caps; brief byte and character budgets; credential redaction, including on hostile input; a merge left in progress, untracked files, commits since the last session and a detached HEAD; a workspace without Git; connection close ending only the sessions it joined.
 

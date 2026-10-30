@@ -1176,3 +1176,27 @@ test("a read-only configuration refuses session writes", (t) => {
   );
   assert.equal(service.brief().sessions.length, 0);
 });
+
+test("the ledger refuses activity and notes on an ended session", (t) => {
+  const f = fixture(t);
+  const service = f.service();
+  const { sessionId } = service.join({ handoffVersion: 1, agent: "done" });
+  service.end({ handoffVersion: 1, sessionId });
+  const db = new DatabaseSync(f.config.databasePath, { readOnly: true });
+  f.defer(() => {
+    db.close();
+  });
+  const workspaceId = String(
+    db.prepare("SELECT workspace_id FROM handoff_sessions").get()?.workspace_id,
+  );
+  const ledger = service.store.handoffSessions();
+  assert.throws(
+    () => ledger.touch(workspaceId, sessionId, Date.now()),
+    errorCode("session_ended"),
+  );
+  assert.throws(
+    () =>
+      ledger.note(workspaceId, sessionId, "progress", "late", 0, Date.now()),
+    errorCode("session_ended"),
+  );
+});
