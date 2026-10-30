@@ -217,6 +217,9 @@ function searchServer(context: TestContext) {
     } else if (url.pathname === "/big") {
       response.setHeader("content-type", "application/json");
       response.end(`{"results":[],"pad":"${"x".repeat(1024 * 1024 + 10)}"}`);
+    } else if (url.pathname === "/limited") {
+      response.writeHead(429, { "retry-after": "60" });
+      response.end();
     } else if (url.pathname === "/page") {
       response.setHeader("content-type", "text/plain");
       response.end("A private page that must never be read.");
@@ -241,6 +244,18 @@ test("the endpoint client uses the private exemption only for its own origin", a
       snippet: "socket hang up & retry",
     },
   ]);
+  // A rate-limited provider keeps the stable code but says when to retry.
+  await assert.rejects(
+    createEndpointSearch({
+      endpoint: `${base}/limited?q={query}`,
+      allowPrivateEndpoint: true,
+    })("x", 5),
+    (error: unknown) =>
+      error instanceof ResearchError &&
+      error.code === "search_failed" &&
+      error.details.status === 429 &&
+      error.details.retryAfterSeconds === 60,
+  );
   for (const path of ["/html", "/redirect", "/big", "/missing"])
     await assert.rejects(
       createEndpointSearch({
