@@ -285,6 +285,7 @@ test("meta sniffing follows the HTML prescan, not any charset-looking text", () 
     '<meta data-charset="utf-16">',
     "<meta-foo charset=windows-1252>",
     '<!-- <meta charset="windows-1252"> -->',
+    '<me<!-- -->ta charset="windows-1252">',
     '<meta content="text/html; charset=windows-1252">',
   ])
     assert.equal(
@@ -300,6 +301,9 @@ test("meta sniffing follows the HTML prescan, not any charset-looking text", () 
     ).slice(head.length);
   assert.equal(windows("<meta charset=' windows-1252 '>"), "\u201c\u201d");
   assert.equal(windows('<meta charset="x-user-defined">'), "\u201c\u201d");
+  // Short comments close at once, so a declaration after them counts.
+  assert.equal(windows('<!--><meta charset="windows-1252">'), "\u201c\u201d");
+  assert.equal(windows('<!---><meta charset="windows-1252">'), "\u201c\u201d");
   // An unsupported label moves on to the next declaration.
   assert.equal(
     windows('<meta charset="bogus"><meta charset="windows-1252">'),

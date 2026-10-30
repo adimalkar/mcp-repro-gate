@@ -320,7 +320,9 @@ function metaEncoding(bytes: Buffer): string | undefined {
   const head = bytes
     .subarray(0, 1024)
     .toString("latin1")
-    .replace(/<!--[\s\S]*?(?:-->|$)/gu, "");
+    // "<!-->" and "<!--->" are complete comments; a comment becomes a
+    // space, so the text around it cannot join into a tag.
+    .replace(/<!--(?:-?>|[\s\S]*?-->|[\s\S]*$)/gu, " ");
   for (const tag of head.match(/<meta(?=[\s/])[^>]{0,512}>/giu) ?? []) {
     const attributes = new Map<string, string>();
     for (const match of tag.slice(5).matchAll(ATTRIBUTE)) {
