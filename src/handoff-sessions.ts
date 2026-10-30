@@ -98,10 +98,30 @@ export interface HandoffSessionStart {
   now: number;
 }
 
+/**
+ * A value this version does not know, such as a client a later version
+ * added. Listings skip such rows rather than fail the whole brief.
+ */
+class NewerValueError extends HandoffError {
+  constructor() {
+    super("unavailable");
+  }
+}
+
 function noteKind(value: string): HandoffNoteKind {
   if (!(HANDOFF_NOTE_KINDS as readonly string[]).includes(value))
-    throw new HandoffError("unavailable");
+    throw new NewerValueError();
   return value as HandoffNoteKind;
+}
+
+/** Rows a later version wrote with values unknown here are skipped. */
+function known<T>(parse: () => T): T[] {
+  try {
+    return [parse()];
+  } catch (error) {
+    if (error instanceof NewerValueError) return [];
+    throw error;
+  }
 }
 
 const SESSION_COLUMNS = `session_id, client, client_session, client_agent, agent, kind,
@@ -132,14 +152,13 @@ function sessionRow(row: Record<string, unknown>): HandoffSessionRow {
   ): T | null => {
     const value = optional(key);
     if (value !== null && !(values as readonly string[]).includes(value))
-      throw new HandoffError("unavailable");
+      throw new NewerValueError();
     return value as T | null;
   };
   const turn = row.turn_open;
   const ended = row.ended_at;
   const kind = string("kind");
-  if (kind !== "agent" && kind !== "subagent")
-    throw new HandoffError("unavailable");
+  if (kind !== "agent" && kind !== "subagent") throw new NewerValueError();
   const client = member("client", HANDOFF_CLIENTS);
   if (client === null) throw new HandoffError("unavailable");
   return {
@@ -306,12 +325,16 @@ export class HandoffSessionLedger {
       if (session.endedAt !== null) throw new HandoffError("session_ended");
       this.database
         .prepare(
-          `UPDATE handoff_sessions SET last_seen_at = max(last_seen_at, ?), failure = NULL,
+          `UPDATE handoff_sessions SET last_seen_at = max(last_seen_at, ?),
+            failure = CASE WHEN ? = 1 THEN NULL ELSE failure END,
             turn_open = CASE WHEN ? IS NULL THEN turn_open ELSE ? END,
             last_message = coalesce(?, last_message) WHERE session_id = ?`,
         )
         .run(
           now,
+          // Only a new turn clears a reported failure; activity such as
+          // compaction or a finished turn does not.
+          turnOpen === true ? 1 : 0,
           turnOpen === undefined ? null : 1,
           turnOpen === undefined ? null : turnOpen ? 1 : 0,
           lastMessage ?? null,
@@ -469,7 +492,7 @@ export class HandoffSessionLedger {
           ORDER BY last_seen_at DESC LIMIT ?`,
       )
       .all(workspaceId, MAX_SESSIONS_PER_WORKSPACE)
-      .map(sessionRow);
+      .flatMap((row) => known(() => sessionRow(row)));
   }
 
   /** Newest notes first, optionally only some kinds. */
@@ -523,12 +546,9 @@ export class HandoffSessionLedger {
         typeof row.created_at !== "number"
       )
         throw new HandoffError("unavailable");
-      result.set(row.session_id, {
-        sessionId: row.session_id,
-        kind: noteKind(row.kind),
-        text: row.text,
-        createdAt: row.created_at,
-      });
+      const { session_id: sessionId, kind, text, created_at: createdAt } = row;
+      for (const parsed of known(() => noteKind(kind)))
+        result.set(sessionId, { sessionId, kind: parsed, text, createdAt });
     }
     return result;
   }

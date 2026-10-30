@@ -20,7 +20,7 @@ import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 
 import { createHandoffService, type HandoffService } from "../src/handoff.js";
 import { HandoffError } from "../src/handoff-contract.js";
-import { fitBrief, renderBriefText } from "../src/handoff-brief.js";
+import { buildBrief, fitBrief, renderBriefText } from "../src/handoff-brief.js";
 import { runHandoffCli } from "../src/handoff-cli.js";
 import { observeGit } from "../src/handoff-observe.js";
 import { redactHandoffText } from "../src/handoff-redact.js";
@@ -1199,4 +1199,139 @@ test("the ledger refuses activity and notes on an ended session", (t) => {
       ledger.note(workspaceId, sessionId, "progress", "late", 0, Date.now()),
     errorCode("session_ended"),
   );
+});
+
+test("the skeleton fits 1 KiB even when every text is quote-heavy and counts are large", () => {
+  const quotes = '"\\'.repeat(1024);
+  const brief = buildBrief({
+    now: Date.parse("2026-10-30T00:00:00Z"),
+    liveness: { leaseMs: 1, graceMs: 1 },
+    latest: undefined,
+    sessions: [],
+    lastNotes: new Map(),
+    notes: [],
+    git: {
+      state: "observed",
+      branch: quotes,
+      head: "a".repeat(64),
+      detached: false,
+      upstream: quotes,
+      ahead: 999_999_999,
+      behind: 999_999_999,
+      operation: "cherry_pick",
+      changes: {
+        staged: 999_999_999,
+        unstaged: 999_999_999,
+        untracked: 999_999_999,
+        conflicted: 999_999_999,
+      },
+      paths: [],
+      omittedPaths: 999_999_999,
+      commitsSince: null,
+    },
+  });
+  brief.handoff.goal = quotes;
+  brief.handoff.activeAgent = "a".repeat(64);
+  brief.handoff.revision = 9_007_199_254_740_990;
+  brief.omittedSessions = 256;
+  brief.omittedNotes = 999_999;
+  const fitted = fitBrief(brief, 1024, (value) =>
+    Buffer.byteLength(JSON.stringify(value)),
+  );
+  assert.ok(Buffer.byteLength(JSON.stringify(fitted)) <= 1024);
+  assert.equal(fitted.truncated, true);
+});
+
+test("an idle session never pins the commits-since base", (t) => {
+  const f = fixture(t, { observeGit: true });
+  const root = f.workspaceRoot;
+  git(root, "init", "-q", "-b", "main");
+  writeFileSync(join(root, "a.txt"), "0\n");
+  git(root, "add", "a.txt");
+  git(root, "commit", "-q", "-m", "base");
+  f.hook({ hook_event_name: "SessionStart", source: "startup" });
+  f.hook({ hook_event_name: "Stop" });
+  const service = f.service();
+  for (let index = 1; index <= 3; index++) {
+    f.clock.advance(60);
+    const { sessionId } = service.join({ handoffVersion: 1, agent: "w" });
+    writeFileSync(join(root, "a.txt"), `${String(index)}\n`);
+    git(root, "commit", "-q", "-am", `step ${String(index)}`);
+    service.end({ handoffVersion: 1, sessionId });
+  }
+  f.clock.advance(60);
+  const { brief } = service.join({ handoffVersion: 1, agent: "next" });
+  assert.equal(brief.git.commitsSince?.count, 1);
+  assert.match(brief.git.commitsSince.subjects[0] ?? "", /step 3/u);
+});
+
+test("only a new prompt or note clears a reported failure", (t) => {
+  const f = fixture(t);
+  f.hook({ hook_event_name: "SessionStart", source: "startup" });
+  f.hook({ hook_event_name: "StopFailure", error: "overloaded" });
+  f.hook({ hook_event_name: "PreCompact", trigger: "auto" });
+  f.hook({ hook_event_name: "Stop" });
+  f.hook({ hook_event_name: "SessionEnd", reason: "other" });
+  const state = () => f.service().brief().sessions[0]?.state;
+  assert.equal(state(), "failed");
+  f.hook({ hook_event_name: "UserPromptSubmit", prompt: "retry" });
+  assert.equal(state(), "active");
+  // A session that completes normally is ended, whatever failed earlier.
+  f.hook({ hook_event_name: "StopFailure", error: "rate_limit" });
+  const sessionId = f.service().brief().sessions[0]?.sessionId ?? "";
+  f.service().end({ handoffVersion: 1, sessionId });
+  assert.equal(state(), "ended");
+});
+
+test("a late Codex notification never reopens an ended session", (t) => {
+  const f = fixture(t);
+  const codex = (payload: Record<string, unknown>) =>
+    f.cli(["hook", "--config", f.configPath, "--client", "codex"], {
+      cwd: f.workspaceRoot,
+      session_id: "thread-9",
+      ...payload,
+    });
+  codex({ hook_event_name: "SessionStart", source: "startup" });
+  codex({ hook_event_name: "SessionEnd", reason: "other" });
+  f.cli([
+    "hook",
+    "--config",
+    f.configPath,
+    "--client",
+    "codex",
+    JSON.stringify({
+      type: "agent-turn-complete",
+      "thread-id": "thread-9",
+      cwd: f.workspaceRoot,
+    }),
+  ]);
+  f.clock.advance(30 * 86_400);
+  assert.equal(f.service().brief().sessions[0]?.state, "ended");
+});
+
+test("rows a later version wrote with unknown values are skipped, not fatal", (t) => {
+  const f = fixture(t);
+  const service = f.service();
+  const { sessionId } = service.join({ handoffVersion: 1, agent: "known" });
+  const db = new DatabaseSync(f.config.databasePath);
+  f.defer(() => {
+    db.close();
+  });
+  const workspaceId = String(
+    db.prepare("SELECT workspace_id FROM handoff_sessions").get()?.workspace_id,
+  );
+  db.prepare(
+    `INSERT INTO handoff_sessions(session_id, workspace_id, client, client_session, client_agent,
+      agent, kind, started_at, last_seen_at) VALUES(?, ?, 'gemini', 'g', '', 'gemini', 'agent', 1, 1)`,
+  ).run("11111111-1111-4111-8111-111111111111", workspaceId);
+  db.prepare(
+    "INSERT INTO handoff_notes(session_id, kind, text, redactions, created_at) VALUES(?, 'question', 'q', 0, 2)",
+  ).run(sessionId);
+  const brief = service.brief();
+  assert.deepEqual(
+    brief.sessions.map((s) => s.agent),
+    ["known"],
+  );
+  assert.equal(brief.sessions[0]?.lastNote, null);
+  assert.match(service.briefText(), /known/u);
 });

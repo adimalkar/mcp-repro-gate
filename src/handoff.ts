@@ -203,7 +203,8 @@ export function createHandoffService(
       const time = now().getTime();
       // Commits since the oldest unfinished agent session began cover the
       // work of every agent that may have stopped mid-task, whatever it
-      // recorded. With none unfinished, the newest ended session is used.
+      // recorded. Idle sessions never age, so they do not count; with none
+      // unfinished, the newest other session is used.
       // Subagents start from their parent's state, so they are skipped.
       const candidates = sessions.filter(
         (session) =>
@@ -212,7 +213,11 @@ export function createHandoffService(
           session.startHead !== null,
       );
       const unfinished = candidates
-        .filter((session) => sessionState(session, time, liveness) !== "ended")
+        .filter((session) =>
+          ["failed", "interrupted", "quiet", "active"].includes(
+            sessionState(session, time, liveness),
+          ),
+        )
         .sort((a, b) => a.startedAt - b.startedAt)[0];
       const previous =
         unfinished ??
@@ -473,7 +478,9 @@ export function createHandoffService(
     ): HandoffHookResult => {
       const thread = clientId(payload["thread-id"]);
       if (thread === undefined) return { recorded: false };
-      const session = mainSession("codex", thread, "codex", true);
+      // A late notification must not reopen a session that already ended.
+      const session = mainSession("codex", thread, "codex", false);
+      if (session.endedAt !== null) return { recorded: false };
       const reply = payload["last-assistant-message"];
       ledger.touch(
         workspaceId,

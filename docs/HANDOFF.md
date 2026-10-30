@@ -105,7 +105,7 @@ When `allowUpdates` is true, three more tools are registered, and the server's M
 - `handoff_note { handoffVersion, sessionId, kind, text }` appends one note: `progress`, `blocker`, `decision`, `next` or `result`. Notes go to the agent's own session, so concurrent agents never conflict, unlike whole-document updates.
 - `handoff_end { handoffVersion, sessionId, summary? }` ends the session; the summary is stored as a `result` note.
 
-`handoff_status { handoffVersion: 1, brief: true, briefBytes? }` adds a brief to the status. A brief lists the sessions that need attention first (failed, interrupted, quiet), recent blocker and decision notes, the goal and next steps from the latest handoff revision, and the Git state observed now. It always fits `briefBytes` (default 8 KiB; at least 1 KiB). Dropped sessions, notes and paths are counted, and `truncated` is true when anything else was removed or cut short. Under extreme pressure only the skeleton remains: counts, the goal cut short, and the Git summary.
+`handoff_status { handoffVersion: 1, brief: true, briefBytes? }` adds a brief to the status. A brief lists the sessions that need attention first (failed, interrupted, quiet), recent blocker and decision notes, the goal and next steps from the latest handoff revision, and the Git state observed now. It always fits `briefBytes` (default 8 KiB; at least 1 KiB). Dropped sessions, notes and paths are counted, and `truncated` is true when anything else was removed or cut short. Under extreme pressure only the skeleton remains: counts and the Git summary, with no free text.
 
 When the MCP connection closes, the server ends the sessions joined through it as `disconnected`.
 
@@ -113,16 +113,16 @@ When the MCP connection closes, the server ends the sessions joined through it a
 
 `reprogate handoff hook --config <handoff.json>` reads a Claude Code hook payload on standard input and records the event. It needs no model quota, so it still runs after a rate limit. It ignores payloads whose `cwd` is outside the configured workspace, so it can be configured for every project. It never blocks the client. Claude Code treats exit code 2 as "block", so the command never uses it: a payload it cannot read, or one from another project, exits 0, and any other failure, including a mistyped command line, exits 1 with a short code on standard error, which Claude Code shows without blocking. A payload from another project returns before the database is opened.
 
-| Claude Code event  | Recorded                                                                                                                                     |
-| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `SessionStart`     | Starts or resumes the session; prints the brief and the session ID as `additionalContext`, so the agent starts with it                       |
-| `UserPromptSubmit` | Activity, with the turn open; reopens an ended session. The prompt is not stored                                                             |
-| `Stop`             | The turn finished: `idle`                                                                                                                    |
-| `StopFailure`      | The turn stopped on the reported error: `failed`. It stays `failed` if the client then ends the session, because the work may be unfinished  |
-| `SubagentStart`    | Starts, or reopens, a subagent session under its parent; gives the subagent its session ID and the goal only, not the whole brief            |
-| `SubagentStop`     | Ends the subagent session. Claude Code's internal agents (prompt suggestions, `/btw`) never send `SubagentStart`, so their stops are ignored |
-| `PreCompact`       | Activity                                                                                                                                     |
-| `SessionEnd`       | Ends the session with the client's reason; it reads no Git state, so it fits the default 1.5 second budget                                   |
+| Claude Code event  | Recorded                                                                                                                                                                         |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SessionStart`     | Starts or resumes the session; prints the brief and the session ID as `additionalContext`, so the agent starts with it                                                           |
+| `UserPromptSubmit` | Activity, with the turn open; reopens an ended session. The prompt is not stored                                                                                                 |
+| `Stop`             | The turn finished: `idle`                                                                                                                                                        |
+| `StopFailure`      | The turn stopped on the reported error: `failed`. Only a new prompt or note clears it; it stays `failed` if the client then ends the session, because the work may be unfinished |
+| `SubagentStart`    | Starts, or reopens, a subagent session under its parent; gives the subagent its session ID and the goal only, not the whole brief                                                |
+| `SubagentStop`     | Ends the subagent session. Claude Code's internal agents (prompt suggestions, `/btw`) never send `SubagentStart`, so their stops are ignored                                     |
+| `PreCompact`       | Activity                                                                                                                                                                         |
+| `SessionEnd`       | Ends the session with the client's reason; it reads no Git state, so it fits the default 1.5 second budget                                                                       |
 
 Add the hooks to the project's or user's Claude Code settings (adjust the paths):
 
@@ -221,7 +221,7 @@ Older Codex versions only offer the turn-completion `notify` program, which rece
 notify = ["reprogate", "handoff", "hook", "--config", "/absolute/private/dir/handoff.json", "--client", "codex"]
 ```
 
-Each completed turn then marks the thread's session `idle`. That channel reports no errors or session ends, so a Codex session that stops mid-turn reads as `idle` after its last finished turn, and the observed Git state shows what changed since.
+Each completed turn then marks the thread's session `idle`; a notification never reopens a session that already ended. That channel reports no errors or session ends, so a Codex session that stops mid-turn reads as `idle` after its last finished turn, and the observed Git state shows what changed since.
 
 `reprogate handoff brief --config <handoff.json> [--json] [--bytes <n>]` prints the brief for any agent or person: text limited to `n` characters (default 9000), or JSON limited to `n` bytes.
 
@@ -237,7 +237,7 @@ Each session keeps its newest 64 notes and a total count. A workspace keeps its 
 
 ### Git observation
 
-With `observeGit` (on by default), ReproGate reads the workspace's Git state through its hardened runner each time it builds a brief: `git status --porcelain=v2` without optional locks, so it never takes the index lock from an agent working at the same time. It also checks for a merge, rebase, cherry-pick, revert or bisect in progress, and lists up to 10 commits since the oldest unfinished agent session started (or, with none unfinished, the newest ended one), so work by an agent that stopped mid-task shows up whoever joined later. It records no file contents or diffs. Each Git call has a time and output bound. A workspace that is not a repository, contains submodules, or uses unsupported line-ending configuration reads as `unavailable`.
+With `observeGit` (on by default), ReproGate reads the workspace's Git state through its hardened runner each time it builds a brief: `git status --porcelain=v2` without optional locks, so it never takes the index lock from an agent working at the same time. It also checks for a merge, rebase, cherry-pick, revert or bisect in progress, and lists up to 10 commits since the oldest unfinished agent session started (failed, interrupted, quiet or active; idle sessions never age, so they do not count), or else since the newest other session started, so work by an agent that stopped mid-task shows up whoever joined later. It records no file contents or diffs. Each Git call has a time and output bound. A workspace that is not a repository, contains submodules, or uses unsupported line-ending configuration reads as `unavailable`.
 
 ## Limits
 

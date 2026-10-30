@@ -153,8 +153,9 @@ export function buildBrief(input: BriefInput): HandoffBriefV1 {
  * Shrink a brief until `measure` fits the budget. The least useful entries
  * go first: dropped entries are counted, and anything else removed or cut
  * short sets `truncated`, so a reader always knows something is missing.
- * The last step leaves only the skeleton, which fits every budget from
- * MIN_BRIEF_BYTES up.
+ * The last steps leave only the skeleton (counts, states and the Git
+ * summary, with no free text), which fits every budget from MIN_BRIEF_BYTES
+ * up.
  */
 export function fitBrief(
   brief: HandoffBriefV1,
@@ -329,6 +330,24 @@ export function fitBrief(
       );
       if (entries > 0) fitted.truncated = true;
       return entries > 0 || cut;
+    },
+    () => {
+      // JSON escaping can double cut text, so drop free text entirely.
+      const h = fitted.handoff;
+      const g = fitted.git;
+      if (
+        h.goal === null &&
+        h.activeAgent === null &&
+        g.branch === null &&
+        g.upstream === null
+      )
+        return false;
+      h.goal = null;
+      h.activeAgent = null;
+      g.branch = null;
+      g.upstream = null;
+      fitted.truncated = true;
+      return true;
     },
   ];
   for (const step of steps) {
