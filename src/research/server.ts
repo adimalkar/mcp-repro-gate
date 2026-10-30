@@ -73,7 +73,8 @@ function refusal(error: unknown, fallback: ResearchErrorCode) {
     content: [
       {
         type: "text" as const,
-        text: JSON.stringify({ error: code, ...details }),
+        // The code goes last, so no detail can replace it.
+        text: JSON.stringify({ ...details, error: code }),
       },
     ],
     isError: true,

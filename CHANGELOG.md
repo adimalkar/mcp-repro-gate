@@ -6,6 +6,7 @@ All notable changes will be documented in this file. The project follows [Semant
 
 ### Added
 
+- Research refusals for HTTP errors include the `status`, and `retryAfterSeconds` after a 429 or 503 (from an IMF-fixdate or delta-seconds `Retry-After`, capped at one day), so a rate-limited agent can tell "wait" from "missing". Search endpoint failures keep the same details.
 - Optional code-discovery byte benchmark over pinned source, with graph-versus-grep comparisons, answer checks, isolated graph state, and a published local transcript.
 - `reprogate bench research [--html <file> --query <text>] [--json]`: a deterministic research measurement (fixture v1, synthetic pages) through a real MCP client, against raw HTML and page-text baselines, with an answer check per page. Published in `docs/RESEARCH.md` with a manual run on four real pages.
 - Research search: `--search-endpoint` (SearXNG-compatible JSON, with an optional `--search-endpoint-private` exemption for that origin only) enables `web_search` and `resolve_stuck_error`. The endpoint's origin is fixed by its template (`{query}` only after the host). These clean error text into a query with best-effort secret redaction, read the top results under the same fetch protections, and return the relevant passages and code with sources within one estimated budget.
@@ -34,8 +35,7 @@ All notable changes will be documented in this file. The project follows [Semant
 
 ### Fixed
 
-- Research fetches decode pages in their declared encoding (byte order mark, `Content-Type` charset or HTML meta charset) instead of always as UTF-8, which garbled non-UTF-8 pages and broke query matching on them.
-- Research refusals for HTTP errors now include the `status`, and `retryAfterSeconds` after a 429 or 503, so a rate-limited agent can tell "wait" from "missing". Search endpoint failures keep the same details.
+- Research fetches decode pages in their declared encoding (byte order mark, `Content-Type` charset or HTML meta charset) instead of always as UTF-8, which garbled non-UTF-8 pages and broke query matching on them. Search endpoint JSON is decoded the same way, and a byte order mark is no longer kept in the text.
 - `@modelcontextprotocol/client` is now a runtime dependency. The configured stdio downstream connector already imported it at runtime, so production installs without dev dependencies could not start configured backends.
 
 ### Changed

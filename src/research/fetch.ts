@@ -39,7 +39,11 @@ export class ResearchError extends Error {
 
 const MAX_RETRY_AFTER_SECONDS = 86_400;
 
-/** Retry-After as seconds from now: delta-seconds or an HTTP date. */
+// The HTTP date format servers must send (RFC 9110 IMF-fixdate), in GMT.
+const IMF_FIXDATE =
+  /^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), \d{2} (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4} \d{2}:\d{2}:\d{2} GMT$/u;
+
+/** Retry-After as whole seconds from now: delta-seconds or an HTTP date. */
 export function retryAfterSeconds(
   header: string | undefined,
   now = Date.now(),
@@ -47,11 +51,10 @@ export function retryAfterSeconds(
   if (header === undefined) return undefined;
   const value = header.trim();
   let seconds: number;
-  if (/^\d{1,10}$/u.test(value)) seconds = Number(value);
+  // A huge delta becomes Infinity and is clamped below.
+  if (/^\d+$/u.test(value)) seconds = Number(value);
   else {
-    // An HTTP date names its weekday and month; Date.parse alone would also
-    // accept "-5" as a year.
-    if (!/[A-Za-z]{3}/u.test(value)) return undefined;
+    if (!IMF_FIXDATE.test(value)) return undefined;
     const date = Date.parse(value);
     if (!Number.isFinite(date)) return undefined;
     seconds = Math.ceil((date - now) / 1000);
@@ -189,7 +192,7 @@ export async function fetchText(
       response.destroy();
       const location = response.headers.location;
       if (location === undefined || hop >= maxRedirects)
-        throw new ResearchError("http_status");
+        throw new ResearchError("http_status", { status });
       let next: string;
       try {
         next = new URL(location, url).toString();
@@ -198,7 +201,7 @@ export async function fetchText(
       }
       const following = checkUrl(next, options.allowHosts);
       if (!redirectAllowed(url, following))
-        throw new ResearchError("http_status");
+        throw new ResearchError("http_status", { status });
       url = following;
       continue;
     }
@@ -283,47 +286,86 @@ function open(
   });
 }
 
-// The label from a Content-Type charset parameter or an HTML meta tag.
-const CHARSET = /charset\s*=\s*["']?([A-Za-z0-9._:-]{1,40})/iu;
+// A charset parameter, as in a Content-Type header or a meta content value.
+const CHARSET_PARAMETER =
+  /charset\s*=\s*(?:"([^"]{0,64})"|'([^']{0,64})'|([^\s;"']{1,64}))/iu;
+// One attribute of a tag: a name, optionally with a quoted or bare value.
+const ATTRIBUTE = /([^\s"'>/=]+)(?:\s*=\s*("[^"]*"|'[^']*'|[^\s>]*))?/gu;
+
+function charsetParameter(text: string): string | undefined {
+  const match = CHARSET_PARAMETER.exec(text);
+  return match === null ? undefined : (match[1] ?? match[2] ?? match[3]);
+}
+
+/** The encoding TextDecoder uses for a label, or undefined if unsupported. */
+function encodingFor(label: string | undefined): string | undefined {
+  if (label === undefined) return undefined;
+  try {
+    // Unsupported labels throw, as do those of the "replacement" encoding,
+    // such as ISO-2022-KR.
+    return new TextDecoder(label.trim()).encoding;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The encoding an HTML page declares in a meta tag within its first 1024
+ * bytes, following the HTML prescan: comments are skipped, only a
+ * `charset` attribute counts, or `content` when `http-equiv` is
+ * `content-type`, and an unsupported label moves on to the next tag.
+ */
+function metaEncoding(bytes: Buffer): string | undefined {
+  // Only an ASCII-compatible declaration can be read before decoding.
+  const head = bytes
+    .subarray(0, 1024)
+    .toString("latin1")
+    .replace(/<!--[\s\S]*?(?:-->|$)/gu, "");
+  for (const tag of head.match(/<meta(?=[\s/])[^>]{0,512}>/giu) ?? []) {
+    const attributes = new Map<string, string>();
+    for (const match of tag.slice(5).matchAll(ATTRIBUTE)) {
+      const name = (match[1] ?? "").toLowerCase();
+      const raw = match[2] ?? "";
+      if (!attributes.has(name))
+        attributes.set(name, raw.replace(/^(["'])([\s\S]*)\1$/u, "$2"));
+    }
+    let label = attributes.get("charset");
+    if (
+      label === undefined &&
+      attributes.get("http-equiv")?.trim().toLowerCase() === "content-type"
+    )
+      label = charsetParameter(attributes.get("content") ?? "");
+    // A page cannot declare UTF-16 in ASCII bytes, and x-user-defined is
+    // read as windows-1252, as browsers do.
+    const encoding =
+      label?.trim().toLowerCase() === "x-user-defined"
+        ? "windows-1252"
+        : encodingFor(label);
+    if (encoding === "utf-16le" || encoding === "utf-16be") return "utf-8";
+    if (encoding !== undefined) return encoding;
+  }
+  return undefined;
+}
 
 /**
  * Decode a body the way browsers choose an encoding, in order: a byte order
- * mark, the Content-Type charset, an HTML meta charset in the first 1024
- * bytes, then UTF-8. Unknown labels fall back to UTF-8; invalid bytes
- * become replacement characters rather than failing the fetch.
+ * mark, a supported Content-Type charset, an HTML meta declaration in the
+ * first 1024 bytes, then UTF-8. Invalid bytes become replacement characters
+ * rather than failing the fetch.
  */
 export function decodeBody(
   bytes: Buffer,
   contentTypeHeader: string,
   html: boolean,
 ): string {
-  let label: string | undefined;
+  let encoding: string | undefined;
   if (bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf)
-    label = "utf-8";
-  else if (bytes[0] === 0xfe && bytes[1] === 0xff) label = "utf-16be";
-  else if (bytes[0] === 0xff && bytes[1] === 0xfe) label = "utf-16le";
-  label ??= CHARSET.exec(contentTypeHeader)?.[1];
-  if (label === undefined && html) {
-    // Only an ASCII-compatible meta tag can be read before decoding.
-    const head = bytes.subarray(0, 1024).toString("latin1");
-    const meta = /<meta\b[^>]{0,512}>/giu;
-    for (const tag of head.match(meta) ?? []) {
-      const found = CHARSET.exec(tag)?.[1];
-      if (found !== undefined) {
-        label = found;
-        break;
-      }
-    }
-  }
-  let decoder: TextDecoder;
-  try {
-    decoder = new TextDecoder(label ?? "utf-8");
-  } catch {
-    // Unknown labels, and those of the "replacement" encoding such as
-    // ISO-2022-KR, which TextDecoder refuses.
-    decoder = new TextDecoder("utf-8");
-  }
-  return decoder.decode(bytes);
+    encoding = "utf-8";
+  else if (bytes[0] === 0xfe && bytes[1] === 0xff) encoding = "utf-16be";
+  else if (bytes[0] === 0xff && bytes[1] === 0xfe) encoding = "utf-16le";
+  encoding ??= encodingFor(charsetParameter(contentTypeHeader));
+  if (encoding === undefined && html) encoding = metaEncoding(bytes);
+  return new TextDecoder(encoding ?? "utf-8").decode(bytes);
 }
 
 function readBody(
