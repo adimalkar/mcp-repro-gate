@@ -11,6 +11,7 @@ import {
   rmSync,
   statSync,
   symlinkSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -1399,11 +1400,12 @@ test("subagents that need attention stay visible beside their parent's counts", 
     brief.sessions.find((s) => s.agent === "stuck")?.state,
     "interrupted",
   );
+  // Listed subagents are not counted again: each session appears once.
   assert.deepEqual(brief.sessions.find((s) => s.agent === "lead")?.subagents, {
     active: 1,
     idle: 0,
     quiet: 0,
-    interrupted: 1,
+    interrupted: 0,
     failed: 0,
     ended: 1,
   });
@@ -1507,7 +1509,11 @@ test("a symlinked or hard-linked sessions file is refused, and the event is stil
   const service = f.service({}, { deferProjection: false });
   const { sessionId } = service.join({ handoffVersion: 1, agent: "safe" });
   assert.equal(readFileSync(outside, "utf8"), "keep\n");
-  assert.equal(service.status({ handoffVersion: 1 }).sessionsFile, "pending");
+  // A write that keeps failing is reported, unlike one merely coalesced.
+  assert.equal(
+    service.status({ handoffVersion: 1 }).sessionsFile,
+    "unavailable",
+  );
   assert.equal(service.brief().sessions[0]?.sessionId, sessionId);
   rmSync(join(agent, "sessions.md"));
   linkSync(outside, join(agent, "sessions.md"));
@@ -1547,4 +1553,278 @@ test("a one-shot hook leaves a coalesced write pending instead of flushing it", 
   );
   f.hook({ hook_event_name: "StopFailure", error: "rate_limit" });
   assert.match(readFileSync(file, "utf8"), /stopped on rate_limit/u);
+});
+
+test("a projection generation is current only when its own write is confirmed", (t) => {
+  const f = fixture(t);
+  const service = f.service({}, { deferProjection: false });
+  assert.equal(service.status({ handoffVersion: 1 }).sessionsFile, "pending");
+  const ledger = service.store.handoffSessions();
+  const workspace = "sha256:" + "0".repeat(64);
+  const first = ledger.claimProjection(workspace, 1000, 60_000, true);
+  const second = ledger.claimProjection(workspace, 1001, 60_000, true);
+  assert.ok(first !== undefined && second !== undefined && second > first);
+  // A writer that a later one overtook cannot mark the file current.
+  assert.equal(ledger.completeProjection(workspace, first), false);
+  assert.equal(ledger.projectionState(workspace), "pending");
+  assert.equal(ledger.completeProjection(workspace, second), true);
+  assert.equal(ledger.projectionState(workspace), "written");
+  // Coalescing: within the interval only dirty, at the boundary due, and a
+  // clock that stepped back is due too. A crash after claiming stays pending.
+  assert.equal(
+    ledger.claimProjection(workspace, 1001 + 59_999, 60_000, false),
+    undefined,
+  );
+  assert.equal(ledger.projectionState(workspace), "pending");
+  const boundary = ledger.claimProjection(
+    workspace,
+    1001 + 60_000,
+    60_000,
+    false,
+  );
+  assert.ok(boundary !== undefined);
+  assert.ok(ledger.claimProjection(workspace, 10, 60_000, false) !== undefined);
+  assert.equal(ledger.projectionState(workspace), "pending");
+  ledger.failProjection(workspace);
+  assert.equal(ledger.projectionState(workspace), "unavailable");
+});
+
+test("every lifecycle event and join writes the sessions file at once", (t) => {
+  const f = fixture(t, { projectionIntervalSeconds: 3600 });
+  const file = join(f.workspaceRoot, ".agent", "sessions.md");
+  let previous = "";
+  const changed = (label: string) => {
+    const current = readFileSync(file, "utf8");
+    assert.notEqual(current, previous, label);
+    previous = current;
+  };
+  f.hook({ hook_event_name: "SessionStart", source: "startup" });
+  changed("SessionStart");
+  f.clock.advance(1);
+  f.hook({
+    hook_event_name: "SubagentStart",
+    agent_id: "s1",
+    agent_type: "Plan",
+  });
+  changed("SubagentStart");
+  f.clock.advance(1);
+  f.hook({
+    hook_event_name: "SubagentStop",
+    agent_id: "s1",
+    agent_type: "Plan",
+  });
+  changed("SubagentStop");
+  f.clock.advance(1);
+  f.hook({ hook_event_name: "SessionEnd", reason: "other" });
+  changed("SessionEnd");
+  const service = f.service({}, { deferProjection: false });
+  f.clock.advance(1);
+  service.join({ handoffVersion: 1, agent: "joiner" });
+  changed("join");
+});
+
+test("closing a server writes its ends and any pending write", (t) => {
+  const f = fixture(t, { projectionIntervalSeconds: 3600 });
+  const file = join(f.workspaceRoot, ".agent", "sessions.md");
+  const service = f.service();
+  const { sessionId } = service.join({ handoffVersion: 1, agent: "closer" });
+  service.note({
+    handoffVersion: 1,
+    sessionId,
+    kind: "progress",
+    text: "unsaved note",
+  });
+  assert.doesNotMatch(readFileSync(file, "utf8"), /unsaved note/u);
+  service.close();
+  const text = readFileSync(file, "utf8");
+  assert.match(text, /unsaved note/u);
+  assert.match(text, /ended \(disconnected\)/u);
+});
+
+test("quiet and failed subagents are listed; healthy nested ones fold into the nearest listed ancestor", (t) => {
+  const f = fixture(t, { leaseSeconds: 60, graceSeconds: 600 });
+  f.hook({ hook_event_name: "SessionStart", source: "startup" });
+  f.hook({
+    hook_event_name: "SubagentStart",
+    agent_id: "fails",
+    agent_type: "Plan",
+  });
+  f.hook({
+    hook_event_name: "StopFailure",
+    agent_id: "fails",
+    error: "overloaded",
+  });
+  const service = f.service();
+  const main = service.brief().sessions.find((s) => s.kind === "agent");
+  assert.ok(main);
+  service.join({
+    handoffVersion: 1,
+    agent: "quiet",
+    parentSessionId: main.sessionId,
+  });
+  f.clock.advance(120);
+  const child = service.join({
+    handoffVersion: 1,
+    agent: "child",
+    parentSessionId: main.sessionId,
+  });
+  for (const name of ["g1", "g2"])
+    service.join({
+      handoffVersion: 1,
+      agent: name,
+      parentSessionId: child.sessionId,
+    });
+  f.hook({ hook_event_name: "UserPromptSubmit", prompt: "x" });
+  const brief = service.brief(65536);
+  const byAgent = new Map(brief.sessions.map((s) => [s.agent, s]));
+  assert.equal(byAgent.get("Plan")?.state, "failed");
+  assert.equal(byAgent.get("quiet")?.state, "quiet");
+  assert.equal(byAgent.has("child"), false);
+  assert.equal(byAgent.has("g1"), false);
+  assert.equal(byAgent.get("claude-code")?.subagents?.active, 3);
+  // In the parent's lane the child carries its own subagents' counts.
+  const lane = service.status({
+    handoffVersion: 1,
+    sessionId: main.sessionId,
+    briefBytes: 65536,
+  }).lane;
+  assert.equal(
+    lane?.subagents.find((s) => s.agent === "child")?.subagents?.active,
+    2,
+  );
+  assert.deepEqual(lane.session.subagents, {
+    active: 3,
+    idle: 0,
+    quiet: 1,
+    interrupted: 0,
+    failed: 1,
+    ended: 0,
+  });
+});
+
+test("a dropped parent counts the subagents folded into it, and an orphan subagent is listed", (t) => {
+  const f = fixture(t);
+  const service = f.service();
+  const parent = service.join({ handoffVersion: 1, agent: "old-parent" });
+  for (let index = 0; index < 10; index++)
+    service.join({
+      handoffVersion: 1,
+      agent: `kid${String(index)}`,
+      parentSessionId: parent.sessionId,
+    });
+  for (let index = 0; index < 30; index++) {
+    f.clock.advance(1);
+    service.join({ handoffVersion: 1, agent: `new${String(index)}` });
+  }
+  const brief = service.brief(65536);
+  assert.equal(brief.sessions.length, 24);
+  assert.equal(brief.omittedSessions, 41 - 24);
+  const tight = service.brief(1024);
+  const shown = tight.sessions.reduce(
+    (sum, view) =>
+      sum +
+      1 +
+      (view.subagents === null
+        ? 0
+        : Object.values(view.subagents).reduce((a, b) => a + b, 0)),
+    0,
+  );
+  assert.equal(shown + tight.omittedSessions, 41);
+  // A subagent whose parent is not among the sessions is listed itself.
+  const orphan = buildBrief({
+    now: 0,
+    liveness: { leaseMs: 1000, graceMs: 1000 },
+    latest: undefined,
+    sessions: [
+      {
+        sessionId: "22222222-2222-4222-8222-222222222222",
+        client: "mcp",
+        clientSession: "",
+        clientAgent: "",
+        agent: "orphan",
+        kind: "subagent",
+        parentSessionId: "33333333-3333-4333-8333-333333333333",
+        task: null,
+        startedAt: 0,
+        startHead: null,
+        lastSeenAt: 0,
+        turnOpen: null,
+        failure: null,
+        endedAt: null,
+        endReason: null,
+        clientReason: null,
+        lastMessage: null,
+        noteCount: 0,
+      },
+    ],
+    lastNotes: new Map(),
+    notes: [],
+    git: observeGit(f.workspaceRoot, null),
+  });
+  assert.deepEqual(
+    orphan.sessions.map((s) => s.agent),
+    ["orphan"],
+  );
+});
+
+test("a tight lane keeps the newest notes and the subagents most in need of attention", (t) => {
+  const f = fixture(t);
+  f.hook({ hook_event_name: "SessionStart", source: "startup" });
+  for (let index = 0; index < 30; index++)
+    f.hook({
+      hook_event_name: "SubagentStart",
+      agent_id: `a${String(index)}`,
+      agent_type: "Explore",
+    });
+  f.hook({
+    hook_event_name: "StopFailure",
+    agent_id: "a0",
+    error: "rate_limit",
+  });
+  const service = f.service();
+  const main = service.brief().sessions.find((s) => s.kind === "agent");
+  assert.ok(main);
+  for (let index = 0; index < 20; index++)
+    service.note({
+      handoffVersion: 1,
+      sessionId: main.sessionId,
+      kind: "progress",
+      text: `n${String(index)}`,
+    });
+  const lane = service.status({
+    handoffVersion: 1,
+    sessionId: main.sessionId,
+    briefBytes: 4096,
+  }).lane;
+  assert.ok(lane);
+  assert.ok(Buffer.byteLength(JSON.stringify(lane)) <= 4096);
+  assert.ok(lane.omittedSubagents > 0);
+  assert.equal(lane.subagents.length + lane.omittedSubagents, 30);
+  if (lane.subagents.length > 0)
+    assert.equal(lane.subagents[0]?.state, "failed");
+  if (lane.notes.length > 0) assert.equal(lane.notes[0]?.text, "n19");
+});
+
+test("abandoned temporary files are swept; a fresh one is left alone", (t) => {
+  const f = fixture(t);
+  const agent = join(f.workspaceRoot, ".agent");
+  mkdirSync(agent, { mode: 0o700 });
+  const old = join(
+    agent,
+    ".handoff-sessions-11111111-1111-4111-8111-111111111111.tmp",
+  );
+  const fresh = join(
+    agent,
+    ".handoff-sessions-22222222-2222-4222-8222-222222222222.tmp",
+  );
+  writeFileSync(old, "x", { mode: 0o600 });
+  writeFileSync(fresh, "x", { mode: 0o600 });
+  const tenMinutesAgo = new Date(Date.now() - 10 * 60_000);
+  utimesSync(old, tenMinutesAgo, tenMinutesAgo);
+  f.service({}, { deferProjection: false }).join({
+    handoffVersion: 1,
+    agent: "sweeper",
+  });
+  assert.equal(existsSync(old), false);
+  assert.equal(existsSync(fresh), true);
 });

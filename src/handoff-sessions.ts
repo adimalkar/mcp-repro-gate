@@ -60,7 +60,9 @@ export const HANDOFF_SESSION_SCHEMA = `
   CREATE TABLE IF NOT EXISTS handoff_session_projection (
     workspace_id TEXT PRIMARY KEY,
     projected_at INTEGER NOT NULL,
-    dirty INTEGER NOT NULL CHECK(dirty IN (0, 1))
+    generation INTEGER NOT NULL CHECK(generation >= 0),
+    dirty INTEGER NOT NULL CHECK(dirty IN (0, 1)),
+    failed INTEGER NOT NULL CHECK(failed IN (0, 1))
   ) STRICT;
 `;
 
@@ -560,59 +562,86 @@ export class HandoffSessionLedger {
 
   /**
    * Decide whether to rewrite the sessions file now. A forced write, or one
-   * at least `intervalMs` after the last, claims the slot; otherwise the
-   * file is marked dirty for a later write. One transaction, so concurrent
-   * processes never both claim the same slot.
+   * at least `intervalMs` after the last, claims a new generation and
+   * returns it; otherwise the file is only marked dirty. Either way the
+   * file stays dirty until `completeProjection` confirms that generation,
+   * so a writer that crashes, or loses a race to a later one, can never
+   * leave the file reported as current.
    */
   claimProjection(
     workspaceId: string,
     now: number,
     intervalMs: number,
     force: boolean,
-  ): boolean {
+  ): number | undefined {
     return this.#transaction(() => {
       const row = this.database
         .prepare(
-          "SELECT projected_at FROM handoff_session_projection WHERE workspace_id = ?",
+          "SELECT projected_at, generation FROM handoff_session_projection WHERE workspace_id = ?",
         )
         .get(workspaceId);
       const last =
         typeof row?.projected_at === "number" ? row.projected_at : undefined;
+      const generation =
+        (typeof row?.generation === "number" ? row.generation : 0) + 1;
+      // A clock that stepped back makes the slot due rather than stuck.
       const due =
         force || last === undefined || now - last >= intervalMs || now < last;
       this.database
         .prepare(
-          `INSERT INTO handoff_session_projection(workspace_id, projected_at, dirty) VALUES(?, ?, ?)
-            ON CONFLICT(workspace_id) DO UPDATE SET
+          `INSERT INTO handoff_session_projection(workspace_id, projected_at, generation, dirty, failed)
+            VALUES(?, ?, ?, 1, 0)
+            ON CONFLICT(workspace_id) DO UPDATE SET dirty = 1,
               projected_at = CASE WHEN ? THEN excluded.projected_at ELSE projected_at END,
-              dirty = excluded.dirty`,
+              generation = CASE WHEN ? THEN excluded.generation ELSE generation END`,
         )
-        .run(workspaceId, due ? now : last, due ? 0 : 1, due ? 1 : 0);
-      return due;
+        .run(workspaceId, now, due ? generation : 0, due ? 1 : 0, due ? 1 : 0);
+      return due ? generation : undefined;
     });
   }
 
-  /** A claimed write failed: leave the file dirty for the next attempt. */
-  markProjectionDirty(workspaceId: string): void {
+  /**
+   * Confirm a written generation. False when a later writer claimed the
+   * slot meanwhile: this write may be older than theirs, so it must not
+   * mark the file current.
+   */
+  completeProjection(workspaceId: string, generation: number): boolean {
+    return this.#transaction(
+      () =>
+        this.database
+          .prepare(
+            `UPDATE handoff_session_projection SET dirty = 0, failed = 0
+              WHERE workspace_id = ? AND generation = ?`,
+          )
+          .run(workspaceId, generation).changes === 1,
+    );
+  }
+
+  /** A write failed: the file is stale until a later write succeeds. */
+  failProjection(workspaceId: string): void {
     this.#transaction(() => {
       this.database
         .prepare(
-          `INSERT INTO handoff_session_projection(workspace_id, projected_at, dirty) VALUES(?, 0, 1)
-            ON CONFLICT(workspace_id) DO UPDATE SET dirty = 1`,
+          `INSERT INTO handoff_session_projection(workspace_id, projected_at, generation, dirty, failed)
+            VALUES(?, 0, 0, 1, 1)
+            ON CONFLICT(workspace_id) DO UPDATE SET dirty = 1, failed = 1`,
         )
         .run(workspaceId);
     });
   }
 
-  /** Whether the sessions file has been written, and is current. */
-  projectionState(workspaceId: string): "written" | "pending" | undefined {
+  /** Whether the sessions file is current, waiting, or failing to write. */
+  projectionState(
+    workspaceId: string,
+  ): "written" | "pending" | "unavailable" | undefined {
     this.verify();
     const row = this.database
       .prepare(
-        "SELECT dirty FROM handoff_session_projection WHERE workspace_id = ?",
+        "SELECT dirty, failed FROM handoff_session_projection WHERE workspace_id = ?",
       )
       .get(workspaceId);
     if (row === undefined) return undefined;
+    if (row.failed === 1) return "unavailable";
     return row.dirty === 0 ? "written" : "pending";
   }
 

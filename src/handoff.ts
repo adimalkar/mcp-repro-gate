@@ -295,33 +295,37 @@ export function createHandoffService(
     };
     let flushTimer: ReturnType<typeof setTimeout> | undefined;
     // Rewrite the sessions file now, or mark it dirty when a write happened
-    // within the interval. A failed write never fails the event that
-    // caused it: the database is the record.
+    // within the interval. A write that a later writer overtook is redone
+    // from fresh state, a few times at most, so the last rename always
+    // carries the newest snapshot it confirms. A failed write never fails
+    // the event that caused it: the database is the record.
     const projectSessions = (force: boolean): void => {
       if (!projectFile || closed) return;
       try {
-        if (
-          !ledger.claimProjection(
+        for (let attempt = 0; attempt < 3; attempt++) {
+          const generation = ledger.claimProjection(
             workspaceId,
             now().getTime(),
             projectionIntervalMs,
-            force,
-          )
-        ) {
-          if (deferProjection && flushTimer === undefined) {
-            flushTimer = setTimeout(() => {
-              flushTimer = undefined;
-              projectSessions(true);
-            }, projectionIntervalMs);
-            flushTimer.unref();
+            force || attempt > 0,
+          );
+          if (generation === undefined) {
+            if (deferProjection && flushTimer === undefined) {
+              flushTimer = setTimeout(() => {
+                flushTimer = undefined;
+                projectSessions(true);
+              }, projectionIntervalMs);
+              flushTimer.unref();
+            }
+            return;
           }
-          return;
+          binding.verify();
+          files.projectGenerated("sessions.md", sessionsDocument());
+          if (ledger.completeProjection(workspaceId, generation)) return;
         }
-        binding.verify();
-        files.projectGenerated("sessions.md", sessionsDocument());
       } catch {
         try {
-          ledger.markProjectionDirty(workspaceId);
+          ledger.failProjection(workspaceId);
         } catch {
           // The status read will report the file as unavailable.
         }
@@ -394,6 +398,7 @@ export function createHandoffService(
                     MAX_LANE_NOTES,
                   ),
                   subagents: ledger.subagentsOf(workspaceId, sessionId),
+                  workspace: ledger.sessions(workspaceId),
                   lastNotes: ledger.lastNotes(workspaceId),
                 }),
                 input.data.briefBytes ?? DEFAULT_BRIEF_BYTES,

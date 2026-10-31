@@ -100,21 +100,27 @@ function emptyCounts(): HandoffSubagentCounts {
   ) as HandoffSubagentCounts;
 }
 
-/** Subagent counts by state, keyed by parent session. */
-function subagentCounts(
+/** Each session's parent, when that parent is among `sessions`. */
+function parentsWithin(
   sessions: readonly HandoffSessionRow[],
-  states: ReadonlyMap<string, HandoffSessionState>,
-): Map<string, HandoffSubagentCounts> {
-  const counts = new Map<string, HandoffSubagentCounts>();
-  for (const session of sessions) {
-    const parent = session.parentSessionId;
-    const state = states.get(session.sessionId);
-    if (parent === null || state === undefined) continue;
-    let entry = counts.get(parent);
-    if (entry === undefined) counts.set(parent, (entry = emptyCounts()));
-    entry[state]++;
-  }
-  return counts;
+): Map<string, string> {
+  const ids = new Set(sessions.map((session) => session.sessionId));
+  const parents = new Map<string, string>();
+  for (const session of sessions)
+    if (session.parentSessionId !== null && ids.has(session.parentSessionId))
+      parents.set(session.sessionId, session.parentSessionId);
+  return parents;
+}
+
+/** Sessions a dropped view stands for: itself and those folded into it. */
+export function representedSessions(view: HandoffSessionView): number {
+  const counts = view.subagents;
+  return (
+    1 +
+    (counts === null
+      ? 0
+      : HANDOFF_SESSION_STATES.reduce((sum, state) => sum + counts[state], 0))
+  );
 }
 
 function byAttention(
@@ -142,8 +148,10 @@ export interface BriefInput {
 
 /**
  * Sessions ordered for a resuming agent: problems first, then newest. A
- * subagent whose parent is listed is folded into the parent's counts
- * unless it needs attention, so twenty healthy subagents cost one line.
+ * subagent that does not need attention is folded into the counts of its
+ * nearest listed ancestor, so twenty healthy subagents cost one line and
+ * every session is either listed or counted exactly once. A session whose
+ * parent is not in `sessions` is listed on its own.
  */
 export function orderedSessions(
   input: Pick<BriefInput, "now" | "liveness" | "sessions" | "lastNotes">,
@@ -154,15 +162,33 @@ export function orderedSessions(
       sessionState(session, input.now, input.liveness),
     ]),
   );
-  const counts = subagentCounts(input.sessions, states);
+  const parents = parentsWithin(input.sessions);
+  const listed = (id: string) =>
+    !parents.has(id) || ATTENTION.has(states.get(id) ?? "ended");
+  const counts = new Map<string, HandoffSubagentCounts>();
+  const folded = new Set<string>();
+  for (const session of input.sessions) {
+    const id = session.sessionId;
+    if (listed(id)) continue;
+    // Walk up to the nearest listed ancestor; a cycle lists the session.
+    const seen = new Set([id]);
+    let ancestor = parents.get(id);
+    while (ancestor !== undefined && !listed(ancestor) && !seen.has(ancestor)) {
+      seen.add(ancestor);
+      ancestor = parents.get(ancestor);
+    }
+    if (ancestor === undefined || seen.has(ancestor)) continue;
+    let entry = counts.get(ancestor);
+    if (entry === undefined) counts.set(ancestor, (entry = emptyCounts()));
+    entry[states.get(id) ?? "ended"]++;
+    folded.add(id);
+  }
   return byAttention(
-    input.sessions.flatMap((session) => {
-      const state = states.get(session.sessionId) ?? "ended";
-      const parent = session.parentSessionId;
-      if (parent !== null && states.has(parent) && !ATTENTION.has(state))
-        return [];
-      return [
-        {
+    input.sessions
+      .filter((session) => !folded.has(session.sessionId))
+      .map((session) => {
+        const state = states.get(session.sessionId) ?? "ended";
+        return {
           view: sessionView(
             session,
             state,
@@ -171,9 +197,8 @@ export function orderedSessions(
           ),
           state,
           seen: session.lastSeenAt,
-        },
-      ];
-    }),
+        };
+      }),
   );
 }
 
@@ -184,24 +209,49 @@ export interface LaneInput {
   /** The session's notes, newest first. */
   notes: readonly HandoffNoteRow[];
   subagents: readonly HandoffSessionRow[];
+  /** Every session in the workspace, for the subagents' own counts. */
+  workspace: readonly HandoffSessionRow[];
   lastNotes: ReadonlyMap<string, HandoffNoteRow>;
 }
 
 /** One session in full: its newest notes and all its subagents. */
 export function buildLane(input: LaneInput): HandoffLaneV1 {
+  const all = [input.session, ...input.subagents, ...input.workspace];
   const states = new Map(
-    [input.session, ...input.subagents].map((session) => [
+    all.map((session) => [
       session.sessionId,
       sessionState(session, input.now, input.liveness),
     ]),
   );
-  const counts = subagentCounts(input.subagents, states);
+  const children = new Map<string, string[]>();
+  for (const session of input.workspace) {
+    const parent = session.parentSessionId;
+    if (parent === null) continue;
+    const list = children.get(parent) ?? [];
+    list.push(session.sessionId);
+    children.set(parent, list);
+  }
+  // In a lane every count covers all descendants: none of them is listed
+  // except the lane session's direct subagents.
+  const descendants = (id: string): HandoffSubagentCounts | null => {
+    const counts = emptyCounts();
+    const seen = new Set([id]);
+    const stack = [...(children.get(id) ?? [])];
+    while (stack.length > 0) {
+      const next = stack.pop() ?? "";
+      if (seen.has(next)) continue;
+      seen.add(next);
+      counts[states.get(next) ?? "ended"]++;
+      stack.push(...(children.get(next) ?? []));
+    }
+    return seen.size === 1 ? null : counts;
+  };
   const view = (session: HandoffSessionRow) =>
     sessionView(
       session,
       states.get(session.sessionId) ?? "ended",
       input.lastNotes.get(session.sessionId),
-      counts.get(session.sessionId) ?? null,
+      descendants(session.sessionId),
     );
   return {
     session: view(input.session),
@@ -314,7 +364,9 @@ export function buildBrief(input: BriefInput): HandoffBriefV1 {
       blockers: [...(context?.blockers ?? [])],
     },
     sessions: shown,
-    omittedSessions: sessions.length - shown.length,
+    omittedSessions: sessions
+      .slice(shown.length)
+      .reduce((sum, view) => sum + representedSessions(view), 0),
     notes: notes.map((note) => ({
       sessionId: note.sessionId,
       kind: note.kind,
@@ -437,8 +489,9 @@ export function fitBrief(
       let index = fitted.sessions.length - 1;
       while (index >= 0 && fitted.sessions[index]?.state !== "ended") index--;
       if (index < 0) return false;
-      fitted.sessions.splice(index, 1);
-      fitted.omittedSessions++;
+      const [dropped] = fitted.sessions.splice(index, 1);
+      if (dropped !== undefined)
+        fitted.omittedSessions += representedSessions(dropped);
       return true;
     },
     () => {
@@ -454,8 +507,9 @@ export function fitBrief(
     () => cutAll(handoffTexts(), 256),
     () => {
       if (fitted.sessions.length <= 1) return false;
-      fitted.sessions.pop();
-      fitted.omittedSessions++;
+      const dropped = fitted.sessions.pop();
+      if (dropped !== undefined)
+        fitted.omittedSessions += representedSessions(dropped);
       return true;
     },
     () => {
@@ -479,7 +533,10 @@ export function fitBrief(
         fitted.handoff.nextSteps.length +
         fitted.handoff.blockers.length +
         (fitted.git.commitsSince === null ? 0 : 1);
-      fitted.omittedSessions += fitted.sessions.length;
+      fitted.omittedSessions += fitted.sessions.reduce(
+        (sum, view) => sum + representedSessions(view),
+        0,
+      );
       fitted.omittedNotes += fitted.notes.length;
       fitted.git.omittedPaths += fitted.git.paths.length;
       fitted.sessions = [];

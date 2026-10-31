@@ -256,6 +256,8 @@ export function sameHandoffDatabase(left: string, right: string): boolean {
   return a !== undefined && a === physicalDatabaseLocation(right);
 }
 export const MAX_HANDOFF_HISTORY = 32;
+const GENERATED_TEMPORARY =
+  /^\.handoff-sessions-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.tmp$/u;
 // <database instance>-<revision>-<update UUID>-<base digest hex>.md
 const HISTORY_NAME =
   /^([0-9a-f]{32})-([0-9]{16})-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}-[0-9a-f]{64}\.md$/u;
@@ -447,6 +449,7 @@ export class HandoffFiles {
       }
       this.#agent = directory(this.#agentPath, true);
     }
+    this.#sweepTemporaries();
     const target = join(this.#agentPath, name);
     const checkTarget = () => {
       try {
@@ -480,6 +483,23 @@ export class HandoffFiles {
           // The original failure is more informative than cleanup trouble.
         }
       }
+    }
+  }
+  // A writer that crashed between writing and renaming leaves its
+  // temporary file behind. Remove ours once they are clearly abandoned:
+  // our name shape, private, single-link and older than five minutes, so a
+  // concurrent writer's file is never touched. Best effort.
+  #sweepTemporaries(): void {
+    try {
+      for (const name of readdirSync(this.#agentPath)) {
+        if (!GENERATED_TEMPORARY.test(name)) continue;
+        const path = join(this.#agentPath, name);
+        const stats = lstatSync(path, { bigint: true });
+        privateStats(stats, false);
+        if (Date.now() - Number(stats.mtimeMs) > 5 * 60_000) unlinkSync(path);
+      }
+    } catch {
+      // Leave anything unexpected in place; the write itself goes on.
     }
   }
   // Keep this database's newest archives. Revisions restart in a new or
