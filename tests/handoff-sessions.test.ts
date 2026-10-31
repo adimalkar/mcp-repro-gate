@@ -3,11 +3,14 @@ import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import {
   existsSync,
+  linkSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
   rmSync,
+  statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -71,10 +74,13 @@ function fixture(t: TestContext, sessions: Record<string, unknown> = {}) {
       retryDelay: 100,
     });
   });
-  const service = (overrides: Record<string, unknown> = {}) => {
+  const service = (
+    overrides: Record<string, unknown> = {},
+    options: { deferProjection?: boolean } = {},
+  ) => {
     const value = createHandoffService(
       { ...config, ...overrides },
-      { now: clock.now },
+      { now: clock.now, ...options },
     );
     services.push(value);
     return value;
@@ -307,11 +313,33 @@ test("subagents get their own sessions, a short context and a recorded result wh
     last_assistant_message:
       "Found it. token ghp_abcdefghijklmnopqrstuvwxyz0123456789",
   });
-  const brief = f.service().brief(65536);
-  const parent = brief.sessions.find((s) => s.kind === "agent");
-  const subagents = brief.sessions.filter((s) => s.kind === "subagent");
+  const service = f.service();
+  const brief = service.brief(65536);
+  // Healthy subagents are folded into their parent's counts.
+  assert.deepEqual(
+    brief.sessions.map((s) => s.kind),
+    ["agent"],
+  );
+  const parent = brief.sessions[0];
+  assert.deepEqual(parent?.subagents, {
+    active: 19,
+    idle: 0,
+    quiet: 0,
+    interrupted: 0,
+    failed: 0,
+    ended: 1,
+  });
+  assert.match(service.briefText(), /subagents: 19 active, 1 ended/u);
+  // The parent's lane lists every subagent.
+  const lane = service.status({
+    handoffVersion: 1,
+    sessionId: parent.sessionId,
+    briefBytes: 65536,
+  }).lane;
+  assert.ok(lane);
+  const subagents = lane.subagents;
   assert.equal(subagents.length, 20);
-  assert.ok(subagents.every((s) => s.parentSessionId === parent?.sessionId));
+  assert.ok(subagents.every((s) => s.parentSessionId === parent.sessionId));
   const stopped = subagents.find((s) => s.state === "ended");
   assert.equal(stopped?.endReason, "subagent_stopped");
   assert.equal(stopped.agent, "Explore");
@@ -582,8 +610,13 @@ test("credential-shaped labels are refused or replaced, and huge captured replie
     last_assistant_message: "-eyJ".repeat(256 * 1024),
   });
   assert.ok(performance.now() - started < 2000);
-  const sessions = f.service().brief(65536).sessions;
-  assert.equal(sessions.find((s) => s.kind === "subagent")?.agent, "subagent");
+  const reader = f.service();
+  const sessions = reader.brief(65536).sessions;
+  const lane = reader.status({
+    handoffVersion: 1,
+    sessionId: sessions.find((s) => s.kind === "agent")?.sessionId ?? "",
+  }).lane;
+  assert.equal(lane?.subagents[0]?.agent, "subagent");
   const dump = JSON.stringify(sessions);
   assert.equal(dump.includes("ghp_"), false);
   assert.ok(
@@ -1334,4 +1367,184 @@ test("rows a later version wrote with unknown values are skipped, not fatal", (t
   );
   assert.equal(brief.sessions[0]?.lastNote, null);
   assert.match(service.briefText(), /known/u);
+});
+
+test("subagents that need attention stay visible beside their parent's counts", (t) => {
+  const f = fixture(t, { leaseSeconds: 60, graceSeconds: 60 });
+  const service = f.service();
+  const parent = service.join({ handoffVersion: 1, agent: "lead" });
+  const join = (agent: string) =>
+    service.join({
+      handoffVersion: 1,
+      agent,
+      parentSessionId: parent.sessionId,
+    }).sessionId;
+  join("stuck");
+  const done = join("done");
+  service.end({ handoffVersion: 1, sessionId: done });
+  f.clock.advance(300);
+  join("live");
+  service.note({
+    handoffVersion: 1,
+    sessionId: parent.sessionId,
+    kind: "progress",
+    text: "x",
+  });
+  const brief = service.brief(65536);
+  assert.deepEqual(brief.sessions.map((s) => s.agent).sort(), [
+    "lead",
+    "stuck",
+  ]);
+  assert.equal(
+    brief.sessions.find((s) => s.agent === "stuck")?.state,
+    "interrupted",
+  );
+  assert.deepEqual(brief.sessions.find((s) => s.agent === "lead")?.subagents, {
+    active: 1,
+    idle: 0,
+    quiet: 0,
+    interrupted: 1,
+    failed: 0,
+    ended: 1,
+  });
+});
+
+test("a lane returns one session in full within its budget, counting what it leaves out", (t) => {
+  const f = fixture(t);
+  const service = f.service();
+  const { sessionId } = service.join({ handoffVersion: 1, agent: "busy" });
+  for (let index = 0; index < 80; index++)
+    service.note({
+      handoffVersion: 1,
+      sessionId,
+      kind: "progress",
+      text: `step ${String(index)} ${"z".repeat(200)}`,
+    });
+  const roomy = service.status({
+    handoffVersion: 1,
+    sessionId,
+    briefBytes: 65536,
+  }).lane;
+  assert.equal(roomy?.notes.length, 64);
+  assert.equal(roomy.omittedNotes, 16);
+  assert.match(roomy.notes[0]?.text ?? "", /^step 79 /u);
+  const tight = service.status({
+    handoffVersion: 1,
+    sessionId,
+    briefBytes: 2048,
+  }).lane;
+  assert.ok(Buffer.byteLength(JSON.stringify(tight)) <= 2048);
+  assert.ok((tight?.omittedNotes ?? 0) > 16);
+  assert.throws(
+    () =>
+      service.status({
+        handoffVersion: 1,
+        sessionId: "00000000-0000-4000-8000-000000000000",
+      }),
+    errorCode("unknown_session"),
+  );
+});
+
+test("the sessions file is written at once for lifecycle events and coalesced for notes", (t) => {
+  const f = fixture(t, { projectionIntervalSeconds: 60 });
+  const service = f.service({}, { deferProjection: false });
+  const file = join(f.workspaceRoot, ".agent", "sessions.md");
+  const { sessionId } = service.join({ handoffVersion: 1, agent: "writer" });
+  assert.equal(statSync(join(f.workspaceRoot, ".agent")).mode & 0o777, 0o700);
+  const first = readFileSync(file, "utf8");
+  assert.match(first, /^# Agent Sessions\n/u);
+  assert.match(first, /do not edit it/u);
+  assert.equal(service.status({ handoffVersion: 1 }).sessionsFile, "written");
+  service.note({
+    handoffVersion: 1,
+    sessionId,
+    kind: "blocker",
+    text: "# Fake heading [link](http://x) <b>",
+  });
+  assert.equal(readFileSync(file, "utf8"), first);
+  assert.equal(service.status({ handoffVersion: 1 }).sessionsFile, "pending");
+  f.clock.advance(61);
+  service.note({
+    handoffVersion: 1,
+    sessionId,
+    kind: "progress",
+    text: "later",
+  });
+  const second = readFileSync(file, "utf8");
+  assert.notEqual(second, first);
+  // Caller text sits inside an indented code block, never as Markdown.
+  for (const line of second.split("\n").slice(4))
+    assert.ok(line === "" || line.startsWith("    "), line);
+  assert.match(second, /^ {4}.*# Fake heading/mu);
+  assert.doesNotMatch(second, /Git \(observed now\)/u);
+  service.end({ handoffVersion: 1, sessionId });
+  assert.match(readFileSync(file, "utf8"), /ended \(completed\)/u);
+});
+
+test("a long-running server writes a coalesced change after the interval", async (t) => {
+  const f = fixture(t, { projectionIntervalSeconds: 1 });
+  const service = f.service();
+  const file = join(f.workspaceRoot, ".agent", "sessions.md");
+  const { sessionId } = service.join({ handoffVersion: 1, agent: "timer" });
+  service.note({
+    handoffVersion: 1,
+    sessionId,
+    kind: "progress",
+    text: "queued note",
+  });
+  assert.doesNotMatch(readFileSync(file, "utf8"), /queued note/u);
+  await new Promise((resolve) => setTimeout(resolve, 1300));
+  assert.match(readFileSync(file, "utf8"), /queued note/u);
+});
+
+test("a symlinked or hard-linked sessions file is refused, and the event is still recorded", (t) => {
+  const f = fixture(t);
+  const agent = join(f.workspaceRoot, ".agent");
+  mkdirSync(agent, { mode: 0o700 });
+  const outside = join(f.scratch, "outside.md");
+  writeFileSync(outside, "keep\n", { mode: 0o600 });
+  symlinkSync(outside, join(agent, "sessions.md"));
+  const service = f.service({}, { deferProjection: false });
+  const { sessionId } = service.join({ handoffVersion: 1, agent: "safe" });
+  assert.equal(readFileSync(outside, "utf8"), "keep\n");
+  assert.equal(service.status({ handoffVersion: 1 }).sessionsFile, "pending");
+  assert.equal(service.brief().sessions[0]?.sessionId, sessionId);
+  rmSync(join(agent, "sessions.md"));
+  linkSync(outside, join(agent, "sessions.md"));
+  service.end({ handoffVersion: 1, sessionId });
+  assert.equal(readFileSync(outside, "utf8"), "keep\n");
+  assert.equal(service.brief().sessions[0]?.state, "ended");
+});
+
+test("no sessions file is written when turned off or read-only", (t) => {
+  const f = fixture(t, { projectFile: false });
+  const service = f.service();
+  service.join({ handoffVersion: 1, agent: "quiet" });
+  assert.equal(
+    existsSync(join(f.workspaceRoot, ".agent", "sessions.md")),
+    false,
+  );
+  assert.equal(service.status({ handoffVersion: 1 }).sessionsFile, "disabled");
+  const g = fixture(t);
+  assert.equal(
+    g.service({ allowUpdates: false }).status({ handoffVersion: 1 })
+      .sessionsFile,
+    "disabled",
+  );
+});
+
+test("a one-shot hook leaves a coalesced write pending instead of flushing it", (t) => {
+  const f = fixture(t, { projectionIntervalSeconds: 60 });
+  f.hook({ hook_event_name: "SessionStart", source: "startup" });
+  const file = join(f.workspaceRoot, ".agent", "sessions.md");
+  const written = readFileSync(file, "utf8");
+  f.hook({ hook_event_name: "UserPromptSubmit", prompt: "x" });
+  assert.equal(readFileSync(file, "utf8"), written);
+  assert.equal(
+    f.service({}, { deferProjection: false }).status({ handoffVersion: 1 })
+      .sessionsFile,
+    "pending",
+  );
+  f.hook({ hook_event_name: "StopFailure", error: "rate_limit" });
+  assert.match(readFileSync(file, "utf8"), /stopped on rate_limit/u);
 });

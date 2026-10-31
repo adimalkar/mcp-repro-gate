@@ -136,10 +136,11 @@ export function runHandoffCli(
         )
       )
         return 0;
-      service = createHandoffService(
-        config,
-        io.now === undefined ? {} : { now: io.now },
-      );
+      service = createHandoffService(config, {
+        // A one-shot command: no timer may keep the process alive.
+        deferProjection: false,
+        ...(io.now === undefined ? {} : { now: io.now }),
+      });
       const result = service.hook(client, payload);
       if (
         result.additionalContext !== undefined &&
@@ -186,10 +187,11 @@ export function runHandoffCli(
     }
     let service: HandoffService | undefined;
     try {
-      service = createHandoffService(
-        loadHandoffConfig(configPath),
-        io.now === undefined ? {} : { now: io.now },
-      );
+      service = createHandoffService(loadHandoffConfig(configPath), {
+        // A one-shot command: no timer may keep the process alive.
+        deferProjection: false,
+        ...(io.now === undefined ? {} : { now: io.now }),
+      });
       io.stdout(
         parsed.options.has("--json")
           ? `${JSON.stringify(service.brief(bytes))}\n`

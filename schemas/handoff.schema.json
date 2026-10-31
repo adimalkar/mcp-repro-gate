@@ -182,6 +182,9 @@
           "type": "integer",
           "minimum": 1024,
           "maximum": 65536
+        },
+        "sessionId": {
+          "$ref": "#/$defs/uuid"
         }
       }
     },
@@ -298,6 +301,12 @@
         },
         "brief": {
           "$ref": "#/$defs/brief"
+        },
+        "lane": {
+          "$ref": "#/$defs/lane"
+        },
+        "sessionsFile": {
+          "enum": ["written", "pending", "unavailable", "disabled"]
         }
       }
     },
@@ -477,7 +486,8 @@
         "failure",
         "lastNote",
         "notes",
-        "lastMessage"
+        "lastMessage",
+        "subagents"
       ],
       "properties": {
         "sessionId": {
@@ -605,6 +615,51 @@
           "anyOf": [
             {
               "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "subagents": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "active",
+                "idle",
+                "quiet",
+                "interrupted",
+                "failed",
+                "ended"
+              ],
+              "properties": {
+                "active": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "idle": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "quiet": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "interrupted": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "failed": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "ended": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
             },
             {
               "type": "null"
@@ -938,6 +993,46 @@
         "redactions": {
           "type": "integer",
           "minimum": 0
+        }
+      }
+    },
+    "lane": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "session",
+        "notes",
+        "omittedNotes",
+        "subagents",
+        "omittedSubagents",
+        "truncated"
+      ],
+      "properties": {
+        "session": {
+          "$ref": "#/$defs/sessionView"
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/noteView"
+          }
+        },
+        "omittedNotes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "subagents": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/sessionView"
+          }
+        },
+        "omittedSubagents": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "truncated": {
+          "type": "boolean"
         }
       }
     }

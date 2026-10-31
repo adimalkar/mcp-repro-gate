@@ -424,6 +424,64 @@ export class HandoffFiles {
       }
     }
   }
+  /**
+   * Replace a generated file in `.agent` atomically. Unlike the handoff
+   * document it is never merged or archived: each write is a complete
+   * snapshot. An existing target must be a private single-link file, so a
+   * symlink or hard link is refused rather than followed.
+   */
+  projectGenerated(name: "sessions.md", bytes: Buffer): void {
+    if (bytes.length > MAX_HANDOFF_DOCUMENT_BYTES)
+      throw new HandoffError("unavailable");
+    this.#verify();
+    if (this.#agent === undefined) {
+      try {
+        mkdirSync(this.#agentPath, { mode: 0o700 });
+      } catch (error) {
+        if (!(
+          error instanceof Error &&
+          "code" in error &&
+          error.code === "EEXIST"
+        ))
+          throw error;
+      }
+      this.#agent = directory(this.#agentPath, true);
+    }
+    const target = join(this.#agentPath, name);
+    const checkTarget = () => {
+      try {
+        verifyPrivateFile(target);
+      } catch (error) {
+        if (!missing(error)) throw error;
+      }
+    };
+    checkTarget();
+    const temporary = join(
+      this.#agentPath,
+      `.handoff-sessions-${randomUUID()}.tmp`,
+    );
+    const identity = this.#writeExclusive(temporary, bytes);
+    let renamed = false;
+    try {
+      this.#verify();
+      checkTarget();
+      if (!sameIdentity(identity, verifyPrivateFile(temporary)))
+        throw new HandoffError("unavailable");
+      renameSync(temporary, target);
+      renamed = true;
+      syncDirectory(this.#agentPath);
+      this.#verify();
+    } finally {
+      if (!renamed) {
+        try {
+          if (sameIdentity(identity, verifyPrivateFile(temporary)))
+            unlinkSync(temporary);
+        } catch {
+          // The original failure is more informative than cleanup trouble.
+        }
+      }
+    }
+  }
   // Keep this database's newest archives. Revisions restart in a new or
   // replaced database, so archives from other instances are never pruned,
   // nor is anything at or after the revision just projected. Delete only

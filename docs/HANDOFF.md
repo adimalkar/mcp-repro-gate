@@ -229,6 +229,18 @@ Each completed turn then marks the thread's session `idle`; a notification never
 
 By default nothing the model writes is collected automatically. With `"sessions": { "captureMessages": true }`, the last reply of each turn (`Stop`, Codex notifications) and each subagent's final reply (`SubagentStop`) are stored, up to 1 KiB, after redaction. They help the next agent see what a session said last, but they are model output, so they may contain anything the model saw.
 
+### Subagents, lanes and the sessions file
+
+**Rollups.** In a brief, a parent session carries `subagents`, its subagents' counts by state. Healthy and ended subagents appear only in those counts; a subagent that needs attention (`failed`, `interrupted` or `quiet`) is also listed on its own. With 20 subagents the brief shows one parent line, such as `subagents: 19 active, 1 ended`.
+
+**Lanes.** `handoff_status { handoffVersion: 1, sessionId, briefBytes? }` adds `lane`: that session in full, with its newest notes (up to 64) and every subagent, ordered for attention, within `briefBytes`. `omittedNotes` counts notes dropped by the per-session cap or the budget, `omittedSubagents` counts subagents dropped for the budget, and `truncated` is set when text was cut. An unknown session returns `unknown_session`.
+
+**`.agent/sessions.md`.** Agents that read files instead of calling tools get a generated file beside `handoff.md`. It holds the brief without Git state, since reading Git on every event would cost too much. Every line of it is indented as a code block, so note text cannot render as headings, links or HTML. It is rewritten, never merged, and its header says when it was generated; states in it are as of that time.
+
+- Session starts and ends, failures, joins and subagent starts and stops rewrite it at once. Notes and turn events rewrite it at most once per `projectionIntervalSeconds` (default 5); in between, `handoff_status` reports `sessionsFile: "pending"`. A long-running server writes the pending change after the interval. A one-shot hook command leaves it for the next event, so the file may lag behind turn events, never behind starts, ends or failures.
+- It is written like `handoff.md`: a private temporary file, then an atomic rename. An existing `sessions.md` that is a symlink, a hard link or not private is refused, never followed. A failed write never loses the event, because the database is the record; the file stays `pending`.
+- `"sessions": { "projectFile": false }` turns it off (`sessionsFile: "disabled"`), and read-only configurations never write it.
+
 ### Redaction and bounds
 
 Notes, summaries, tasks and captured messages pass through a redactor for well-known credential shapes before they are stored: private-key blocks, GitHub, GitLab, Slack, AWS, Google, OpenAI-style, Stripe and npm tokens, JWTs, ReproGate capability tokens, `Bearer`/`Basic` credentials and passwords in URLs. The number of redactions is returned. An agent label that looks like a credential is refused over MCP and replaced when it comes from a hook. This is a backstop for accidental pastes, not a secret scanner.
