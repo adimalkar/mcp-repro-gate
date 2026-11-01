@@ -561,12 +561,10 @@ export class HandoffSessionLedger {
   }
 
   /**
-   * Decide whether to rewrite the sessions file now. A forced write, or one
-   * at least `intervalMs` after the last, claims a new generation and
-   * returns it; otherwise the file is only marked dirty. Either way the
-   * file stays dirty until `completeProjection` confirms that generation,
-   * so a writer that crashes, or loses a race to a later one, can never
-   * leave the file reported as current.
+   * Decide whether to rewrite the sessions file now. Every claim takes a
+   * new generation and marks the file dirty, so any write already in
+   * flight can no longer commit; the generation is returned only when the
+   * caller should write (forced, or at least `intervalMs` after the last).
    */
   claimProjection(
     workspaceId: string,
@@ -592,29 +590,41 @@ export class HandoffSessionLedger {
           `INSERT INTO handoff_session_projection(workspace_id, projected_at, generation, dirty, failed)
             VALUES(?, ?, ?, 1, 0)
             ON CONFLICT(workspace_id) DO UPDATE SET dirty = 1,
-              projected_at = CASE WHEN ? THEN excluded.projected_at ELSE projected_at END,
-              generation = CASE WHEN ? THEN excluded.generation ELSE generation END`,
+              generation = excluded.generation,
+              projected_at = CASE WHEN ? THEN excluded.projected_at ELSE projected_at END`,
         )
-        .run(workspaceId, now, due ? generation : 0, due ? 1 : 0, due ? 1 : 0);
+        .run(workspaceId, now, generation, due ? 1 : 0);
       return due ? generation : undefined;
     });
   }
 
   /**
-   * Confirm a written generation. False when a later writer claimed the
-   * slot meanwhile: this write may be older than theirs, so it must not
-   * mark the file current.
+   * Put a prepared write in place, atomically with its confirmation: under
+   * the writer lock, `rename` runs only if no later claim exists, and the
+   * file is marked current in the same transaction. Renames therefore land
+   * in generation order, and an overtaken write is never renamed. A crash
+   * after the rename and before the commit leaves the file pending.
    */
-  completeProjection(workspaceId: string, generation: number): boolean {
-    return this.#transaction(
-      () =>
-        this.database
-          .prepare(
-            `UPDATE handoff_session_projection SET dirty = 0, failed = 0
-              WHERE workspace_id = ? AND generation = ?`,
-          )
-          .run(workspaceId, generation).changes === 1,
-    );
+  commitProjection(
+    workspaceId: string,
+    generation: number,
+    rename: () => void,
+  ): boolean {
+    return this.#transaction(() => {
+      const row = this.database
+        .prepare(
+          "SELECT generation FROM handoff_session_projection WHERE workspace_id = ?",
+        )
+        .get(workspaceId);
+      if (row?.generation !== generation) return false;
+      rename();
+      this.database
+        .prepare(
+          "UPDATE handoff_session_projection SET dirty = 0, failed = 0 WHERE workspace_id = ?",
+        )
+        .run(workspaceId);
+      return true;
+    });
   }
 
   /** A write failed: the file is stale until a later write succeeds. */

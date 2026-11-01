@@ -157,6 +157,41 @@ export function workspaceContains(
   }
 }
 
+export interface ProjectionSteps<Prepared> {
+  /** A generation to write, or undefined when the write is coalesced. */
+  claim(force: boolean): number | undefined;
+  prepare(): Prepared;
+  /** Rename and confirm together; false when a later claim overtook it. */
+  commit(generation: number, prepared: Prepared): boolean;
+  discard(prepared: Prepared): void;
+}
+
+/**
+ * Write a generated file, retrying from fresh state when a later claim
+ * overtakes the write, a few times at most. "deferred" means the write was
+ * coalesced; "overtaken" means every attempt lost, and the file stays
+ * pending for the next writer.
+ */
+export function writeProjection<Prepared>(
+  steps: ProjectionSteps<Prepared>,
+  force: boolean,
+  attempts = 3,
+): "written" | "deferred" | "overtaken" {
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    const generation = steps.claim(force || attempt > 0);
+    if (generation === undefined) return "deferred";
+    const prepared = steps.prepare();
+    let committed = false;
+    try {
+      committed = steps.commit(generation, prepared);
+    } finally {
+      if (!committed) steps.discard(prepared);
+    }
+    if (committed) return "written";
+  }
+  return "overtaken";
+}
+
 export function createHandoffService(
   value: unknown,
   options: HandoffServiceOptions = {},
@@ -294,35 +329,44 @@ export function createHandoffService(
       return Buffer.from(`${header}${render(fitted)}\n`);
     };
     let flushTimer: ReturnType<typeof setTimeout> | undefined;
+    const deferFlush = () => {
+      if (!deferProjection || flushTimer !== undefined) return;
+      flushTimer = setTimeout(() => {
+        flushTimer = undefined;
+        projectSessions(true);
+      }, projectionIntervalMs);
+      flushTimer.unref();
+    };
     // Rewrite the sessions file now, or mark it dirty when a write happened
-    // within the interval. A write that a later writer overtook is redone
-    // from fresh state, a few times at most, so the last rename always
-    // carries the newest snapshot it confirms. A failed write never fails
-    // the event that caused it: the database is the record.
+    // within the interval. A failed write never fails the event that
+    // caused it: the database is the record.
     const projectSessions = (force: boolean): void => {
       if (!projectFile || closed) return;
       try {
-        for (let attempt = 0; attempt < 3; attempt++) {
-          const generation = ledger.claimProjection(
-            workspaceId,
-            now().getTime(),
-            projectionIntervalMs,
-            force || attempt > 0,
-          );
-          if (generation === undefined) {
-            if (deferProjection && flushTimer === undefined) {
-              flushTimer = setTimeout(() => {
-                flushTimer = undefined;
-                projectSessions(true);
-              }, projectionIntervalMs);
-              flushTimer.unref();
-            }
-            return;
-          }
-          binding.verify();
-          files.projectGenerated("sessions.md", sessionsDocument());
-          if (ledger.completeProjection(workspaceId, generation)) return;
-        }
+        const outcome = writeProjection(
+          {
+            claim: (forced) =>
+              ledger.claimProjection(
+                workspaceId,
+                now().getTime(),
+                projectionIntervalMs,
+                forced,
+              ),
+            prepare: () => {
+              binding.verify();
+              return files.prepareGenerated("sessions.md", sessionsDocument());
+            },
+            commit: (generation, prepared) =>
+              ledger.commitProjection(workspaceId, generation, () => {
+                files.commitGenerated(prepared);
+              }),
+            discard: (prepared) => {
+              files.discardGenerated(prepared);
+            },
+          },
+          force,
+        );
+        if (outcome !== "written") deferFlush();
       } catch {
         try {
           ledger.failProjection(workspaceId);

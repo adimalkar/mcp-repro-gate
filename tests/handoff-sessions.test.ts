@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
+import { randomUUID as randomUUIDv4 } from "node:crypto";
 import { once } from "node:events";
 import {
   existsSync,
@@ -22,7 +23,11 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { Ajv2020 } from "ajv/dist/2020.js";
 import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 
-import { createHandoffService, type HandoffService } from "../src/handoff.js";
+import {
+  createHandoffService,
+  writeProjection,
+  type HandoffService,
+} from "../src/handoff.js";
 import { HandoffError } from "../src/handoff-contract.js";
 import { buildBrief, fitBrief, renderBriefText } from "../src/handoff-brief.js";
 import { runHandoffCli } from "../src/handoff-cli.js";
@@ -1555,38 +1560,118 @@ test("a one-shot hook leaves a coalesced write pending instead of flushing it", 
   assert.match(readFileSync(file, "utf8"), /stopped on rate_limit/u);
 });
 
-test("a projection generation is current only when its own write is confirmed", (t) => {
+test("a projection generation is renamed and confirmed only while no later claim exists", (t) => {
   const f = fixture(t);
   const service = f.service({}, { deferProjection: false });
   assert.equal(service.status({ handoffVersion: 1 }).sessionsFile, "pending");
   const ledger = service.store.handoffSessions();
   const workspace = "sha256:" + "0".repeat(64);
+  const renamed: number[] = [];
+  const commit = (generation: number) =>
+    ledger.commitProjection(workspace, generation, () =>
+      renamed.push(generation),
+    );
   const first = ledger.claimProjection(workspace, 1000, 60_000, true);
   const second = ledger.claimProjection(workspace, 1001, 60_000, true);
   assert.ok(first !== undefined && second !== undefined && second > first);
-  // A writer that a later one overtook cannot mark the file current.
-  assert.equal(ledger.completeProjection(workspace, first), false);
+  // An overtaken writer is never renamed, so renames land in order.
+  assert.equal(commit(first), false);
+  assert.deepEqual(renamed, []);
   assert.equal(ledger.projectionState(workspace), "pending");
-  assert.equal(ledger.completeProjection(workspace, second), true);
+  assert.equal(commit(second), true);
+  assert.deepEqual(renamed, [second]);
   assert.equal(ledger.projectionState(workspace), "written");
-  // Coalescing: within the interval only dirty, at the boundary due, and a
-  // clock that stepped back is due too. A crash after claiming stays pending.
-  assert.equal(
-    ledger.claimProjection(workspace, 1001 + 59_999, 60_000, false),
-    undefined,
-  );
-  assert.equal(ledger.projectionState(workspace), "pending");
-  const boundary = ledger.claimProjection(
+  // A coalesced event recorded while a write is in flight invalidates it.
+  const inFlight = ledger.claimProjection(
     workspace,
     1001 + 60_000,
     60_000,
     false,
   );
-  assert.ok(boundary !== undefined);
-  assert.ok(ledger.claimProjection(workspace, 10, 60_000, false) !== undefined);
+  assert.ok(inFlight !== undefined);
+  assert.equal(
+    ledger.claimProjection(workspace, 1001 + 60_001, 60_000, false),
+    undefined,
+  );
+  assert.equal(commit(inFlight), false);
   assert.equal(ledger.projectionState(workspace), "pending");
+  // Within the interval only dirty, at the boundary due, and a clock that
+  // stepped back is due too.
+  const due = ledger.claimProjection(workspace, 1001 + 120_001, 60_000, false);
+  assert.ok(due !== undefined && commit(due));
+  assert.equal(
+    ledger.claimProjection(workspace, 1001 + 180_000, 60_000, false),
+    undefined,
+  );
+  assert.ok(
+    ledger.claimProjection(workspace, 1001 + 180_001, 60_000, false) !==
+      undefined,
+  );
+  assert.ok(ledger.claimProjection(workspace, 10, 60_000, false) !== undefined);
+  // A failing write reports unavailable until a write succeeds.
   ledger.failProjection(workspace);
   assert.equal(ledger.projectionState(workspace), "unavailable");
+  const recovered = ledger.claimProjection(workspace, 20, 60_000, true);
+  assert.ok(recovered !== undefined && commit(recovered));
+  assert.equal(ledger.projectionState(workspace), "written");
+  // A rename that throws commits nothing.
+  const broken = ledger.claimProjection(workspace, 30, 60_000, true);
+  assert.ok(broken !== undefined);
+  assert.throws(() =>
+    ledger.commitProjection(workspace, broken, () => {
+      throw new Error("disk full");
+    }),
+  );
+  assert.equal(ledger.projectionState(workspace), "pending");
+});
+
+test("an overtaken write retries from fresh state, forced, a bounded number of times", () => {
+  const calls: string[] = [];
+  let generation = 0;
+  const steps = (wins: number) => ({
+    claim: (force: boolean) => {
+      calls.push(`claim:${String(force)}`);
+      return ++generation;
+    },
+    prepare: () => {
+      calls.push("prepare");
+      return generation;
+    },
+    commit: (claimed: number) => {
+      calls.push(`commit:${String(claimed)}`);
+      return claimed >= wins;
+    },
+    discard: (prepared: number) => {
+      calls.push(`discard:${String(prepared)}`);
+    },
+  });
+  assert.equal(writeProjection(steps(2), false), "written");
+  assert.deepEqual(calls, [
+    "claim:false",
+    "prepare",
+    "commit:1",
+    "discard:1",
+    "claim:true",
+    "prepare",
+    "commit:2",
+  ]);
+  calls.length = 0;
+  generation = 0;
+  assert.equal(writeProjection(steps(99), true), "overtaken");
+  assert.equal(calls.filter((call) => call === "prepare").length, 3);
+  assert.equal(calls.filter((call) => call.startsWith("discard")).length, 3);
+  assert.equal(
+    writeProjection(
+      {
+        claim: () => undefined,
+        prepare: () => assert.fail("a coalesced write prepares nothing"),
+        commit: () => false,
+        discard: () => undefined,
+      },
+      false,
+    ),
+    "deferred",
+  );
 });
 
 test("every lifecycle event and join writes the sessions file at once", (t) => {
@@ -1827,4 +1912,208 @@ test("abandoned temporary files are swept; a fresh one is left alone", (t) => {
   });
   assert.equal(existsSync(old), false);
   assert.equal(existsSync(fresh), true);
+});
+
+test("every way fitBrief drops a listed session counts the subagents folded into it", () => {
+  const view = (agent: string, state: "active" | "ended", folded: number) => ({
+    sessionId: randomUUIDv4(),
+    agent,
+    kind: "agent" as const,
+    client: "mcp" as const,
+    parentSessionId: null,
+    task: "t".repeat(400),
+    state,
+    startedAt: "2026-10-31T00:00:00.000Z",
+    lastSeenAt: "2026-10-31T00:00:00.000Z",
+    endedAt: state === "ended" ? "2026-10-31T00:00:00.000Z" : null,
+    endReason: state === "ended" ? ("completed" as const) : null,
+    clientReason: null,
+    failure: null,
+    lastNote: null,
+    notes: 0,
+    lastMessage: null,
+    subagents: {
+      active: folded,
+      idle: 0,
+      quiet: 0,
+      interrupted: 0,
+      failed: 0,
+      ended: 0,
+    },
+  });
+  const base = buildBrief({
+    now: 0,
+    liveness: { leaseMs: 1, graceMs: 1 },
+    latest: undefined,
+    sessions: [],
+    lastNotes: new Map(),
+    notes: [],
+    git: {
+      state: "disabled",
+      branch: null,
+      head: null,
+      detached: false,
+      upstream: null,
+      ahead: null,
+      behind: null,
+      operation: null,
+      changes: { staged: 0, unstaged: 0, untracked: 0, conflicted: 0 },
+      paths: [],
+      omittedPaths: 0,
+      commitsSince: null,
+    },
+  });
+  base.sessions = [
+    view("a", "active", 5),
+    view("b", "active", 7),
+    view("c", "ended", 9),
+    view("d", "ended", 11),
+  ];
+  const total = 4 + 5 + 7 + 9 + 11;
+  for (const budget of [1024, 1400, 1800, 2400, 3000, 4000]) {
+    const fitted = fitBrief(base, budget, (value) =>
+      Buffer.byteLength(JSON.stringify(value)),
+    );
+    const listed = fitted.sessions.reduce(
+      (sum, item) =>
+        sum +
+        1 +
+        (item.subagents === null
+          ? 0
+          : Object.values(item.subagents).reduce((a, b) => a + b, 0)),
+      0,
+    );
+    assert.equal(listed + fitted.omittedSessions, total, String(budget));
+  }
+});
+
+test("lanes and briefs survive a parent cycle written straight into the database", (t) => {
+  const f = fixture(t);
+  const service = f.service();
+  const a = service.join({ handoffVersion: 1, agent: "a" });
+  const b = service.join({
+    handoffVersion: 1,
+    agent: "b",
+    parentSessionId: a.sessionId,
+  });
+  const leaf = service.status({
+    handoffVersion: 1,
+    sessionId: a.sessionId,
+  }).lane;
+  // A subagent without its own subagents carries no counts.
+  assert.equal(leaf?.subagents[0]?.subagents, null);
+  const db = new DatabaseSync(f.config.databasePath);
+  f.defer(() => {
+    db.close();
+  });
+  db.prepare(
+    "UPDATE handoff_sessions SET parent_session_id = ? WHERE session_id = ?",
+  ).run(b.sessionId, a.sessionId);
+  const brief = service.brief();
+  assert.equal(
+    brief.sessions.length + brief.omittedSessions,
+    2,
+    "each session listed or counted once",
+  );
+  const lane = service.status({
+    handoffVersion: 1,
+    sessionId: a.sessionId,
+  }).lane;
+  assert.ok(lane);
+});
+
+test("the sweep skips odd entries without stopping, and keeps files that are not ours", (t) => {
+  const f = fixture(t);
+  const agent = join(f.workspaceRoot, ".agent");
+  mkdirSync(agent, { mode: 0o700 });
+  const name = (n: number) =>
+    join(
+      agent,
+      `.handoff-sessions-${String(n).repeat(8)}-1111-4111-8111-111111111111.tmp`,
+    );
+  const old = new Date(Date.now() - 10 * 60_000);
+  const make = (path: string, mode = 0o600) => {
+    writeFileSync(path, "x", { mode });
+    utimesSync(path, old, old);
+  };
+  const outside = join(f.scratch, "target.tmp");
+  writeFileSync(outside, "keep", { mode: 0o600 });
+  symlinkSync(outside, name(1));
+  make(name(2), 0o644);
+  make(name(3));
+  const foreign = join(agent, "other.tmp");
+  make(foreign);
+  f.service({}, { deferProjection: false }).join({
+    handoffVersion: 1,
+    agent: "sweeper",
+  });
+  assert.equal(readFileSync(outside, "utf8"), "keep");
+  assert.equal(existsSync(name(1)), true);
+  assert.equal(existsSync(name(2)), true);
+  assert.equal(existsSync(name(3)), false);
+  assert.equal(existsSync(foreign), true);
+});
+
+test("closing writes a pending change alone, and writes ends alone", (t) => {
+  const f = fixture(t, { projectionIntervalSeconds: 3600 });
+  const file = join(f.workspaceRoot, ".agent", "sessions.md");
+  const owner = f.service({}, { deferProjection: false });
+  const { sessionId } = owner.join({ handoffVersion: 1, agent: "owner" });
+  // A server that joined nothing still flushes a pending write on close.
+  const noter = f.service();
+  noter.note({
+    handoffVersion: 1,
+    sessionId,
+    kind: "progress",
+    text: "pending only",
+  });
+  assert.doesNotMatch(readFileSync(file, "utf8"), /pending only/u);
+  noter.close();
+  assert.match(readFileSync(file, "utf8"), /pending only/u);
+  // A server with nothing pending still writes the sessions it ends.
+  const joiner = f.service();
+  f.clock.advance(1);
+  joiner.join({ handoffVersion: 1, agent: "leaver" });
+  assert.equal(joiner.status({ handoffVersion: 1 }).sessionsFile, "written");
+  f.clock.advance(1);
+  joiner.close();
+  assert.match(
+    readFileSync(file, "utf8"),
+    /leaver \(mcp, [0-9a-f]{8}\): ended \(disconnected\)/u,
+  );
+});
+
+test("SessionStart writes at once even right after another write", (t) => {
+  const f = fixture(t, { projectionIntervalSeconds: 3600 });
+  const file = join(f.workspaceRoot, ".agent", "sessions.md");
+  f.service({}, { deferProjection: false }).join({
+    handoffVersion: 1,
+    agent: "first",
+  });
+  const before = readFileSync(file, "utf8");
+  f.clock.advance(1);
+  f.hook({ hook_event_name: "SessionStart", source: "startup" });
+  assert.notEqual(readFileSync(file, "utf8"), before);
+});
+
+test("a lane cut for budget keeps its newest notes first", (t) => {
+  const f = fixture(t);
+  const service = f.service();
+  const { sessionId } = service.join({ handoffVersion: 1, agent: "noter" });
+  for (let index = 0; index < 40; index++)
+    service.note({
+      handoffVersion: 1,
+      sessionId,
+      kind: "progress",
+      text: `note ${String(index)} ${"y".repeat(100)}`,
+    });
+  const lane = service.status({
+    handoffVersion: 1,
+    sessionId,
+    briefBytes: 3000,
+  }).lane;
+  assert.ok(lane && lane.notes.length > 0 && lane.omittedNotes > 0);
+  assert.match(lane.notes[0]?.text ?? "", /^note 39 /u);
+  assert.match(lane.notes.at(-1)?.text ?? "", /^note \d+ /u);
+  assert.equal(lane.notes.length + lane.omittedNotes, 40);
 });
