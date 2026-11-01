@@ -479,8 +479,16 @@ export class HandoffFiles {
     if (!sameIdentity(prepared.identity, verifyPrivateFile(prepared.temporary)))
       throw new HandoffError("unavailable");
     renameSync(prepared.temporary, prepared.target);
-    syncDirectory(this.#agentPath);
     this.#verify();
+  }
+
+  /**
+   * Make committed renames durable. Kept apart from `commitGenerated` so a
+   * slow directory flush never runs while the database's writer lock is
+   * held; until it runs, only a power loss could undo the rename.
+   */
+  syncGenerated(): void {
+    syncDirectory(this.#agentPath);
   }
 
   /** Remove a prepared file that will not be committed. Best effort. */

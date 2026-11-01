@@ -366,7 +366,8 @@ export function createHandoffService(
           },
           force,
         );
-        if (outcome !== "written") deferFlush();
+        if (outcome === "written") files.syncGenerated();
+        else deferFlush();
       } catch {
         try {
           ledger.failProjection(workspaceId);
