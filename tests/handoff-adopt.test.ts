@@ -27,6 +27,7 @@ import { sha256 } from "../src/digest.js";
 import { createHandoffService, type HandoffService } from "../src/handoff.js";
 import { NO_GOAL_FOUND, extractDocument } from "../src/handoff-adopt.js";
 import { runHandoffCli } from "../src/handoff-cli.js";
+import { handoffPermissionIssues } from "../src/handoff-filesystem.js";
 import {
   HandoffError,
   MAX_ADOPTED_DOCUMENT_BYTES,
@@ -297,6 +298,68 @@ test("credentials are redacted across lines and control characters never reach t
     // eslint-disable-next-line no-control-regex -- The point of the test.
     /[\u001b‮]/u,
   );
+});
+
+test("credentials hidden by Markdown escaping are redacted", () => {
+  const github = `ghp_${"a".repeat(36)}`;
+  const stripe = `sk_live_${"b".repeat(24)}`;
+  const record: HandoffRecordV1 = {
+    handoffVersion: 1,
+    workspaceId: `sha256:${"a".repeat(64)}`,
+    revision: 1,
+    updateId: randomUUID(),
+    createdAt: "2026-11-04T10:00:00.000Z",
+    provenance: "caller_asserted",
+    expectedDocumentDigest: null,
+    requestDigest: `sha256:${"b".repeat(64)}`,
+    context: {
+      activeAgent: "codex",
+      goal: `use ${github}`,
+      completed: [`key ${stripe}`],
+      touchedFiles: [],
+      blockers: [],
+      nextSteps: [],
+    },
+    references: [],
+  };
+  const rendered = renderHandoffRecord(record);
+  assert.match(rendered.toString(), /ghp\\_/u);
+  const extracted = extractDocument(rendered);
+  assert.equal(extracted.redactions, 2);
+  assert.doesNotMatch(JSON.stringify(extracted.context), /ghp_|sk_live_/u);
+  const status = extractDocument(
+    Buffer.from(
+      `- **Last Active Agent**: ghp\\_${"a".repeat(36)}\n- **Status**: ${stripe.replaceAll("_", "\\_")}\n`,
+    ),
+  );
+  assert.equal(status.context.activeAgent, "unknown");
+  assert.doesNotMatch(JSON.stringify(status.context), /aaaa|bbbb/u);
+});
+
+test("only real code fences hide text", () => {
+  const steps = (document: string) =>
+    extractDocument(Buffer.from(document)).context.nextSteps;
+  const after = "## Next steps\n- kept\n";
+  // Backticks in the info string make this inline code, not a fence.
+  assert.deepEqual(steps(`## Goal\n\`\`\`npm test\`\`\`\n${after}`), ["kept"]);
+  // A fence that never closes hides nothing.
+  assert.deepEqual(steps(`## Goal\n\`\`\`sh\n${after}`), ["kept"]);
+  // A different marker or a shorter run does not close a fence.
+  assert.deepEqual(steps("## Next steps\n```\n- no\n~~~\n- no\n```\n- yes\n"), [
+    "yes",
+  ]);
+  assert.deepEqual(
+    steps("## Next steps\n````\n- no\n```\n- no\n````\n- yes\n"),
+    ["yes"],
+  );
+  // Text after a run of backticks does not close it either.
+  assert.deepEqual(
+    steps("## Next steps\n```\n- no\n``` x\n- no\n```\n- yes\n"),
+    ["yes"],
+  );
+  const started = Date.now();
+  extractDocument(Buffer.from("```a\n".repeat(200_000)));
+  assert.ok(Date.now() - started < 2000);
 });
 
 test("hostile lines stay fast and the list caps hold", () => {
@@ -597,7 +660,7 @@ test(
 
     const refused = f.cli(["brief", "--config", f.configPath]);
     assert.equal(refused.code, 1);
-    assert.match(refused.stderr, /not private: \.agent, \.agent\/handoff\.md/u);
+    assert.match(refused.stderr, /not private: \.agent;/u);
     assert.match(refused.stderr, /--repair-permissions/u);
     const hook = f.cli(["hook", "--config", f.configPath], {
       cwd: f.workspaceRoot,
@@ -800,6 +863,201 @@ test("workspace scope ignores other worktrees, and switching scope starts a new 
     null,
   );
   assert.equal(plain.brief().sessions[0]?.worktree, null);
+});
+
+test("a brief in another worktree says where the document is", (t) => {
+  const f = fixture(t, "repository");
+  const { linked } = repository(f);
+  f.write(PLAIN);
+  const other = f.service({}, { cwd: linked });
+  assert.match(
+    other.briefText(),
+    /\.agent\/handoff\.md in the workspace worktree exists/u,
+  );
+  const plain = fixture(t);
+  plain.write(PLAIN);
+  assert.match(plain.service().briefText(), /: \.agent\/handoff\.md exists/u);
+});
+
+test("a session resumed in another worktree takes that worktree's head", (t) => {
+  const f = fixture(t, "repository");
+  const { root, linked } = repository(f);
+  writeFileSync(join(linked, "b.txt"), "topic\n");
+  git(linked, "add", "b.txt");
+  git(linked, "commit", "-q", "-m", "topic work");
+  writeFileSync(join(root, "c.txt"), "main\n");
+  git(root, "add", "c.txt");
+  git(root, "commit", "-q", "-m", "main work");
+  const hook = (cwd: string, event: string) => {
+    const { code, stderr } = f.cli(["hook", "--config", f.configPath], {
+      cwd,
+      hook_event_name: event,
+      session_id: "moved",
+    });
+    assert.equal(code, 0, stderr);
+  };
+  hook(linked, "SessionStart");
+  hook(linked, "SessionEnd");
+  hook(root, "SessionStart");
+  const brief = f.service().join({ handoffVersion: 1, agent: "next" }).brief;
+  assert.equal(brief.git.branch, "main");
+  // The session now starts at main's head: nothing to report, and no range
+  // across the two branches.
+  assert.equal(brief.git.commitsSince, null);
+});
+
+test("a repository nested in a worktree is another repository", (t) => {
+  const f = fixture(t, "repository");
+  repository(f);
+  const nested = join(f.workspaceRoot, "vendor");
+  mkdirSync(nested);
+  git(nested, "init", "-q", "-b", "main");
+  const inside = join(f.workspaceRoot, "plain-directory");
+  mkdirSync(inside);
+  const hook = (cwd: string, id: string) =>
+    f.cli(["hook", "--config", f.configPath], {
+      cwd,
+      hook_event_name: "SessionStart",
+      session_id: id,
+    });
+  assert.equal(hook(nested, "nested").stdout, "");
+  assert.notEqual(hook(inside, "inside").stdout, "");
+  assert.equal(f.service().brief().sessions.length, 1);
+  const service = f.service();
+  assert.equal(
+    service.hook("claude-code", {
+      cwd: nested,
+      hook_event_name: "SessionStart",
+      session_id: "direct",
+    }).recorded,
+    false,
+  );
+});
+
+test("default scope does not depend on the process directory", posix, (t) => {
+  const f = fixture(t);
+  const gone = join(f.scratch, "gone");
+  mkdirSync(gone);
+  const home = process.cwd();
+  process.chdir(gone);
+  try {
+    rmSync(gone, { recursive: true });
+    assert.equal(f.service().status(statusInput).state, "missing");
+  } finally {
+    process.chdir(home);
+  }
+});
+
+test("repository scope outlives a removed working directory", posix, (t) => {
+  const f = fixture(t, "repository");
+  repository(f);
+  const gone = join(f.scratch, "gone");
+  mkdirSync(gone);
+  const home = process.cwd();
+  process.chdir(gone);
+  try {
+    rmSync(gone, { recursive: true });
+    const { git: observed } = f
+      .service()
+      .join({ handoffVersion: 1, agent: "x" }).brief;
+    assert.equal(observed.branch, "main");
+  } finally {
+    process.chdir(home);
+  }
+});
+
+test(
+  "a sessions file reset by a sync is replaced, not left stale",
+  posix,
+  (t) => {
+    const f = fixture(t);
+    const service = f.service();
+    service.join({ handoffVersion: 1, agent: "first" });
+    const file = join(f.agent, "sessions.md");
+    chmodSync(file, 0o644);
+    service.join({ handoffVersion: 1, agent: "second" });
+    assert.equal(service.status(statusInput).sessionsFile, "written");
+    assert.match(readFileSync(file, "utf8"), /second/u);
+    assert.equal(statSync(file).mode & 0o777, 0o600);
+    // Others still cannot be allowed to write it.
+    chmodSync(file, 0o664);
+    service.join({ handoffVersion: 1, agent: "third" });
+    assert.equal(service.status(statusInput).sessionsFile, "unavailable");
+  },
+);
+
+test(
+  "repair ignores what the service ignores, and refuses before it changes anything",
+  posix,
+  (t) => {
+    const stray = fixture(t);
+    const history = join(stray.agent, "handoff-history");
+    mkdirSync(join(history, "old"), { recursive: true });
+    chmodSync(stray.agent, 0o755);
+    chmodSync(history, 0o755);
+    const repaired = stray.cli([
+      "adopt",
+      "--config",
+      stray.configPath,
+      "--repair-permissions",
+    ]);
+    assert.equal(repaired.code, 0, repaired.stderr);
+    assert.equal(statSync(stray.agent).mode & 0o777, 0o700);
+
+    const linked = fixture(t);
+    mkdirSync(linked.agent);
+    chmodSync(linked.agent, 0o755);
+    const target = join(linked.scratch, "target");
+    writeFileSync(target, "keep");
+    linkSync(target, linked.document);
+    assert.equal(
+      linked.cli([
+        "adopt",
+        "--config",
+        linked.configPath,
+        "--repair-permissions",
+      ]).code,
+      1,
+    );
+    assert.equal(statSync(linked.agent).mode & 0o777, 0o755);
+  },
+);
+
+test("permission issues list only what the service refuses", posix, (t) => {
+  const f = fixture(t);
+  f.write("text\n");
+  chmodSync(f.document, 0o644);
+  assert.deepEqual(handoffPermissionIssues(f.workspaceRoot), []);
+  chmodSync(f.document, 0o664);
+  assert.deepEqual(handoffPermissionIssues(f.workspaceRoot), [
+    join(".agent", "handoff.md"),
+  ]);
+  chmodSync(f.document, 0o600);
+  chmodSync(f.agent, 0o750);
+  assert.deepEqual(handoffPermissionIssues(f.workspaceRoot), [".agent"]);
+  chmodSync(f.agent, 0o700);
+});
+
+test("a brief warns when the document cannot be read", (t) => {
+  const f = fixture(t);
+  const service = f.service();
+  service.update(update(0, null));
+  f.write("x".repeat(MAX_ADOPTED_DOCUMENT_BYTES + 1));
+  assert.equal(service.brief().handoff.document, "unavailable");
+  assert.match(service.briefText(), /Attention: .*could not be read/u);
+});
+
+test("the preview names the agent that would be recorded", (t) => {
+  const f = fixture(t);
+  f.write(PLAIN);
+  const { stdout } = f.cli([
+    "adopt",
+    "--config",
+    f.configPath,
+    "--agent",
+    "person",
+  ]);
+  assert.match(stdout, /Agent: person/u);
 });
 
 test("repository scope fails closed outside a repository", (t) => {

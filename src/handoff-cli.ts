@@ -139,7 +139,7 @@ function runAdopt(args: readonly string[], io: HandoffCliIo): number {
       );
       return 0;
     }
-    const preview = service.previewAdoption();
+    const preview = service.previewAdoption(agent);
     const lines = [
       `State: ${preview.state} at revision ${String(preview.revision)}`,
       `Document: ${preview.documentDigest ?? "none"}`,

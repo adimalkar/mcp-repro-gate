@@ -101,7 +101,7 @@ export interface HandoffService {
   status(input: unknown): HandoffStatusV1;
   update(input: unknown): HandoffStatusV1;
   adopt(input: unknown): HandoffStatusV1;
-  previewAdoption(): HandoffAdoptionPreview;
+  previewAdoption(agent?: string): HandoffAdoptionPreview;
   join(input: unknown): HandoffJoinResult;
   note(input: unknown): HandoffSessionResult;
   end(input: unknown): HandoffSessionResult;
@@ -179,25 +179,26 @@ export function workspaceContains(
 
 /**
  * Whether a hook event from `cwd` belongs to this configuration: inside the
- * workspace, or in repository scope any worktree of the same repository.
- * Checked before the database is opened. Only repository scope runs Git.
+ * workspace, or in repository scope any worktree of the same repository and
+ * no other, even one nested inside it. Checked before the database is
+ * opened. Only repository scope runs Git.
  */
 export function workspaceAccepts(
   config: HandoffConfigV1,
   cwd: unknown,
 ): boolean {
-  if (workspaceContains(config.workspaceRoot, cwd)) return true;
   if (
-    config.scope !== "repository" ||
-    typeof cwd !== "string" ||
-    !isAbsolute(cwd)
-  )
-    return false;
-  const event = repositoryIdentity(cwd);
-  return (
-    event !== undefined &&
-    event.commonDir === repositoryIdentity(config.workspaceRoot)?.commonDir
-  );
+    config.scope === "repository" &&
+    typeof cwd === "string" &&
+    isAbsolute(cwd)
+  ) {
+    const event = repositoryIdentity(cwd);
+    if (event !== undefined)
+      return (
+        event.commonDir === repositoryIdentity(config.workspaceRoot)?.commonDir
+      );
+  }
+  return workspaceContains(config.workspaceRoot, cwd);
 }
 
 export interface ProjectionSteps<Prepared> {
@@ -294,15 +295,31 @@ export function createHandoffService(
         isAbsolute(cwd)
       ) {
         const identity = repositoryIdentity(cwd);
-        if (identity?.commonDir === repository.commonDir)
-          return identity.worktree;
+        if (identity !== undefined)
+          return identity.commonDir === repository.commonDir
+            ? identity.worktree
+            : undefined;
       }
       return workspaceContains(files.workspaceRoot, cwd)
         ? files.workspaceRoot
         : undefined;
     };
-    const ownWorktree =
-      worktreeFor(options.cwd ?? process.cwd()) ?? files.workspaceRoot;
+    // This process's worktree, resolved once and only when a brief or a join
+    // needs it: hooks name their own, and a process's directory may be gone.
+    let ownRoot: string | undefined;
+    const ownWorktree = (): string => {
+      if (repository === undefined) return files.workspaceRoot;
+      if (ownRoot === undefined) {
+        let cwd: string | undefined;
+        try {
+          cwd = options.cwd ?? process.cwd();
+        } catch {
+          // The directory was removed; the workspace is still known.
+        }
+        ownRoot = worktreeFor(cwd) ?? files.workspaceRoot;
+      }
+      return ownRoot;
+    };
     const recordedWorktree = (worktree: string) =>
       repository === undefined ? null : worktree;
     const ledger = contextStore.handoffSessions();
@@ -364,9 +381,10 @@ export function createHandoffService(
     const composeBrief = (
       exclude?: string,
       withGit = observe,
-      worktree = ownWorktree,
+      from?: string,
     ): HandoffBriefV1 => {
       const sessions = ledger.sessions(workspaceId);
+      const worktree = withGit ? (from ?? ownWorktree()) : undefined;
       const time = now().getTime();
       // Commits since the oldest unfinished agent session began cover the
       // work of every agent that may have stopped mid-task, whatever it
@@ -397,19 +415,22 @@ export function createHandoffService(
         liveness,
         latest: latest?.record,
         document: documentState(latest),
+        documentWorktree:
+          repository === undefined ? null : worktreeName(files.workspaceRoot),
         sessions,
         lastNotes: ledger.lastNotes(workspaceId),
         notes: ledger.notes(workspaceId, MAX_BRIEF_NOTES + 1, [
           "blocker",
           "decision",
         ]),
-        git: withGit
-          ? {
-              ...observeGit(worktree, previous?.startHead ?? null),
-              worktree:
-                repository === undefined ? null : worktreeName(worktree),
-            }
-          : emptyGitObservation("disabled"),
+        git:
+          worktree === undefined
+            ? emptyGitObservation("disabled")
+            : {
+                ...observeGit(worktree, previous?.startHead ?? null),
+                worktree:
+                  repository === undefined ? null : worktreeName(worktree),
+              },
       });
     };
 
@@ -603,6 +624,8 @@ export function createHandoffService(
       const found = ledger.find(workspaceId, client, clientSession, "");
       if (found !== undefined && (found.endedAt === null || !revive))
         return found;
+      const moved =
+        found !== undefined && found.worktree !== recordedWorktree(worktree);
       return ledger.start(workspaceId, {
         client,
         clientSession,
@@ -611,7 +634,7 @@ export function createHandoffService(
         kind: "agent",
         parentSessionId: null,
         task: null,
-        startHead: found === undefined ? head(worktree) : null,
+        startHead: found === undefined || moved ? head(worktree) : null,
         worktree: recordedWorktree(worktree),
         now: now().getTime(),
       }).session;
@@ -845,7 +868,7 @@ export function createHandoffService(
           return status({ handoffVersion: 1 });
         });
       },
-      previewAdoption: () => {
+      previewAdoption: (agent?: string) => {
         live();
         return guard(() => {
           const { state, revision } = status({ handoffVersion: 1 });
@@ -855,7 +878,9 @@ export function createHandoffService(
             revision,
             documentDigest: document.digest,
             extracted:
-              document.bytes === null ? null : extractDocument(document.bytes),
+              document.bytes === null
+                ? null
+                : extractDocument(document.bytes, agent),
           };
         });
       },
@@ -876,8 +901,8 @@ export function createHandoffService(
             parentSessionId: input.parentSessionId ?? null,
             task:
               input.task === undefined ? null : redacted(input.task, 512).text,
-            startHead: head(ownWorktree),
-            worktree: recordedWorktree(ownWorktree),
+            startHead: head(ownWorktree()),
+            worktree: recordedWorktree(ownWorktree()),
             now: now().getTime(),
           });
           joined.add(session.sessionId);

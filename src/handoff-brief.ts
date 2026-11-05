@@ -150,6 +150,8 @@ export interface BriefInput {
   liveness: HandoffLiveness;
   latest: HandoffRecordV1 | undefined;
   document: HandoffDocumentState;
+  /** The worktree that holds the document, by name, in repository scope. */
+  documentWorktree?: string | null;
   sessions: readonly HandoffSessionRow[];
   lastNotes: ReadonlyMap<string, HandoffNoteRow>;
   /** Recent blocker and decision notes, newest first. */
@@ -369,6 +371,7 @@ export function buildBrief(input: BriefInput): HandoffBriefV1 {
     handoff: {
       revision: input.latest?.revision ?? 0,
       document: input.document,
+      documentWorktree: input.documentWorktree ?? null,
       activeAgent: context?.activeAgent ?? null,
       updatedAt: input.latest?.createdAt ?? null,
       goal: context?.goal ?? null,
@@ -668,15 +671,28 @@ function describeSession(session: HandoffSessionView, now: string): string {
   return parts.join("\n");
 }
 
-// What an agent should do about the document; other states need nothing.
-const DOCUMENT_ATTENTION: Partial<Record<HandoffDocumentState, string>> = {
-  untracked:
-    ".agent/handoff.md exists but was never recorded. Read it; if it is right, record it with handoff_adopt.",
-  drifted:
-    ".agent/handoff.md was changed outside ReproGate, so the handoff below may be out of date. Read the file; if it is right, record it with handoff_adopt.",
-  deleted:
-    ".agent/handoff.md was deleted. The next handoff_update writes it again.",
-};
+// What an agent should do about the document; other states need nothing. In
+// repository scope the file may be in another worktree, so it is named.
+function documentAttention(
+  handoff: HandoffBriefV1["handoff"],
+): string | undefined {
+  const file =
+    handoff.documentWorktree === null
+      ? ".agent/handoff.md"
+      : `.agent/handoff.md in the ${line(handoff.documentWorktree)} worktree`;
+  switch (handoff.document) {
+    case "untracked":
+      return `${file} exists but was never recorded. Read it; if it is right, record it with handoff_adopt.`;
+    case "drifted":
+      return `${file} was changed outside ReproGate, so the handoff below may be out of date. Read the file; if it is right, record it with handoff_adopt.`;
+    case "deleted":
+      return `${file} was deleted. The next handoff_update writes it again.`;
+    case "unavailable":
+      return `${file} could not be read, so the handoff below may be out of date. It may be too large, hard-linked or writable by others.`;
+    default:
+      return undefined;
+  }
+}
 
 /** Plain text for hook context and terminals; it renders the same facts. */
 export function renderBriefText(
@@ -692,7 +708,7 @@ export function renderBriefText(
       "",
       `Attention: a ${git.operation.replace("_", "-")} is in progress in the workspace. Finish or abort it before other work.`,
     );
-  const document = DOCUMENT_ATTENTION[handoff.document];
+  const document = documentAttention(handoff);
   if (document !== undefined) out.push("", `Attention: ${document}`);
   if (brief.truncated || brief.omittedSessions > 0 || brief.omittedNotes > 0)
     out.push("", "This brief was shortened to fit its budget.");

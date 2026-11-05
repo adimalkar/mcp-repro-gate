@@ -902,7 +902,8 @@
             "goal",
             "nextSteps",
             "blockers",
-            "document"
+            "document",
+            "documentWorktree"
           ],
           "properties": {
             "revision": {
@@ -963,6 +964,9 @@
                 "deleted",
                 "unavailable"
               ]
+            },
+            "documentWorktree": {
+              "type": ["string", "null"]
             }
           }
         },

@@ -196,6 +196,8 @@ export const handoffBriefSchema = z.strictObject({
   handoff: z.strictObject({
     revision: z.number().int().min(0),
     document: z.enum(HANDOFF_DOCUMENT_STATES),
+    /** The worktree holding the document; null outside repository scope. */
+    documentWorktree: z.string().nullable(),
     activeAgent: z.string().nullable(),
     updatedAt: isoSchema.nullable(),
     goal: z.string().nullable(),

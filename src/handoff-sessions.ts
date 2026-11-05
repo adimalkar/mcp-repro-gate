@@ -283,15 +283,22 @@ export class HandoffSessionLedger {
           );
         if (typeof existing?.session_id === "string") {
           // A resumed client session continues; it is no longer ended,
-          // failed or waiting.
+          // failed or waiting. Resumed in another worktree, its start head
+          // would name a commit of the old one, so it starts over.
           this.database
             .prepare(
-              `UPDATE handoff_sessions SET last_seen_at = max(last_seen_at, ?), turn_open = NULL,
+              `UPDATE handoff_sessions SET last_seen_at = max(last_seen_at, ?1), turn_open = NULL,
                 failure = NULL, ended_at = NULL, end_reason = NULL, client_reason = NULL,
-                worktree = coalesce(?, worktree)
-                WHERE session_id = ?`,
+                start_head = CASE WHEN ?2 IS NOT NULL AND worktree IS NOT ?2 THEN ?3 ELSE start_head END,
+                worktree = coalesce(?2, worktree)
+                WHERE session_id = ?4`,
             )
-            .run(input.now, input.worktree, existing.session_id);
+            .run(
+              input.now,
+              input.worktree,
+              input.startHead,
+              existing.session_id,
+            );
           return {
             session: this.#get(workspaceId, existing.session_id),
             created: false,
