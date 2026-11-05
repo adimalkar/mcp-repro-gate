@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import {
   existsSync,
@@ -831,6 +832,42 @@ test("Git observation reports branch, changes, an operation in progress and comm
   assert.match(git(root, "status", "--porcelain"), /^UU a\.txt/mu);
 });
 
+test("Git observation leaves handoff files out of the changes", (t) => {
+  const f = fixture(t, { observeGit: true });
+  const root = f.workspaceRoot;
+  git(root, "init", "-q", "-b", "main");
+  // A user's own ignore file must not hide the case this test is for.
+  writeFileSync(join(f.scratch, "no-ignores"), "");
+  git(root, "config", "core.excludesFile", join(f.scratch, "no-ignores"));
+  writeFileSync(join(root, "a.txt"), "one\n");
+  git(root, "add", "a.txt");
+  git(root, "commit", "-q", "-m", "first");
+  const service = f.service();
+  service.update({
+    handoffVersion: 1,
+    updateId: randomUUID(),
+    expectedRevision: 0,
+    expectedDocumentDigest: null,
+    context: {
+      activeAgent: "first",
+      goal: "Keep handoff files out of observed changes.",
+      completed: [],
+      touchedFiles: [],
+      blockers: [],
+      nextSteps: [],
+    },
+    actionIds: [],
+  });
+  assert.match(git(root, "status", "--porcelain"), /^\?\? \.agent\//mu);
+  writeFileSync(join(root, "work.txt"), "work\n");
+  const observed = service.brief().git;
+  assert.equal(observed.changes.untracked, 1);
+  assert.deepEqual(
+    observed.paths.map((p) => p.path),
+    ["work.txt"],
+  );
+});
+
 test("Git observation is unavailable outside a repository and absent when turned off", (t) => {
   const f = fixture(t, { observeGit: true });
   assert.equal(f.service().brief().git.state, "unavailable");
@@ -1104,12 +1141,14 @@ test("Git observation detects a rebase, reports renames once and escapes control
     "main",
   ]);
   git(root, "mv", "old name.txt", "new name.txt");
-  writeFileSync(join(root, "evil\u001b[2Jname.txt"), "x\n");
+  // Windows file names cannot hold control characters.
+  const escaped = process.platform !== "win32";
+  if (escaped) writeFileSync(join(root, "evil\u001b[2Jname.txt"), "x\n");
   const observed = f.service().brief(65536).git;
   assert.equal(observed.operation, "rebase");
   const renamed = observed.paths.filter((p) => p.path.includes("name.txt"));
   assert.deepEqual(renamed.map((p) => p.path).sort(), [
-    "evil�[2Jname.txt",
+    ...(escaped ? ["evil�[2Jname.txt"] : []),
     "new name.txt",
   ]);
   assert.match(

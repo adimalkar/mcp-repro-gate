@@ -69,6 +69,10 @@ export function observeGit(
         "--branch",
         "--untracked-files=normal",
         "--ignore-submodules=all",
+        // Handoff files are not work: without this, every repository that
+        // does not ignore .agent would report them as uncommitted changes.
+        "--",
+        ":(exclude).agent",
       ],
       undefined,
       MAX_STATUS_BYTES,
