@@ -26,11 +26,14 @@ import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 import { sha256 } from "../src/digest.js";
 import { createHandoffService, type HandoffService } from "../src/handoff.js";
 import { NO_GOAL_FOUND, extractDocument } from "../src/handoff-adopt.js";
+import { buildBrief, fitBrief } from "../src/handoff-brief.js";
 import { runHandoffCli } from "../src/handoff-cli.js";
 import { handoffPermissionIssues } from "../src/handoff-filesystem.js";
+import { emptyGitObservation } from "../src/handoff-observe.js";
 import {
   HandoffError,
   MAX_ADOPTED_DOCUMENT_BYTES,
+  handoffContextSchema,
   renderHandoffRecord,
   type HandoffRecordV1,
 } from "../src/handoff-contract.js";
@@ -201,7 +204,10 @@ test("the shared headings become a context, whatever their numbering", () => {
   assert.deepEqual(context, {
     activeAgent: "Claude-on-the-laptop",
     goal: "Status: Blocked on review\nFinish the import.\nKeep the history.",
-    completed: ["Wrote the parser", "Added tests"],
+    completed: [
+      "Wrote the parser continued on an indented line",
+      "Added tests",
+    ],
     touchedFiles: [],
     blockers: ["CI fails on Windows"],
     nextSteps: ["Fix the test", "Open the PR"],
@@ -334,6 +340,48 @@ test("credentials hidden by Markdown escaping are redacted", () => {
   );
   assert.equal(status.context.activeAgent, "unknown");
   assert.doesNotMatch(JSON.stringify(status.context), /aaaa|bbbb/u);
+});
+
+test("empty list items are skipped, and any document yields a valid context", () => {
+  const steps = (document: string) =>
+    extractDocument(Buffer.from(document)).context.nextSteps;
+  for (const marker of ["-  ", "2.   ", "- \u00a0", "- ", "-", "* ", "3."])
+    assert.deepEqual(steps(`## Next steps\n${marker}\n- kept\n`), ["kept"]);
+  for (const text of [
+    "## Next steps\n- \\\n",
+    "## Goal\n\\\n## Blockers\n* \u0001\n",
+    "- **Status**:\u00a0\n- **Last Active Agent**: ---\n",
+    `## Blockers\n- ${"\u202e".repeat(600)}\n`,
+    "## Completed\n- [REDACTED]\n",
+  ])
+    assert.equal(
+      handoffContextSchema.safeParse(extractDocument(Buffer.from(text)).context)
+        .success,
+      true,
+      text,
+    );
+});
+
+test("a heading nested under the goal keeps the goal", () => {
+  const { context } = extractDocument(
+    Buffer.from(
+      "## 1. Active Goal / Task\n\n### Objective\n\nShip the parser\n\n## Next steps\n- go\n\n## Goal\nA later goal\n",
+    ),
+  );
+  assert.equal(context.goal, "Ship the parser");
+});
+
+test("a wrapped list item stays one item", () => {
+  const { context } = extractDocument(
+    Buffer.from(
+      "## Next steps\n- run the migration on the\nstaging database first\n- then deploy\n  to production\n\nA separate paragraph\n",
+    ),
+  );
+  assert.deepEqual(context.nextSteps, [
+    "run the migration on the staging database first",
+    "then deploy to production",
+    "A separate paragraph",
+  ]);
 });
 
 test("only real code fences hide text", () => {
@@ -906,6 +954,102 @@ test("a session resumed in another worktree takes that worktree's head", (t) => 
   assert.equal(brief.git.commitsSince, null);
 });
 
+test("a crashed session resumed in another worktree moves there and stays failed", (t) => {
+  const f = fixture(t, "repository");
+  const { root, linked } = repository(f);
+  writeFileSync(join(linked, "b.txt"), "topic\n");
+  git(linked, "add", "b.txt");
+  git(linked, "commit", "-q", "-m", "topic work");
+  writeFileSync(join(root, "c.txt"), "main\n");
+  git(root, "add", "c.txt");
+  git(root, "commit", "-q", "-m", "main work");
+  const hook = (cwd: string, event: string, extra = {}) => {
+    const { code, stderr } = f.cli(["hook", "--config", f.configPath], {
+      cwd,
+      hook_event_name: event,
+      session_id: "crashed",
+      ...extra,
+    });
+    assert.equal(code, 0, stderr);
+  };
+  hook(linked, "SessionStart");
+  hook(linked, "StopFailure", { error: "rate_limit" });
+  // No SessionEnd: the client died.
+  hook(root, "SessionStart");
+  const brief = f.service().join({ handoffVersion: 1, agent: "next" }).brief;
+  const session = brief.sessions.find((s) => s.client === "claude-code");
+  assert.equal(session?.worktree, "workspace");
+  assert.equal(session.state, "failed");
+  assert.equal(brief.git.commitsSince, null);
+  // An event that is not a resumption does not move it.
+  hook(linked, "Stop");
+  assert.equal(
+    f
+      .service()
+      .brief()
+      .sessions.find((s) => s.client === "claude-code")?.worktree,
+    "workspace",
+  );
+});
+
+test("removing the configured worktree is reported, not silent", (t) => {
+  const f = fixture(t, "repository");
+  const { root, linked } = repository(f);
+  const config = { ...f.config, workspaceRoot: linked };
+  writeFileSync(f.configPath, JSON.stringify(config), { mode: 0o600 });
+  git(root, "worktree", "remove", "--force", linked);
+  const result = f.cli(["hook", "--config", f.configPath], {
+    cwd: root,
+    hook_event_name: "SessionStart",
+    session_id: "s",
+  });
+  assert.equal(result.code, 1);
+  assert.match(result.stderr, /unavailable/u);
+});
+
+test("repository identity needs no configuration the runner would refuse", (t) => {
+  const f = fixture(t, "repository");
+  const { root } = repository(f);
+  git(root, "config", "core.eol", "bogus");
+  assert.notEqual(f.service().status(statusInput).state, "unavailable");
+});
+
+test(
+  "hooks from an unrelated project cost two Git runs and never open the database",
+  posix,
+  (t) => {
+    const f = fixture(t, "repository");
+    repository(f);
+    const stranger = join(f.scratch, "stranger");
+    mkdirSync(stranger);
+    git(stranger, "init", "-q", "-b", "main");
+    const bin = join(f.scratch, "bin");
+    mkdirSync(bin);
+    const log = join(f.scratch, "git.log");
+    const real = spawnSync("sh", ["-c", "command -v git"], {
+      encoding: "utf8",
+    }).stdout.trim();
+    writeFileSync(
+      join(bin, "git"),
+      `#!/bin/sh\necho x >> "${log}"\nexec "${real}" "$@"\n`,
+      { mode: 0o755 },
+    );
+    const path = process.env.PATH;
+    process.env.PATH = `${bin}:${path ?? ""}`;
+    try {
+      f.cli(["hook", "--config", f.configPath], {
+        cwd: stranger,
+        hook_event_name: "Stop",
+        session_id: "s",
+      });
+    } finally {
+      process.env.PATH = path;
+    }
+    assert.equal(readFileSync(log, "utf8").split("\n").length - 1, 2);
+    assert.equal(existsSync(f.config.databasePath), false);
+  },
+);
+
 test("a repository nested in a worktree is another repository", (t) => {
   const f = fixture(t, "repository");
   repository(f);
@@ -1027,14 +1171,21 @@ test("permission issues list only what the service refuses", posix, (t) => {
   const f = fixture(t);
   f.write("text\n");
   chmodSync(f.document, 0o644);
-  assert.deepEqual(handoffPermissionIssues(f.workspaceRoot), []);
+  assert.deepEqual(handoffPermissionIssues(f.workspaceRoot), {
+    loose: [],
+    refused: [],
+  });
   chmodSync(f.document, 0o664);
-  assert.deepEqual(handoffPermissionIssues(f.workspaceRoot), [
-    join(".agent", "handoff.md"),
-  ]);
+  assert.deepEqual(handoffPermissionIssues(f.workspaceRoot), {
+    loose: [join(".agent", "handoff.md")],
+    refused: [],
+  });
   chmodSync(f.document, 0o600);
   chmodSync(f.agent, 0o750);
-  assert.deepEqual(handoffPermissionIssues(f.workspaceRoot), [".agent"]);
+  assert.deepEqual(handoffPermissionIssues(f.workspaceRoot), {
+    loose: [".agent"],
+    refused: [],
+  });
   chmodSync(f.agent, 0o700);
 });
 
@@ -1045,7 +1196,78 @@ test("a brief warns when the document cannot be read", (t) => {
   f.write("x".repeat(MAX_ADOPTED_DOCUMENT_BYTES + 1));
   assert.equal(service.brief().handoff.document, "unavailable");
   assert.match(service.briefText(), /Attention: .*could not be read/u);
+  // Status keeps the revision and the brief: only the file is unusable.
+  const status = service.status({ ...statusInput, brief: true });
+  assert.equal(status.state, "unavailable");
+  assert.equal(status.revision, 1);
+  assert.equal(status.brief?.handoff.document, "unavailable");
 });
+
+test("a brief offers adoption only where it can happen", (t) => {
+  const f = fixture(t);
+  f.write(PLAIN);
+  const writable = f.service().briefText();
+  assert.match(writable, /handoff_adopt or reprogate handoff adopt/u);
+  const readOnly = f.service({ allowUpdates: false }).briefText();
+  assert.match(readOnly, /was never recorded\. Read it\./u);
+  assert.doesNotMatch(readOnly, /adopt/u);
+});
+
+test("the smallest brief fits however long a worktree name is", () => {
+  const name = 'w"'.repeat(64);
+  const git = emptyGitObservation("unavailable");
+  git.state = "observed";
+  git.worktree = name;
+  git.head = "a".repeat(64);
+  git.commitsSince = { base: "b".repeat(64), count: 1, subjects: [] };
+  const brief = buildBrief({
+    now: 0,
+    liveness: { leaseMs: 1, graceMs: 1 },
+    latest: undefined,
+    document: "drifted",
+    documentWorktree: name,
+    sessions: [],
+    lastNotes: new Map(),
+    notes: [],
+    git,
+  });
+  const measure = (value: typeof brief) =>
+    Buffer.byteLength(JSON.stringify(value));
+  assert.ok(measure(fitBrief(brief, 1024, measure)) <= 1024);
+});
+
+test(
+  "the failure text offers repair only for what repair can fix",
+  posix,
+  (t) => {
+    const f = fixture(t);
+    f.write(PLAIN);
+    linkSync(f.document, join(f.scratch, "backup"));
+    // The service still runs, and the brief says the file is unusable.
+    const warned = f.cli(["brief", "--config", f.configPath]);
+    assert.equal(warned.code, 0, warned.stderr);
+    assert.match(warned.stdout, /could not be read/u);
+    const refused = f.cli([
+      "adopt",
+      "--config",
+      f.configPath,
+      "--repair-permissions",
+    ]);
+    assert.equal(refused.code, 1);
+    assert.match(refused.stderr, /\.agent\/handoff\.md/u);
+    assert.match(refused.stderr, /symlink, a hard link or owned/u);
+    assert.doesNotMatch(refused.stderr, /--repair-permissions/u);
+
+    const linked = fixture(t);
+    const elsewhere = join(linked.scratch, "elsewhere");
+    mkdirSync(elsewhere, { mode: 0o700 });
+    symlinkSync(elsewhere, linked.agent);
+    const failed = linked.cli(["brief", "--config", linked.configPath]);
+    assert.equal(failed.code, 1);
+    assert.match(failed.stderr, /\.agent: a symlink, a hard link or owned/u);
+    assert.doesNotMatch(failed.stderr, /--repair-permissions/u);
+  },
+);
 
 test("the preview names the agent that would be recorded", (t) => {
   const f = fixture(t);

@@ -334,20 +334,24 @@ function existingEntry(path: string): BigIntStats | undefined {
   }
 }
 /**
- * Paths under the workspace that the handoff service would refuse. Empty on
- * Windows, which has no mode bits. For diagnosis only.
+ * Paths under the workspace that the handoff service would refuse: `loose`
+ * ones repair can fix, and `refused` ones it will not touch, which are
+ * symlinks, hard links or someone else's. Empty on Windows, which has no
+ * mode bits. For diagnosis only.
  */
-export function handoffPermissionIssues(workspaceRoot: string): string[] {
-  if (process.platform === "win32") return [];
-  return handoffEntries(workspaceRoot).flatMap(
-    ({ path, name, directory, refused }) => {
-      const stats = existingEntry(path);
-      return stats !== undefined &&
-        (!ownEntry(stats, directory) || (stats.mode & refused) !== 0n)
-        ? [name]
-        : [];
-    },
-  );
+export function handoffPermissionIssues(workspaceRoot: string): {
+  loose: string[];
+  refused: string[];
+} {
+  const issues = { loose: [] as string[], refused: [] as string[] };
+  if (process.platform === "win32") return issues;
+  for (const entry of handoffEntries(workspaceRoot)) {
+    const stats = existingEntry(entry.path);
+    if (stats === undefined) continue;
+    if (!ownEntry(stats, entry.directory)) issues.refused.push(entry.name);
+    else if ((stats.mode & entry.refused) !== 0n) issues.loose.push(entry.name);
+  }
+  return issues;
 }
 /**
  * Make the handoff's existing files private, for a workspace that used

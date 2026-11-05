@@ -76,6 +76,19 @@ export function repositoryIdentity(
   }
 }
 
+export type RepositoryResolver = (
+  path: string,
+) => RepositoryIdentity | undefined;
+
+/** A resolver for one short command, which asks about each path once. */
+export function memoizedRepositoryIdentity(): RepositoryResolver {
+  const known = new Map<string, RepositoryIdentity | undefined>();
+  return (path) => {
+    if (!known.has(path)) known.set(path, repositoryIdentity(path));
+    return known.get(path);
+  };
+}
+
 /** The current HEAD commit, or null when there is none or Git fails. */
 export function observeHead(root: string): string | null {
   try {

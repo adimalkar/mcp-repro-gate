@@ -34,6 +34,8 @@ import {
   observeGit,
   observeHead,
   repositoryIdentity,
+  type RepositoryIdentity,
+  type RepositoryResolver,
 } from "./handoff-observe.js";
 import { redactHandoffText } from "./handoff-redact.js";
 import {
@@ -125,6 +127,8 @@ export interface HandoffServiceOptions {
    * worktree whose Git state a brief reads; the process's own by default.
    */
   cwd?: string;
+  /** How repositories are resolved; a short command shares one lookup. */
+  resolveRepository?: RepositoryResolver;
 }
 
 // Client identifiers are opaque; accept a conservative shape only.
@@ -177,28 +181,43 @@ export function workspaceContains(
   }
 }
 
+// The worktree an event from `cwd` belongs to: any worktree of the repository
+// in repository scope and no other repository, even one nested inside it, or
+// the workspace for a path inside it.
+function eventWorktree(
+  workspaceRoot: string,
+  repository: RepositoryIdentity | undefined,
+  cwd: unknown,
+  resolve: RepositoryResolver,
+): string | undefined {
+  if (repository !== undefined && typeof cwd === "string" && isAbsolute(cwd)) {
+    const identity = resolve(cwd);
+    if (identity !== undefined)
+      return identity.commonDir === repository.commonDir
+        ? identity.worktree
+        : undefined;
+  }
+  return workspaceContains(workspaceRoot, cwd) ? workspaceRoot : undefined;
+}
+
 /**
- * Whether a hook event from `cwd` belongs to this configuration: inside the
- * workspace, or in repository scope any worktree of the same repository and
- * no other, even one nested inside it. Checked before the database is
- * opened. Only repository scope runs Git.
+ * Whether a hook event from `cwd` belongs to this configuration. Checked
+ * before the database is opened. Only repository scope runs Git. A workspace
+ * that can no longer be resolved, such as a removed worktree, is accepted so
+ * that startup reports it: dropping every event would look like no problem.
  */
 export function workspaceAccepts(
   config: HandoffConfigV1,
   cwd: unknown,
+  resolve: RepositoryResolver = repositoryIdentity,
 ): boolean {
-  if (
-    config.scope === "repository" &&
-    typeof cwd === "string" &&
-    isAbsolute(cwd)
-  ) {
-    const event = repositoryIdentity(cwd);
-    if (event !== undefined)
-      return (
-        event.commonDir === repositoryIdentity(config.workspaceRoot)?.commonDir
-      );
-  }
-  return workspaceContains(config.workspaceRoot, cwd);
+  if (config.scope !== "repository")
+    return workspaceContains(config.workspaceRoot, cwd);
+  const repository = resolve(config.workspaceRoot);
+  return (
+    repository === undefined ||
+    eventWorktree(config.workspaceRoot, repository, cwd, resolve) !== undefined
+  );
 }
 
 export interface ProjectionSteps<Prepared> {
@@ -269,9 +288,10 @@ export function createHandoffService(
     const instanceId = contextStore.handoffInstance();
     // Asking for repository scope and silently getting a per-workspace
     // ledger would split the history, so a failure here is fatal.
+    const resolveRepository = options.resolveRepository ?? repositoryIdentity;
     const repository =
       config.scope === "repository"
-        ? repositoryIdentity(files.workspaceRoot)
+        ? resolveRepository(files.workspaceRoot)
         : undefined;
     if (config.scope === "repository" && repository === undefined)
       throw new HandoffError("unavailable");
@@ -286,24 +306,8 @@ export function createHandoffService(
             commonDirectory: repository.commonDir,
           },
     );
-    // The worktree of a path: any worktree of the repository in repository
-    // scope, or the workspace for a path inside it.
-    const worktreeFor = (cwd: unknown): string | undefined => {
-      if (
-        repository !== undefined &&
-        typeof cwd === "string" &&
-        isAbsolute(cwd)
-      ) {
-        const identity = repositoryIdentity(cwd);
-        if (identity !== undefined)
-          return identity.commonDir === repository.commonDir
-            ? identity.worktree
-            : undefined;
-      }
-      return workspaceContains(files.workspaceRoot, cwd)
-        ? files.workspaceRoot
-        : undefined;
-    };
+    const worktreeFor = (cwd: unknown) =>
+      eventWorktree(files.workspaceRoot, repository, cwd, resolveRepository);
     // This process's worktree, resolved once and only when a brief or a join
     // needs it: hooks name their own, and a process's directory may be gone.
     let ownRoot: string | undefined;
@@ -512,12 +516,14 @@ export function createHandoffService(
       fitBrief(composeBrief(exclude), budget, (brief) =>
         Buffer.byteLength(JSON.stringify(brief)),
       );
+    const textOf = (brief: HandoffBriefV1) =>
+      renderBriefText(brief, { readOnly: !config.allowUpdates });
     const briefText = (maxChars: number, exclude?: string, worktree?: string) =>
-      renderBriefText(
+      textOf(
         fitBrief(
           composeBrief(exclude, observe, worktree),
           maxChars,
-          (brief) => renderBriefText(brief).length,
+          (brief) => textOf(brief).length,
         ),
       );
     const view = (session: HandoffSessionRow) =>
@@ -534,23 +540,31 @@ export function createHandoffService(
       let latest: ReturnType<SqliteExecutionStore["latestHandoff"]>;
       let documentDigest: string | null = null;
       let state: HandoffStatusV1["state"];
+      let databaseUsable = true;
       try {
         binding.verify();
         latest = contextStore.latestHandoff(workspaceId);
-        documentDigest = files.document().digest;
-        state =
-          latest === undefined
-            ? "missing"
-            : documentRelation(latest, documentDigest);
       } catch {
-        state = "unavailable";
-        latest = undefined;
+        databaseUsable = false;
+      }
+      if (!databaseUsable) state = "unavailable";
+      else {
+        try {
+          documentDigest = files.document().digest;
+          state =
+            latest === undefined
+              ? "missing"
+              : documentRelation(latest, documentDigest);
+        } catch {
+          // Only the file is unusable: the record and sessions still stand.
+          state = "unavailable";
+        }
       }
       const record = latest?.record;
       // A drifted or missing document must not hide the sessions and the
       // observed Git state; only an unusable database does.
       const brief =
-        input.data.brief === true && state !== "unavailable"
+        input.data.brief === true && databaseUsable
           ? guard(() => briefJson(input.data.briefBytes ?? DEFAULT_BRIEF_BYTES))
           : undefined;
       const sessionId = input.data.sessionId;
@@ -621,11 +635,23 @@ export function createHandoffService(
       revive: boolean,
       worktree: string,
     ): HandoffSessionRow => {
-      const found = ledger.find(workspaceId, client, clientSession, "");
+      let found = ledger.find(workspaceId, client, clientSession, "");
+      // Resumed elsewhere, even after a crash that never reported an end.
+      const recorded = recordedWorktree(worktree);
+      if (
+        found !== undefined &&
+        revive &&
+        recorded !== null &&
+        found.worktree !== recorded
+      )
+        found = ledger.relocate(
+          workspaceId,
+          found.sessionId,
+          recorded,
+          head(worktree),
+        );
       if (found !== undefined && (found.endedAt === null || !revive))
         return found;
-      const moved =
-        found !== undefined && found.worktree !== recordedWorktree(worktree);
       return ledger.start(workspaceId, {
         client,
         clientSession,
@@ -634,7 +660,7 @@ export function createHandoffService(
         kind: "agent",
         parentSessionId: null,
         task: null,
-        startHead: found === undefined || moved ? head(worktree) : null,
+        startHead: found === undefined ? head(worktree) : null,
         worktree: recordedWorktree(worktree),
         now: now().getTime(),
       }).session;

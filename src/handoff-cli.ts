@@ -12,6 +12,7 @@ import {
   loadHandoffConfig,
   repairHandoffPermissions,
 } from "./handoff-filesystem.js";
+import { memoizedRepositoryIdentity } from "./handoff-observe.js";
 import {
   HOOK_CONTEXT_CHARS,
   MAX_BRIEF_BYTES,
@@ -41,10 +42,13 @@ function failureText(error: unknown, workspaceRoot?: string): string {
   const code = error instanceof HandoffError ? error.code : "unavailable";
   if (code !== "unavailable" || workspaceRoot === undefined) return code;
   try {
-    const issues = handoffPermissionIssues(workspaceRoot);
-    return issues.length === 0
+    const { loose, refused } = handoffPermissionIssues(workspaceRoot);
+    // Repair stops at these, so asking for it would go nowhere.
+    if (refused.length > 0)
+      return `${code}: ${refused.join(", ")}: a symlink, a hard link or owned by someone else; fix it by hand`;
+    return loose.length === 0
       ? code
-      : `${code}: not private: ${issues.join(", ")}; run reprogate handoff adopt --config <path> --repair-permissions`;
+      : `${code}: not private: ${loose.join(", ")}; run reprogate handoff adopt --config <path> --repair-permissions`;
   } catch {
     return code;
   }
@@ -237,17 +241,23 @@ export function runHandoffCli(
       }
       const config = loadHandoffConfig(configPath);
       workspaceRoot = config.workspaceRoot;
+      const resolveRepository = memoizedRepositoryIdentity();
       // Hooks set for every project return here, before the database is
       // opened or locked.
       if (
         payload === null ||
         typeof payload !== "object" ||
-        !workspaceAccepts(config, (payload as { cwd?: unknown }).cwd)
+        !workspaceAccepts(
+          config,
+          (payload as { cwd?: unknown }).cwd,
+          resolveRepository,
+        )
       )
         return 0;
       service = createHandoffService(config, {
         // A one-shot command: no timer may keep the process alive.
         deferProjection: false,
+        resolveRepository,
         ...(io.now === undefined ? {} : { now: io.now }),
       });
       const result = service.hook(client, payload);

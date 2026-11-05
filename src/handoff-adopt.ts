@@ -19,6 +19,7 @@ const HEADING = /^ {0,3}(#{1,6})[ \t]+(.*)$/u;
 const OPENING_FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/u;
 const CLOSING_FENCE = /^ {0,3}(`{3,}|~{3,})[ \t]*$/u;
 const ITEM = /^ {0,3}(?:[-*+]|\d{1,3}[.)])[ \t]+(.+)$/u;
+const BARE_MARKER = /^(?:[-*+]|\d{1,3}[.)])$/u;
 const LAST_AGENT = /^ {0,3}[-*][ \t]+\*\*Last Active Agent\*\*:[ \t]*(.+)$/u;
 // Files kept by hand often say where things stand here, above the sections,
 // while the goal below grows stale. A brief shows the goal, so it leads.
@@ -130,6 +131,18 @@ export function extractDocument(
   let goalDone = false;
   let fence: { marker: "`" | "~"; length: number } | undefined;
   let skipping = false;
+  // The list item being read. Lines that directly follow it, indented or
+  // not, are the same item wrapped.
+  let open: { list: string[]; text: string } | undefined;
+  const finishItem = () => {
+    if (open === undefined) return;
+    const item = clean(open.text, MAX_ITEM_BYTES);
+    if (item !== "" && !PLACEHOLDER.test(item)) {
+      if (open.list.length < MAX_ITEMS) open.list.push(item);
+      else omittedItems++;
+    }
+    open = undefined;
+  };
   for (const [index, line] of lines.entries()) {
     if (fence !== undefined) {
       const run = CLOSING_FENCE.exec(line)?.[1];
@@ -144,18 +157,20 @@ export function extractDocument(
       // Backticks after the run make it inline code, not a fence.
       const inline = marker === "`" && (opening?.[2] ?? "").includes("`");
       if (!inline && (closers[marker][index] ?? 0) >= run.length) {
+        finishItem();
         fence = { marker, length: run.length };
         continue;
       }
     }
     const heading = HEADING.exec(line);
     if (heading !== null) {
+      finishItem();
       const depth = (heading[1] ?? "").length;
       const named = sectionOf(heading[2] ?? "");
       // An unknown, deeper heading stays inside the section it falls under.
       if (section !== undefined && depth > level && named === undefined)
         continue;
-      if (section === "goal") goalDone = true;
+      if (section === "goal" && named !== "goal") goalDone = true;
       section = named;
       level = depth;
       skipping = false;
@@ -165,24 +180,26 @@ export function extractDocument(
     if (section === undefined) status ??= STATUS.exec(line)?.[1];
     if (section === undefined || skipping) continue;
     const trimmed = line.trim();
-    if (trimmed === "") continue;
-    if (SUBLIST.test(trimmed)) {
-      skipping = true;
+    if (trimmed === "" || SUBLIST.test(trimmed) || BARE_MARKER.test(trimmed)) {
+      finishItem();
+      skipping = SUBLIST.test(trimmed);
       continue;
     }
     if (section === "goal") {
       if (!goalDone) goal.push(trimmed);
       continue;
     }
-    // A line indented past a list item continues it; it is left out.
     const listed = ITEM.exec(line);
+    if (listed === null && open !== undefined) {
+      open.text += ` ${trimmed}`;
+      continue;
+    }
+    // An indented block on its own is detail, not an item.
     if (listed === null && /^[ \t]/u.test(line)) continue;
-    const item = clean(listed?.[1]?.trim() ?? trimmed, MAX_ITEM_BYTES);
-    if (PLACEHOLDER.test(item)) continue;
-    const list = lists[section];
-    if (list.length < MAX_ITEMS) list.push(item);
-    else omittedItems++;
+    finishItem();
+    open = { list: lists[section], text: listed?.[1]?.trim() ?? trimmed };
   }
+  finishItem();
   const parts = [
     ...(status === undefined
       ? []

@@ -246,6 +246,8 @@ Ranked by value for the context-switching workflow:
 - `document()` reads up to 1 MiB (`MAX_ADOPTED_DOCUMENT_BYTES`), because a file kept by hand outgrows the 96 KiB render limit. Archives use the same cap.
 - `handoff_sessions` gains a nullable `worktree` column; older databases get it through `ALTER TABLE` at startup, and a process that loses that race carries on. The column holds the physical path, and views show only the directory name.
 - `update` now rewrites the sessions file, so its goal is never older than the handoff.
+- A one-shot hook shares one repository lookup between its checks. The query joins the runner's metadata reads, so it needs one Git process and no configuration probe: an event from another project costs two, and never opens the database.
+- A session moves to a new worktree only on a resumption (`SessionStart`, a prompt or a subagent start), never on a passing event, and this keeps its `failed` state.
 
 ## Out of scope
 

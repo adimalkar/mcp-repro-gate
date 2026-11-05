@@ -41,7 +41,7 @@ If the handoff `databasePath` and the runtime configuration's `databasePath` nam
 | `synchronized` | The latest revision was projected, and the document still matches it                                                                                                                            |
 | `pending`      | The latest revision is durable, but its projection has not completed; the document still equals the base it was written against, or already equals the projection without a recorded projection |
 | `drifted`      | The document differs from both the projection and the expected base, for example after a manual edit                                                                                            |
-| `unavailable`  | A path, permission, identity or integrity check failed                                                                                                                                          |
+| `unavailable`  | A path, permission, identity or integrity check failed. If only the document is unusable, the revision and any requested brief are still returned                                               |
 
 `handoff_update` takes:
 
@@ -92,7 +92,7 @@ Take `expectedRevision` and `expectedDocumentDigest` from `handoff_status` after
 - **The first adoption is the import.** With no revision recorded, `expectedRevision` is 0 and the file becomes revision 1. This also applies after [switching `scope`](#sharing-one-handoff-across-worktrees), which starts a new history.
 - **Briefs say when to do this.** `handoff.document` in a brief is `none`, `untracked`, `synchronized`, `pending`, `drifted`, `deleted` or `unavailable`, and the text form of a brief opens with what to do when the file is untracked, drifted or deleted, or warns that it could not be read. In repository scope, `handoff.documentWorktree` names the worktree that holds it. `.agent/sessions.md` says the same.
 
-Only the digest and a short extract are stored, not the document. So a brief has something to show, the goal and lists are read from the shared-protocol headings, with or without numbers: `Active Goal / Task`, `Where We Left Off`, `Implementation Problems & Blockers` and `Immediate Next Steps`. A `Status` line above the sections leads the goal, since files kept by hand often say there where things stand. The extract keeps 2 KiB of goal and 16 items of 512 bytes per list. Redaction runs on the whole document, so a credential spanning lines is caught, and again on each value after its Markdown escapes are undone; control characters are replaced, and the file itself is left as it is. A code fence that never closes hides nothing. A document with none of these headings is still adopted, and the goal then points to the file.
+Only the digest and a short extract are stored, not the document. So a brief has something to show, the goal and lists are read from the shared-protocol headings, with or without numbers: `Active Goal / Task`, `Where We Left Off`, `Implementation Problems & Blockers` and `Immediate Next Steps`. A `Status` line above the sections leads the goal, since files kept by hand often say there where things stand. The extract keeps 2 KiB of goal and 16 items of 512 bytes per list. Redaction runs on the whole document, so a credential spanning lines is caught, and again on each value after its Markdown escapes are undone; control characters are replaced, and the file itself is left as it is. A code fence that never closes hides nothing, and a wrapped line stays part of its list item. A wrapped line stays part of its list item. A document with none of these headings is still adopted, and the goal then points to the file.
 
 Adopted text is caller-asserted like any other handoff context, and its source is a file, which anyone able to write to `.agent` could have changed. Read a document you did not write before adopting it, for example one that arrived in a repository you cloned: it reaches later agents through briefs.
 
@@ -104,7 +104,7 @@ reprogate handoff adopt --config /absolute/private/dir/handoff.json
 
 This shows the state, the digest and what would be recorded, and changes nothing. To record it, run it again with `--digest sha256:…`; add `--agent <name>` to name the author.
 
-A workspace that kept plain files usually has a `.agent/` that others can read, which the service refuses at startup. `brief` and `hook` then say which paths are the problem. Add `--repair-permissions` to make `.agent/`, `handoff.md`, `sessions.md` and `handoff-history/` private first:
+A workspace that kept plain files usually has a `.agent/` that others can read, which the service refuses at startup. `brief` and `hook` then say which paths are the problem, and offer this command only when it can fix them. Add `--repair-permissions` to make `.agent/`, `handoff.md`, `sessions.md` and `handoff-history/` private first:
 
 ```sh
 reprogate handoff adopt --config /absolute/private/dir/handoff.json --repair-permissions
@@ -126,10 +126,10 @@ By default each workspace root has its own history, so every Git worktree needs 
 }
 ```
 
-- **One history.** Revisions, sessions and notes are keyed by the repository's Git common directory instead of the workspace root, so they survive any one worktree being removed.
+- **One history.** Revisions, sessions and notes are keyed by the repository's Git common directory instead of the workspace root, so removing a worktree loses nothing. If it was the worktree `workspaceRoot` names, hooks and startup report `unavailable` until the configuration names another one; the document that was in it goes with it, and the history stays.
 - **One document.** `.agent/handoff.md` and `.agent/sessions.md` stay in `workspaceRoot`, whichever worktree an update came from. Worktrees do not get their own copies, so an agent elsewhere reads the brief, not the file.
 - **Sessions record their worktree.** Hooks are accepted from any worktree of the repository, and an MCP server or CLI command uses the worktree it runs in. `worktree` in a session view and `worktree` in the Git observation give its directory name, never a host path.
-- **Git state is per worktree.** A brief reads the Git state of the worktree it was asked from. Commits since an earlier session count only sessions of that worktree, since a range across branches means nothing; a session resumed in another worktree starts from that worktree's head. A merge in progress in another worktree does not appear in the Git section; look at that session instead.
+- **Git state is per worktree.** A brief reads the Git state of the worktree it was asked from. Commits since an earlier session count only sessions of that worktree, since a range across branches means nothing. A session resumed in another worktree moves there and starts from that worktree's head, even if it crashed without reporting an end. A merge in progress in another worktree does not appear in the Git section; look at that session instead.
 
 The repository is resolved at startup and for each hook event from another directory, by running Git. If `workspaceRoot` is not in a repository, or Git cannot read it, startup fails instead of quietly keeping a per-workspace history. Hooks from a directory in another repository, even one nested inside a worktree, or from one that no longer exists, are ignored.
 
