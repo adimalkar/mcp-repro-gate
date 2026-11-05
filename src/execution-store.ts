@@ -418,6 +418,7 @@ export class SqliteExecutionStore implements PlanStore, TokenUseStore {
     value: unknown,
     observeDocument: () => {
       digest: string | null;
+      bytes: Buffer | null;
       context: () => HandoffContextV1;
     },
     now: Date = new Date(),
@@ -463,7 +464,11 @@ export class SqliteExecutionStore implements PlanStore, TokenUseStore {
         expectedDocumentDigest: input.expectedDocumentDigest,
         requestDigest,
         context: document.context(),
-        references: [],
+        // A document cannot carry execution counts, so plan references come
+        // from the revision it replaces, for as long as it still names them.
+        references: (previous?.record.references ?? []).filter(
+          ({ actionId }) => document.bytes?.includes(actionId) === true,
+        ),
         adoptedDocumentDigest: input.expectedDocumentDigest,
       });
       this.#database

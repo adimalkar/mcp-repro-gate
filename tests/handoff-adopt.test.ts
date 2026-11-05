@@ -384,6 +384,95 @@ test("a wrapped list item stays one item", () => {
   ]);
 });
 
+test("a title or a task list is not the goal", () => {
+  const goalOf = (document: string) =>
+    extractDocument(Buffer.from(document)).context.goal;
+  assert.equal(
+    goalOf(
+      "# Task handoff for Foo\n- **Last Active Agent**: Z\n## Where we left off\n- a\n## Goal\nreal\n",
+    ),
+    "real",
+  );
+  assert.equal(goalOf("## Task Board\n- [ ] a\n## Goal\nreal\n"), "real");
+  for (const heading of [
+    "Goal",
+    "Task",
+    "Objective",
+    "Current Task",
+    "1. Active Goal / Task",
+  ])
+    assert.equal(goalOf(`## ${heading}\nreal\n`), "real", heading);
+});
+
+test("thematic breaks are not content", () => {
+  const { context } = extractDocument(
+    Buffer.from(
+      "## Goal\nShip it\n---\n## Blockers\n- None yet\n\n***\n\n## Next steps\n- go\n___\n- - -\n",
+    ),
+  );
+  assert.equal(context.goal, "Ship it");
+  assert.deepEqual(context.blockers, ["None yet"]);
+  assert.deepEqual(context.nextSteps, ["go"]);
+});
+
+test("hand-written backslashes survive, and escaped credentials do not", () => {
+  const { context } = extractDocument(
+    Buffer.from(
+      `## Next steps\n- see C:\\_tmp\\*.log and regex \\.foo\\-bar\n- token ghp\\_${"a".repeat(36)}\n`,
+    ),
+  );
+  assert.equal(
+    context.nextSteps[0],
+    "see C:\\_tmp\\*.log and regex \\.foo\\-bar",
+  );
+  assert.doesNotMatch(context.nextSteps[1] ?? "", /aaaa/u);
+});
+
+test("nested list items stay under their parent", () => {
+  const steps = (document: string) =>
+    extractDocument(Buffer.from(document)).context.nextSteps;
+  assert.deepEqual(steps("## Next steps\n1. one\n   - d1\n   - d2\n2. two\n"), [
+    "one",
+    "two",
+  ]);
+  assert.deepEqual(steps("## Next steps\n- one\n  - d1\n    - d2\n- two\n"), [
+    "one",
+    "two",
+  ]);
+  // Not indented past the marker: a sibling, as in CommonMark.
+  assert.deepEqual(steps("## Next steps\n1. one\n  - two\n"), ["one", "two"]);
+});
+
+test("a hand edit keeps the declared touched files it still lists", (t) => {
+  const f = fixture(t);
+  const service = f.service();
+  service.update({
+    ...update(0, null),
+    context: {
+      ...update(0, null).context,
+      touchedFiles: ["src/a_b.ts", "src/c.ts"],
+    },
+  });
+  const edited = readFileSync(f.document, "utf8")
+    .replace("Ship the adoption slice", "Ship the slice")
+    .replace("- src/c.ts\n", "");
+  const digest = f.write(edited);
+  const status = service.adopt(adopt(1, digest));
+  assert.deepEqual(
+    service.status({ ...statusInput, includeContext: true }).context
+      ?.touchedFiles,
+    ["src/a_b.ts"],
+  );
+  assert.equal(status.counts.touchedFiles, 1);
+  const invalid = extractDocument(
+    Buffer.from(
+      "## Where we left off\nDeclared touched files:\n\n- ../outside\n- /etc/passwd\n- ok.ts\n- ok.ts\n",
+    ),
+  );
+  assert.deepEqual(invalid.context.touchedFiles, ["ok.ts"]);
+  assert.deepEqual(invalid.context.completed, []);
+});
+
 test("only real code fences hide text", () => {
   const steps = (document: string) =>
     extractDocument(Buffer.from(document)).context.nextSteps;
@@ -992,6 +1081,39 @@ test("a crashed session resumed in another worktree moves there and stays failed
   );
 });
 
+test("a subagent elsewhere does not move its parent, and moves itself", (t) => {
+  const f = fixture(t, "repository");
+  const { root, linked } = repository(f);
+  const hook = (cwd: string, event: string, extra = {}) => {
+    const { code, stderr } = f.cli(["hook", "--config", f.configPath], {
+      cwd,
+      hook_event_name: event,
+      session_id: "parent",
+      ...extra,
+    });
+    assert.equal(code, 0, stderr);
+  };
+  const subagent = { agent_id: "a1", agent_type: "worker" };
+  hook(root, "SessionStart");
+  writeFileSync(join(root, "c.txt"), "main\n");
+  git(root, "add", "c.txt");
+  git(root, "commit", "-q", "-m", "main work");
+  hook(linked, "SubagentStart", subagent);
+  const service = f.service();
+  const listed = () => service.brief().sessions;
+  const parent = listed().find((s) => s.kind === "agent");
+  assert.equal(parent?.worktree, "workspace");
+  assert.equal(service.brief().git.commitsSince?.count, 1);
+  const { sessionId } = parent;
+  const lane = () =>
+    service.status({ ...statusInput, sessionId }).lane?.subagents[0];
+  assert.equal(lane()?.worktree, "linked");
+  // Restarted from another worktree, a subagent moves with it.
+  hook(linked, "SubagentStop", subagent);
+  hook(root, "SubagentStart", subagent);
+  assert.equal(lane()?.worktree, "workspace");
+});
+
 test("removing the configured worktree is reported, not silent", (t) => {
   const f = fixture(t, "repository");
   const { root, linked } = repository(f);
@@ -1268,6 +1390,29 @@ test(
     assert.doesNotMatch(failed.stderr, /--repair-permissions/u);
   },
 );
+
+test("the preview offers only what can happen", (t) => {
+  const f = fixture(t);
+  const digest = f.write(PLAIN);
+  const readOnly = { ...f.config, allowUpdates: false };
+  writeFileSync(f.configPath, JSON.stringify(readOnly), { mode: 0o600 });
+  const shown = f.cli(["adopt", "--config", f.configPath]);
+  assert.equal(shown.code, 0, shown.stderr);
+  assert.match(shown.stdout, new RegExp(digest));
+  assert.doesNotMatch(shown.stdout, /--digest/u);
+  writeFileSync(f.configPath, JSON.stringify(f.config), { mode: 0o600 });
+  for (const agent of ["bad name!", `ghp_${"a".repeat(36)}`]) {
+    const refused = f.cli([
+      "adopt",
+      "--config",
+      f.configPath,
+      "--agent",
+      agent,
+    ]);
+    assert.equal(refused.code, 1);
+    assert.match(refused.stderr, /invalid_input/u);
+  }
+});
 
 test("the preview names the agent that would be recorded", (t) => {
   const f = fixture(t);

@@ -167,6 +167,7 @@ function runAdopt(args: readonly string[], io: HandoffCliIo): number {
       );
     }
     if (
+      config.allowUpdates &&
       preview.documentDigest !== null &&
       (preview.state === "drifted" || preview.state === "missing")
     )

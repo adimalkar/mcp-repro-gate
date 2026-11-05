@@ -17,6 +17,7 @@ import {
   HandoffError,
   handoffStatusInputSchema,
   ownHandoffValue,
+  handoffAgentNameSchema,
   parseHandoffAdopt,
   parseHandoffConfig,
   parseHandoffUpdate,
@@ -218,6 +219,16 @@ export function workspaceAccepts(
     repository === undefined ||
     eventWorktree(config.workspaceRoot, repository, cwd, resolve) !== undefined
   );
+}
+
+// An agent name that could not be recorded, or that looks like a credential.
+function checkAgentName(agent: string | undefined): void {
+  if (
+    agent !== undefined &&
+    (!handoffAgentNameSchema.safeParse(agent).success ||
+      redactHandoffText(agent).redactions > 0)
+  )
+    throw new HandoffError("invalid_input");
 }
 
 export interface ProjectionSteps<Prepared> {
@@ -634,13 +645,14 @@ export function createHandoffService(
       agent: string,
       revive: boolean,
       worktree: string,
+      move = revive,
     ): HandoffSessionRow => {
       let found = ledger.find(workspaceId, client, clientSession, "");
       // Resumed elsewhere, even after a crash that never reported an end.
       const recorded = recordedWorktree(worktree);
       if (
         found !== undefined &&
-        revive &&
+        move &&
         recorded !== null &&
         found.worktree !== recorded
       )
@@ -686,13 +698,21 @@ export function createHandoffService(
           ? redacted(value, MAX_MESSAGE_BYTES)
           : undefined;
       };
-      const main = (revive: boolean) =>
-        mainSession(client, sessionKey, client, revive, worktree);
+      const main = (revive: boolean, move = revive) =>
+        mainSession(client, sessionKey, client, revive, worktree, move);
       // A subagent's session. Only SubagentStart creates one: Claude Code
       // also reports internal agents (prompt suggestions, /btw) that never
       // started, and those must not become sessions.
       const subagent = (create: boolean): HandoffSessionRow | undefined => {
-        const found = ledger.find(workspaceId, client, sessionKey, agentKey);
+        let found = ledger.find(workspaceId, client, sessionKey, agentKey);
+        const recorded = recordedWorktree(worktree);
+        if (
+          create &&
+          found !== undefined &&
+          recorded !== null &&
+          found.worktree !== recorded
+        )
+          found = ledger.relocate(workspaceId, found.sessionId, recorded, null);
         if (!create || found?.endedAt === null) return found;
         return ledger.start(workspaceId, {
           client,
@@ -700,7 +720,8 @@ export function createHandoffService(
           clientAgent: agentKey,
           agent: agentLabel(agentType, "subagent"),
           kind: "subagent",
-          parentSessionId: main(true).sessionId,
+          // A subagent's worktree says nothing about where its parent is.
+          parentSessionId: main(true, false).sessionId,
           task: null,
           startHead: null,
           worktree: recordedWorktree(worktree),
@@ -868,11 +889,7 @@ export function createHandoffService(
       adopt: (value: unknown) => {
         const input = parseHandoffAdopt(value);
         writable();
-        if (
-          input.agent !== undefined &&
-          redactHandoffText(input.agent).redactions > 0
-        )
-          throw new HandoffError("invalid_input");
+        checkAgentName(input.agent);
         return guard(() => {
           contextStore.adoptHandoff(
             workspaceId,
@@ -881,6 +898,7 @@ export function createHandoffService(
               const document = files.document();
               return {
                 digest: document.digest,
+                bytes: document.bytes,
                 context: () =>
                   extractDocument(
                     document.bytes ?? Buffer.alloc(0),
@@ -896,6 +914,7 @@ export function createHandoffService(
       },
       previewAdoption: (agent?: string) => {
         live();
+        checkAgentName(agent);
         return guard(() => {
           const { state, revision } = status({ handoffVersion: 1 });
           const document = files.document();

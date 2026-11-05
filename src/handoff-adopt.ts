@@ -1,4 +1,8 @@
-import type { HandoffContextV1 } from "./handoff-contract.js";
+import {
+  HANDOFF_PROJECTION_NOTICE,
+  handoffDeclaredPathSchema,
+  type HandoffContextV1,
+} from "./handoff-contract.js";
 import { HANDOFF_REDACTED, redactHandoffText } from "./handoff-redact.js";
 import { printableText } from "./handoff-session-contract.js";
 
@@ -7,6 +11,8 @@ import { printableText } from "./handoff-session-contract.js";
 const MAX_GOAL_BYTES = 2048;
 const MAX_ITEM_BYTES = 512;
 const MAX_ITEMS = 16;
+const MAX_TOUCHED_FILES = 32;
+const MAX_PATH_BYTES = 512;
 
 export const NO_GOAL_FOUND =
   "Adopted a document with no recognized goal; read the handoff document.";
@@ -20,6 +26,9 @@ const OPENING_FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/u;
 const CLOSING_FENCE = /^ {0,3}(`{3,}|~{3,})[ \t]*$/u;
 const ITEM = /^ {0,3}(?:[-*+]|\d{1,3}[.)])[ \t]+(.+)$/u;
 const BARE_MARKER = /^(?:[-*+]|\d{1,3}[.)])$/u;
+const LIST_MARKER = /^(?:[-*+]|\d{1,3}[.)])[ \t]/u;
+const THEMATIC_BREAK =
+  /^(?:(?:-[ \t]*){3,}|(?:\*[ \t]*){3,}|(?:_[ \t]*){3,})$/u;
 const LAST_AGENT = /^ {0,3}[-*][ \t]+\*\*Last Active Agent\*\*:[ \t]*(.+)$/u;
 // Files kept by hand often say where things stand here, above the sections,
 // while the goal below grows stale. A brief shows the goal, so it leads.
@@ -27,7 +36,10 @@ const STATUS = /^ {0,3}[-*][ \t]+\*\*Status\*\*:[ \t]*(.+)$/u;
 // ReproGate's own placeholders and sublists are not content.
 const PLACEHOLDER =
   /^(?:Nothing recorded\.|None recorded\.|None declared\.)$(?![\s\S])/u;
-const SUBLIST = /^(?:Declared touched files|Persisted plan references):$/u;
+const SUBLISTS: ReadonlyMap<string, "touched" | "plans"> = new Map([
+  ["Declared touched files:", "touched"],
+  ["Persisted plan references:", "plans"],
+]);
 
 function sectionOf(heading: string): Section | undefined {
   let end = heading.trimEnd().length;
@@ -37,7 +49,12 @@ function sectionOf(heading: string): Section | undefined {
     .replace(/[*_`]/gu, "")
     .replace(/^[\d.)\s]+/u, "")
     .toLowerCase();
-  if (/^(?:(?:active|current) )?(?:goal|task|objective)\b/u.test(title))
+  // The whole title: "Task handoff for Foo" and "Task Board" are not goals.
+  if (
+    /^(?:(?:active|current)\s+)?(?:goal|task|objective)s?(?:\s*[/&:-]\s*(?:goal|task|objective)s?)?[\s:.]*$/u.test(
+      title,
+    )
+  )
     return "goal";
   if (/next steps?\b/u.test(title)) return "nextSteps";
   if (/\b(?:blockers?|problems?)\b/u.test(title)) return "blockers";
@@ -47,7 +64,8 @@ function sectionOf(heading: string): Section | undefined {
 }
 
 // A ReproGate projection escapes Markdown; undo that so a hand-edited
-// projection reads back as what was written.
+// projection reads back as what was written. Only a projection: in text kept
+// by hand a backslash is part of a path or a pattern.
 function unescaped(text: string): string {
   return text.replace(/\\([\\`*_[\]<>#|~!+=.)-])/gu, "$1");
 }
@@ -110,10 +128,16 @@ export function extractDocument(
     bytes.toString("utf8").replace(/^\uFEFF/u, ""),
   );
   let redactions = whole.redactions;
+  const projection = whole.text.includes(HANDOFF_PROJECTION_NOTICE);
   const clean = (value: string, maxBytes: number) => {
-    const result = redactHandoffText(unescaped(value));
-    redactions += result.redactions;
-    return printableText(result.text, maxBytes);
+    // Escapes can hide a credential in any document, so it is always checked
+    // in its unescaped form.
+    const plain = redactHandoffText(unescaped(value));
+    redactions += plain.redactions;
+    return printableText(
+      projection || plain.redactions > 0 ? plain.text : value,
+      maxBytes,
+    );
   };
   const lines = whole.text.split(/\r\n|\r|\n/u);
   const closers = closingFences(lines);
@@ -130,10 +154,11 @@ export function extractDocument(
   let level = 0;
   let goalDone = false;
   let fence: { marker: "`" | "~"; length: number } | undefined;
-  let skipping = false;
+  let sublist: "touched" | "plans" | undefined;
+  const touched = new Set<string>();
   // The list item being read. Lines that directly follow it, indented or
   // not, are the same item wrapped.
-  let open: { list: string[]; text: string } | undefined;
+  let open: { list: string[]; text: string; offset: number } | undefined;
   const finishItem = () => {
     if (open === undefined) return;
     const item = clean(open.text, MAX_ITEM_BYTES);
@@ -173,22 +198,52 @@ export function extractDocument(
       if (section === "goal" && named !== "goal") goalDone = true;
       section = named;
       level = depth;
-      skipping = false;
+      sublist = undefined;
       continue;
     }
     lastAgent ??= LAST_AGENT.exec(line)?.[1];
     if (section === undefined) status ??= STATUS.exec(line)?.[1];
-    if (section === undefined || skipping) continue;
+    if (section === undefined) continue;
     const trimmed = line.trim();
-    if (trimmed === "" || SUBLIST.test(trimmed) || BARE_MARKER.test(trimmed)) {
+    const entering = SUBLISTS.get(trimmed);
+    if (entering !== undefined) {
       finishItem();
-      skipping = SUBLIST.test(trimmed);
+      sublist = entering;
+      continue;
+    }
+    if (sublist !== undefined) {
+      const entry = ITEM.exec(line)?.[1]?.trim();
+      if (sublist === "touched" && entry !== undefined) {
+        const path = clean(entry, MAX_PATH_BYTES);
+        if (
+          !PLACEHOLDER.test(path) &&
+          touched.size < MAX_TOUCHED_FILES &&
+          handoffDeclaredPathSchema.safeParse(path).success
+        )
+          touched.add(path);
+      }
+      continue;
+    }
+    if (
+      trimmed === "" ||
+      BARE_MARKER.test(trimmed) ||
+      THEMATIC_BREAK.test(trimmed)
+    ) {
+      finishItem();
       continue;
     }
     if (section === "goal") {
       if (!goalDone) goal.push(trimmed);
       continue;
     }
+    // A list inside the open item is detail; it is not a step of its own.
+    const indent = line.length - line.trimStart().length;
+    if (
+      open !== undefined &&
+      indent >= open.offset &&
+      LIST_MARKER.test(trimmed)
+    )
+      continue;
     const listed = ITEM.exec(line);
     if (listed === null && open !== undefined) {
       open.text += ` ${trimmed}`;
@@ -197,7 +252,14 @@ export function extractDocument(
     // An indented block on its own is detail, not an item.
     if (listed === null && /^[ \t]/u.test(line)) continue;
     finishItem();
-    open = { list: lists[section], text: listed?.[1]?.trim() ?? trimmed };
+    open = {
+      list: lists[section],
+      text: listed?.[1]?.trim() ?? trimmed,
+      offset:
+        listed?.[1] === undefined
+          ? Number.POSITIVE_INFINITY
+          : line.length - listed[1].length,
+    };
   }
   finishItem();
   const parts = [
@@ -220,7 +282,7 @@ export function extractDocument(
           ? NO_GOAL_FOUND
           : printableText(parts.join("\n"), MAX_GOAL_BYTES),
       completed: lists.completed,
-      touchedFiles: [],
+      touchedFiles: [...touched],
       blockers: lists.blockers,
       nextSteps: lists.nextSteps,
     },

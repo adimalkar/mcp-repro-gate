@@ -57,7 +57,7 @@ const revisionSchema = z
 const pathSchema = text(4096)
   .min(1)
   .refine((value) => !/[\0\r\n]/u.test(value));
-const declaredPathSchema = contextText(512)
+export const handoffDeclaredPathSchema = contextText(512)
   .min(1)
   .refine(
     (value) =>
@@ -67,14 +67,14 @@ const declaredPathSchema = contextText(512)
         .split("/")
         .every((part) => part !== "" && part !== "." && part !== ".."),
   );
-const agentNameSchema = contextText(64)
+export const handoffAgentNameSchema = contextText(64)
   .min(1)
   .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$(?![\s\S])/u);
 export const handoffContextSchema = z.strictObject({
-  activeAgent: agentNameSchema,
+  activeAgent: handoffAgentNameSchema,
   goal: contextText(4096).min(1),
   completed: z.array(contextText(4096).min(1)).max(16),
-  touchedFiles: z.array(declaredPathSchema).max(32),
+  touchedFiles: z.array(handoffDeclaredPathSchema).max(32),
   blockers: z.array(contextText(4096).min(1)).max(16),
   nextSteps: z.array(contextText(4096).min(1)).max(16),
 });
@@ -99,7 +99,7 @@ export const handoffAdoptSchema = z.strictObject({
   updateId: handoffUuidSchema,
   expectedRevision: revisionSchema,
   expectedDocumentDigest: handoffDigestSchema,
-  agent: agentNameSchema.optional(),
+  agent: handoffAgentNameSchema.optional(),
 });
 export const handoffStatusInputSchema = z.strictObject({
   handoffVersion: z.literal(1),
@@ -226,6 +226,10 @@ function markdownList(items: readonly string[], empty: string): string {
     : items.map((item) => `- ${markdownText(item, "  ")}`).join("\n");
 }
 
+/** Every projection carries this line, which is how one is recognized. */
+export const HANDOFF_PROJECTION_NOTICE =
+  "> Written through ReproGate as caller-asserted advisory context. Agent identity and touched paths are declarations. It does not authorize execution or prove Git effects.";
+
 /** Bounded shared-protocol projection of one immutable snapshot. */
 export function renderHandoffRecord(record: HandoffRecordV1): Buffer {
   const { context, references } = record;
@@ -244,7 +248,7 @@ export function renderHandoffRecord(record: HandoffRecordV1): Buffer {
     `- **Revision**: ${String(record.revision)}`,
     `- **Update**: ${record.updateId}`,
     "",
-    "> Written through ReproGate as caller-asserted advisory context. Agent identity and touched paths are declarations. It does not authorize execution or prove Git effects.",
+    HANDOFF_PROJECTION_NOTICE,
     "",
     "## 1. Active Goal / Task",
     "",

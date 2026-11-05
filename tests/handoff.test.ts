@@ -251,6 +251,36 @@ test("manual drift is observed conservatively and stale document revisions canno
     1,
   );
 });
+test("adopting a hand edit keeps the plan references it still names", (t) => {
+  const f = fixture(t);
+  const service = f.service();
+  const kernel = new ReproGateKernel(demoCatalog, demoPolicy, service.store);
+  const plan = kernel.plan({
+    toolRef: "demo.read_file",
+    arguments: { path: "a.txt" },
+  });
+  const update = input();
+  update.actionIds.push(plan.envelope.actionId);
+  service.update(update);
+  const projected = readFileSync(f.document, "utf8");
+  writeFileSync(f.document, `${projected}\nA note.\n`, { mode: 0o600 });
+  const kept = service.adopt({
+    handoffVersion: 1,
+    updateId: randomUUID(),
+    expectedRevision: 1,
+    expectedDocumentDigest: service.status(statusInput).documentDigest,
+  });
+  assert.equal(kept.counts.references, 1);
+  writeFileSync(f.document, "A rewrite that drops them.\n", { mode: 0o600 });
+  const dropped = service.adopt({
+    handoffVersion: 1,
+    updateId: randomUUID(),
+    expectedRevision: 2,
+    expectedDocumentDigest: service.status(statusInput).documentDigest,
+  });
+  assert.equal(dropped.counts.references, 0);
+});
+
 test("handoff references bind consistent real plans and retain only safe summaries", (t) => {
   const f = fixture(t);
   const service = f.service();
