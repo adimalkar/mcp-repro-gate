@@ -2,6 +2,7 @@ import { isAbsolute } from "node:path";
 import { z } from "zod/v4";
 
 import {
+  HANDOFF_PROVENANCES,
   HANDOFF_UNSAFE_TEXT,
   HANDOFF_UUID_PATTERN,
   HandoffError,
@@ -18,6 +19,7 @@ import {
 } from "./handoff-session-contract.js";
 
 export {
+  HANDOFF_PROVENANCES,
   HANDOFF_UNSAFE_TEXT,
   HANDOFF_UUID_PATTERN,
   HandoffError,
@@ -28,6 +30,12 @@ export {
 };
 
 export const MAX_HANDOFF_DOCUMENT_BYTES = 96 * 1024;
+/**
+ * The largest document ReproGate reads. It renders at most
+ * MAX_HANDOFF_DOCUMENT_BYTES, but a file kept by hand can grow past that and
+ * must still be adoptable and archivable.
+ */
+export const MAX_ADOPTED_DOCUMENT_BYTES = 1024 * 1024;
 export const HANDOFF_DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$(?![\s\S])/u;
 const text = (bytes: number) =>
   z
@@ -59,10 +67,11 @@ const declaredPathSchema = contextText(512)
         .split("/")
         .every((part) => part !== "" && part !== "." && part !== ".."),
   );
+const agentNameSchema = contextText(64)
+  .min(1)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$(?![\s\S])/u);
 export const handoffContextSchema = z.strictObject({
-  activeAgent: contextText(64)
-    .min(1)
-    .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$(?![\s\S])/u),
+  activeAgent: agentNameSchema,
   goal: contextText(4096).min(1),
   completed: z.array(contextText(4096).min(1)).max(16),
   touchedFiles: z.array(declaredPathSchema).max(32),
@@ -74,6 +83,7 @@ export const handoffConfigSchema = z.strictObject({
   workspaceRoot: pathSchema.refine(isAbsolute),
   databasePath: pathSchema.refine(isAbsolute),
   allowUpdates: z.boolean(),
+  scope: z.enum(["workspace", "repository"]).optional(),
   sessions: handoffSessionsConfigSchema.optional(),
 });
 export const handoffUpdateSchema = z.strictObject({
@@ -83,6 +93,13 @@ export const handoffUpdateSchema = z.strictObject({
   expectedDocumentDigest: handoffDigestSchema.nullable(),
   context: handoffContextSchema,
   actionIds: z.array(handoffDigestSchema).max(16),
+});
+export const handoffAdoptSchema = z.strictObject({
+  handoffVersion: z.literal(1),
+  updateId: handoffUuidSchema,
+  expectedRevision: revisionSchema,
+  expectedDocumentDigest: handoffDigestSchema,
+  agent: agentNameSchema.optional(),
 });
 export const handoffStatusInputSchema = z.strictObject({
   handoffVersion: z.literal(1),
@@ -109,18 +126,26 @@ export const handoffReferenceSchema = z.strictObject({
     indeterminate: revisionSchema,
   }),
 });
-export const handoffRecordSchema = z.strictObject({
-  handoffVersion: z.literal(1),
-  workspaceId: handoffDigestSchema,
-  revision: revisionSchema.refine((value) => value > 0),
-  updateId: handoffUuidSchema,
-  createdAt: timestampSchema,
-  provenance: z.literal("caller_asserted"),
-  expectedDocumentDigest: handoffDigestSchema.nullable(),
-  requestDigest: handoffDigestSchema,
-  context: handoffContextSchema,
-  references: z.array(handoffReferenceSchema).max(16),
-});
+export const handoffRecordSchema = z
+  .strictObject({
+    handoffVersion: z.literal(1),
+    workspaceId: handoffDigestSchema,
+    revision: revisionSchema.refine((value) => value > 0),
+    updateId: handoffUuidSchema,
+    createdAt: timestampSchema,
+    provenance: z.enum(HANDOFF_PROVENANCES),
+    expectedDocumentDigest: handoffDigestSchema.nullable(),
+    requestDigest: handoffDigestSchema,
+    context: handoffContextSchema,
+    references: z.array(handoffReferenceSchema).max(16),
+    /** The file an adopted revision accepted; it was never rendered. */
+    adoptedDocumentDigest: handoffDigestSchema.optional(),
+  })
+  .refine(
+    (record) =>
+      (record.provenance === "adopted_document") ===
+      (record.adoptedDocumentDigest !== undefined),
+  );
 export const handoffStatusSchema = z.strictObject({
   handoffVersion: z.literal(1),
   state: z.enum([
@@ -135,7 +160,7 @@ export const handoffStatusSchema = z.strictObject({
   snapshotDigest: handoffDigestSchema.nullable(),
   documentDigest: handoffDigestSchema.nullable(),
   projectedDigest: handoffDigestSchema.nullable(),
-  provenance: z.literal("caller_asserted"),
+  provenance: z.enum(HANDOFF_PROVENANCES),
   counts: z.strictObject({
     completed: revisionSchema,
     touchedFiles: revisionSchema,
@@ -151,6 +176,8 @@ export const handoffStatusSchema = z.strictObject({
 });
 export type HandoffConfigV1 = z.infer<typeof handoffConfigSchema>;
 export type HandoffUpdateV1 = z.infer<typeof handoffUpdateSchema>;
+export type HandoffAdoptV1 = z.infer<typeof handoffAdoptSchema>;
+export type HandoffContextV1 = z.infer<typeof handoffContextSchema>;
 export type HandoffRecordV1 = z.infer<typeof handoffRecordSchema>;
 export type HandoffStatusV1 = z.infer<typeof handoffStatusSchema>;
 export function parseHandoffConfig(value: unknown): HandoffConfigV1 {
@@ -168,6 +195,11 @@ export function parseHandoffUpdate(value: unknown): HandoffUpdateV1 {
   )
     throw new HandoffError("invalid_input");
   return ownHandoffValue(parsed.data) as HandoffUpdateV1;
+}
+export function parseHandoffAdopt(value: unknown): HandoffAdoptV1 {
+  const parsed = handoffAdoptSchema.safeParse(ownHandoffValue(value));
+  if (!parsed.success) throw new HandoffError("invalid_input");
+  return ownHandoffValue(parsed.data) as HandoffAdoptV1;
 }
 export function parseHandoffRecord(value: unknown): HandoffRecordV1 {
   const parsed = handoffRecordSchema.safeParse(ownHandoffValue(value));

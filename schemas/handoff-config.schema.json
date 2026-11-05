@@ -30,6 +30,9 @@
     "allowUpdates": {
       "type": "boolean"
     },
+    "scope": {
+      "enum": ["workspace", "repository"]
+    },
     "sessions": {
       "type": "object",
       "additionalProperties": false,

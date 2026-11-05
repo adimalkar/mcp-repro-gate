@@ -320,16 +320,18 @@ test("read-only configuration does not create agent files or grant update author
   assert.equal(existsSync(join(f.workspaceRoot, ".agent")), false);
 });
 test(
-  "unsafe preexisting manual document is refused without chmod repair",
+  "a document others could write is refused without chmod repair",
   { skip: process.platform === "win32" },
   (t) => {
     const f = fixture(t);
     mkdirSync(join(f.workspaceRoot, ".agent"), { mode: 0o700 });
-    writeFileSync(f.document, "manual remains\n", { mode: 0o644 });
+    writeFileSync(f.document, "manual remains\n");
+    chmodSync(f.document, 0o664);
     const service = f.service();
     assert.equal(service.status(statusInput).state, "unavailable");
     assert.throws(() => service.update(input()), errorCode("unavailable"));
     assert.equal(readFileSync(f.document, "utf8"), "manual remains\n");
+    assert.equal(statSync(f.document).mode & 0o777, 0o664);
     chmodSync(f.document, 0o600);
   },
 );
@@ -370,6 +372,7 @@ test("MCP clients discover handoff tools only when configured and update with op
     tool.name.startsWith("handoff"),
   );
   assert.deepEqual(tools.map((tool) => tool.name).sort(), [
+    "handoff_adopt",
     "handoff_end",
     "handoff_join",
     "handoff_note",

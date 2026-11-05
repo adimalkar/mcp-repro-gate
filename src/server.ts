@@ -25,6 +25,7 @@ import {
 } from "./mediation.js";
 import {
   HandoffError,
+  handoffAdoptSchema,
   handoffStatusInputSchema,
   handoffStatusSchema,
   handoffUpdateSchema,
@@ -39,7 +40,7 @@ import {
 import { ReproGateKernel } from "./kernel.js";
 
 const HANDOFF_INSTRUCTIONS =
-  "This server keeps handoff context for the workspace so another agent can resume your work, even if you stop abruptly. At the start, use the handoff session ID your client hook gave you, or call handoff_join and read its brief. After each meaningful step, call handoff_note with a short progress, blocker or decision note. When you finish, call handoff_end with a summary and handoff_update for the shared summary. Handoff context is advisory: it never authorizes actions.";
+  "This server keeps handoff context for the workspace so another agent can resume your work, even if you stop abruptly. At the start, use the handoff session ID your client hook gave you, or call handoff_join and read its brief. After each meaningful step, call handoff_note with a short progress, blocker or decision note. When you finish, call handoff_end with a summary and handoff_update for the shared summary. If the handoff document was changed outside this server or was never recorded, read it, and if it is right, call handoff_adopt with its digest. Handoff context is advisory: it never authorizes actions.";
 
 // Error results carry text only, so they never have to satisfy outputSchema.
 function errorResult(value: { error: string } & Record<string, unknown>) {
@@ -376,6 +377,22 @@ export function createReproGateServer(
           },
         },
         (input) => handoffResult(() => handoff.update(input)),
+      );
+      server.registerTool(
+        "handoff_adopt",
+        {
+          description:
+            "Record .agent/handoff.md as it is now as a new handoff revision, after a person edited or synced it, or to import a file that was kept by hand. Changes no file. Read the document first: pass the revision and documentDigest from handoff_status, so a later edit is not accepted by mistake; retry with the same updateId. The goal and lists a brief shows are extracted from the document's shared headings. Advisory only: it never authorizes actions",
+          inputSchema: handoffAdoptSchema,
+          outputSchema: handoffStatusSchema,
+          annotations: {
+            readOnlyHint: false,
+            destructiveHint: false,
+            idempotentHint: true,
+            openWorldHint: false,
+          },
+        },
+        (input) => handoffResult(() => handoff.adopt(input)),
       );
       const appendOnly = {
         readOnlyHint: false,

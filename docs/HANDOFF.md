@@ -17,9 +17,10 @@ The host enables the tools, not the model. Create a private file (mode `0600` on
 }
 ```
 
-- `workspaceRoot` must be an existing directory that group and others cannot write to. The projection always goes to `.agent/handoff.md` inside it. If `.agent/` already exists, it must be a directory with mode `0700` owned by the current user, and an existing `handoff.md` must be a `0600` single-link file. Permissions are never repaired automatically, so tighten them yourself first (for example `chmod 700 .agent && chmod 600 .agent/handoff.md`).
+- `workspaceRoot` must be an existing directory that group and others cannot write to. The projection always goes to `.agent/handoff.md` inside it. If `.agent/` already exists, it must be a directory with mode `0700` owned by the current user, and an existing `handoff.md` must be a single-link file owned by the current user that group and others cannot write to. Its read bits may stay, because the private directory already keeps others out: a sync or an editor that replaces the file does not lock you out, and the next update replaces it with a `0600` file. The service and the MCP tools never repair permissions. If `.agent/` predates ReproGate, run `reprogate handoff adopt --repair-permissions` once, or tighten it yourself (see [Keeping a handoff file by hand](#keeping-a-handoff-file-by-hand)).
 - `databasePath` needs a parent directory with mode `0700`, owned by the current user. The file is created with mode `0600` before SQLite opens it, and existing database, WAL, SHM and journal files must already be private, single-link regular files. The path is resolved to its physical location before opening, so every connection shares one WAL namespace. The database must be outside `.agent/` (compared case-insensitively on macOS and Windows).
 - When `allowUpdates` is `false`, only `handoff_status` is registered, and no `.agent` files are created.
+- `scope` is `"workspace"` (the default) or `"repository"`; see [Sharing one handoff across worktrees](#sharing-one-handoff-across-worktrees).
 
 Serve the tools:
 
@@ -36,7 +37,7 @@ If the handoff `databasePath` and the runtime configuration's `databasePath` nam
 
 | State          | Meaning                                                                                                                                                                                         |
 | -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `missing`      | No revision recorded for this workspace                                                                                                                                                         |
+| `missing`      | No revision recorded for this workspace; `documentDigest` is set if a file is already there, and it can be imported with `handoff_adopt`                                                        |
 | `synchronized` | The latest revision was projected, and the document still matches it                                                                                                                            |
 | `pending`      | The latest revision is durable, but its projection has not completed; the document still equals the base it was written against, or already equals the projection without a recorded projection |
 | `drifted`      | The document differs from both the projection and the expected base, for example after a manual edit                                                                                            |
@@ -64,11 +65,75 @@ If the handoff `databasePath` and the runtime configuration's `databasePath` nam
 
 Take `expectedRevision` and `expectedDocumentDigest` from `handoff_status` (`revision` and `documentDigest`). The update commits only if no other client has recorded a newer revision and the document still matches. Each update archives the previous document to `.agent/handoff-history/` before replacing it, including any manually written content. History keeps the newest 32 archives written through the current database, so a manual document is eventually pruned; copy it elsewhere if you need it permanently. Archives written through another or replaced database are never pruned, and pruning never removes the archive written by the same update. If a crash truncates an archive before it is flushed, an identical retry reports `unavailable`; retry with a new `updateId` instead. A live service binds the directory modes it first observed, so after changing `.agent` or workspace permissions, restart the server. To retry after an ambiguous failure, send the identical request with the same `updateId`. A retry never overwrites a newer revision. Reusing an `updateId` with different content fails with `update_conflict`.
 
-All limits are checked before any effect: 64 KiB of context, 16 entries per list, 32 declared paths, 16 plan references, and a 96 KiB rendered document. Terminal control characters and bidirectional-override characters are rejected; tab, LF and CR are allowed. Caller text is escaped in the projection, so it cannot add headings, list items, link syntax or HTML. Renderers that auto-link bare URLs may still show a written URL as a link.
+All limits are checked before any effect: 64 KiB of context, 16 entries per list, 32 declared paths, 16 plan references, and a 96 KiB rendered document. A document already on disk can be larger, up to 1 MiB; past that, `handoff_status` reports `unavailable`. Terminal control characters and bidirectional-override characters are rejected; tab, LF and CR are allowed. Caller text is escaped in the projection, so it cannot add headings, list items, link syntax or HTML. Renderers that auto-link bare URLs may still show a written URL as a link.
 
-Errors from the handoff service return `isError` with only a stable code: `invalid_input`, `revision_conflict`, `document_conflict`, `update_conflict`, `unknown_plan`, `read_only`, `drifted` or `unavailable`. They never include file contents, SQL or host paths. Input that fails the advertised schema is rejected earlier by the MCP SDK, whose message names the failing field and constraint but does not echo the submitted value.
+Errors from the handoff service return `isError` with only a stable code: `invalid_input`, `revision_conflict`, `document_conflict`, `not_drifted`, `update_conflict`, `unknown_plan`, `read_only`, `drifted` or `unavailable`. They never include file contents, SQL or host paths. Input that fails the advertised schema is rejected earlier by the MCP SDK, whose message names the failing field and constraint but does not echo the submitted value.
 
-The contracts are published as JSON Schema in [`schemas/handoff-config.schema.json`](../schemas/handoff-config.schema.json) and [`schemas/handoff.schema.json`](../schemas/handoff.schema.json) (`$defs/update`, `$defs/statusInput`, `$defs/status`, and the persisted record at the root). The implementation additionally enforces UTF-8 byte limits and rejects accessors, proxies and sparse arrays.
+The contracts are published as JSON Schema in [`schemas/handoff-config.schema.json`](../schemas/handoff-config.schema.json) and [`schemas/handoff.schema.json`](../schemas/handoff.schema.json) (`$defs/update`, `$defs/adopt`, `$defs/statusInput`, `$defs/status`, and the persisted record at the root). The implementation additionally enforces UTF-8 byte limits and rejects accessors, proxies and sparse arrays.
+
+## Keeping a handoff file by hand
+
+A document changed outside ReproGate, or kept by hand before ReproGate was set up, does not have to stay `drifted` or be overwritten. `handoff_adopt` records the file as it is now as a new revision:
+
+```json
+{
+  "handoffVersion": 1,
+  "updateId": "<random UUID v4>",
+  "expectedRevision": 3,
+  "expectedDocumentDigest": "sha256:…",
+  "agent": "claude-code"
+}
+```
+
+Take `expectedRevision` and `expectedDocumentDigest` from `handoff_status` after reading the file, so an edit made after you read it is refused with `document_conflict` instead of being accepted unseen. `agent` is optional; without it, the name comes from the document's `Last Active Agent` line. Retry with the same `updateId` after an ambiguous failure.
+
+- **Nothing is written to the file.** The revision is recorded as already projected, with provenance `adopted_document`. The next `handoff_update` archives the adopted document like any other, then replaces it with the rendered projection.
+- **Only a document that differs from the recorded state can be adopted.** A document that already matches the latest revision, or that is the base of a projection still in flight, returns `not_drifted`, so an adoption never discards a revision that has not reached the file yet. A deleted document has nothing to adopt: the next `handoff_update`, with `expectedDocumentDigest: null`, writes it again.
+- **The first adoption is the import.** With no revision recorded, `expectedRevision` is 0 and the file becomes revision 1. This also applies after [switching `scope`](#sharing-one-handoff-across-worktrees), which starts a new history.
+- **Briefs say when to do this.** `handoff.document` in a brief is `none`, `untracked`, `synchronized`, `pending`, `drifted`, `deleted` or `unavailable`, and the text form of a brief opens with what to do when the file is untracked, drifted or deleted. `.agent/sessions.md` says the same.
+
+Only the digest and a short extract are stored, not the document. So a brief has something to show, the goal and lists are read from the shared-protocol headings, with or without numbers: `Active Goal / Task`, `Where We Left Off`, `Implementation Problems & Blockers` and `Immediate Next Steps`. A `Status` line above the sections is kept as the first completed item. The extract keeps 2 KiB of goal and 16 items of 512 bytes per list. Redaction runs on the whole document first, so a credential spanning lines is caught, and control characters are replaced; the file itself is left as it is. A document with none of these headings is still adopted, and the goal then points to the file.
+
+Adopted text is caller-asserted like any other handoff context, and its source is a file, which anyone able to write to `.agent` could have changed. Read a document you did not write before adopting it, for example one that arrived in a repository you cloned: it reaches later agents through briefs.
+
+The same steps are available to a person, and they need no model call:
+
+```sh
+reprogate handoff adopt --config /absolute/private/dir/handoff.json
+```
+
+This shows the state, the digest and what would be recorded, and changes nothing. To record it, run it again with `--digest sha256:…`; add `--agent <name>` to name the author.
+
+A workspace that kept plain files usually has a `.agent/` that others can read, which the service refuses at startup. `brief` and `hook` then say which paths are the problem. Add `--repair-permissions` to make `.agent/`, `handoff.md`, `sessions.md` and `handoff-history/` private first:
+
+```sh
+reprogate handoff adopt --config /absolute/private/dir/handoff.json --repair-permissions
+```
+
+It changes only those paths, leaves anything else in `.agent/` alone, and refuses, without changing anything further, on a symlink, a hard link or a file owned by someone else.
+
+## Sharing one handoff across worktrees
+
+By default each workspace root has its own history, so every Git worktree needs its own configuration, and agents in different worktrees of one task cannot see each other. With `"scope": "repository"`, one configuration covers every worktree of a repository:
+
+```json
+{
+  "configVersion": 1,
+  "workspaceRoot": "/absolute/path/to/main/worktree",
+  "databasePath": "/absolute/private/dir/context.sqlite",
+  "allowUpdates": true,
+  "scope": "repository"
+}
+```
+
+- **One history.** Revisions, sessions and notes are keyed by the repository's Git common directory instead of the workspace root, so they survive any one worktree being removed.
+- **One document.** `.agent/handoff.md` and `.agent/sessions.md` stay in `workspaceRoot`, whichever worktree an update came from. Worktrees do not get their own copies, so an agent elsewhere reads the brief, not the file.
+- **Sessions record their worktree.** Hooks are accepted from any worktree of the repository, and an MCP server or CLI command uses the worktree it runs in. `worktree` in a session view and `worktree` in the Git observation give its directory name, never a host path.
+- **Git state is per worktree.** A brief reads the Git state of the worktree it was asked from. Commits since an earlier session count only sessions of that worktree, since a range across branches means nothing. A merge in progress in another worktree does not appear in the Git section; look at that session instead.
+
+The repository is resolved at startup and for each hook event from another directory, by running Git. If `workspaceRoot` is not in a repository, or Git cannot read it, startup fails instead of quietly keeping a per-workspace history. Hooks from a directory that is in another repository, or that no longer exists, are ignored.
+
+Switching `scope` starts a new history, and the old one stays in the database. The document stays on disk, so it can be imported with `handoff_adopt`. Moving a repository also starts a new history, just as moving a workspace does.
 
 ## Sessions: many agents, abrupt stops
 
@@ -254,6 +319,7 @@ With `observeGit` (on by default), ReproGate reads the workspace's Git state thr
 ## Limits
 
 - SQLite and the Markdown file are not one atomic transaction. A revision can be durable while its projection is `pending`. The status reports this honestly. External drift fails closed and keeps both the stored snapshot and the actual file.
+- An adopted revision records a file's digest and a best-effort extract of it. It does not check that the file's claims are true, or who wrote it.
 - Agent identity, completed work and touched paths are declarations. Nothing collects source, diffs, environment variables or command output automatically; model replies are collected only with `captureMessages`.
 - Session states other than `failed`, `idle` and `ended` are inferred from silence. Hooks must be configured for client events to be recorded; without them, only MCP calls are seen.
 - Identity and permission checks narrow, but cannot remove, races with a hostile writer running as the same user.

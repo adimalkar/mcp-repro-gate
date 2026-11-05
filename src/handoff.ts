@@ -2,6 +2,7 @@ import { isAbsolute, relative, sep } from "node:path";
 
 import { digestCanonical } from "./digest.js";
 import { SqliteExecutionStore } from "./execution-store.js";
+import { extractDocument, type ExtractedDocument } from "./handoff-adopt.js";
 import {
   buildBrief,
   buildLane,
@@ -10,11 +11,13 @@ import {
   renderBriefText,
   sessionState,
   sessionView,
+  worktreeName,
 } from "./handoff-brief.js";
 import {
   HandoffError,
   handoffStatusInputSchema,
   ownHandoffValue,
+  parseHandoffAdopt,
   parseHandoffConfig,
   parseHandoffUpdate,
   renderHandoffRecord,
@@ -30,6 +33,7 @@ import {
   emptyGitObservation,
   observeGit,
   observeHead,
+  repositoryIdentity,
 } from "./handoff-observe.js";
 import { redactHandoffText } from "./handoff-redact.js";
 import {
@@ -51,6 +55,7 @@ import {
   truncateBytes,
   type HandoffBriefV1,
   type HandoffClient,
+  type HandoffDocumentState,
   type HandoffSessionView,
 } from "./handoff-session-contract.js";
 import type { HandoffSessionRow } from "./handoff-sessions.js";
@@ -82,11 +87,21 @@ export interface HandoffHookResult {
   additionalContext?: string;
 }
 
+/** What adopting the current document would record; nothing is written. */
+export interface HandoffAdoptionPreview {
+  state: HandoffStatusV1["state"];
+  revision: number;
+  documentDigest: string | null;
+  extracted: ExtractedDocument | null;
+}
+
 export interface HandoffService {
   readonly config: HandoffConfigV1;
   readonly store: SqliteExecutionStore;
   status(input: unknown): HandoffStatusV1;
   update(input: unknown): HandoffStatusV1;
+  adopt(input: unknown): HandoffStatusV1;
+  previewAdoption(): HandoffAdoptionPreview;
   join(input: unknown): HandoffJoinResult;
   note(input: unknown): HandoffSessionResult;
   end(input: unknown): HandoffSessionResult;
@@ -105,6 +120,11 @@ export interface HandoffServiceOptions {
    * running servers keep it; one-shot hook commands turn it off.
    */
   deferProjection?: boolean;
+  /**
+   * The directory this process works in. In repository scope it selects the
+   * worktree whose Git state a brief reads; the process's own by default.
+   */
+  cwd?: string;
 }
 
 // Client identifiers are opaque; accept a conservative shape only.
@@ -155,6 +175,29 @@ export function workspaceContains(
   } catch {
     return false;
   }
+}
+
+/**
+ * Whether a hook event from `cwd` belongs to this configuration: inside the
+ * workspace, or in repository scope any worktree of the same repository.
+ * Checked before the database is opened. Only repository scope runs Git.
+ */
+export function workspaceAccepts(
+  config: HandoffConfigV1,
+  cwd: unknown,
+): boolean {
+  if (workspaceContains(config.workspaceRoot, cwd)) return true;
+  if (
+    config.scope !== "repository" ||
+    typeof cwd !== "string" ||
+    !isAbsolute(cwd)
+  )
+    return false;
+  const event = repositoryIdentity(cwd);
+  return (
+    event !== undefined &&
+    event.commonDir === repositoryIdentity(config.workspaceRoot)?.commonDir
+  );
 }
 
 export interface ProjectionSteps<Prepared> {
@@ -223,10 +266,45 @@ export function createHandoffService(
     store.initializeHandoff(binding);
     const contextStore = store;
     const instanceId = contextStore.handoffInstance();
-    const workspaceId = digestCanonical({
-      domain: "ReproGate/HandoffWorkspace/v1",
-      workspaceRoot: files.workspaceRoot,
-    });
+    // Asking for repository scope and silently getting a per-workspace
+    // ledger would split the history, so a failure here is fatal.
+    const repository =
+      config.scope === "repository"
+        ? repositoryIdentity(files.workspaceRoot)
+        : undefined;
+    if (config.scope === "repository" && repository === undefined)
+      throw new HandoffError("unavailable");
+    const workspaceId = digestCanonical(
+      repository === undefined
+        ? {
+            domain: "ReproGate/HandoffWorkspace/v1",
+            workspaceRoot: files.workspaceRoot,
+          }
+        : {
+            domain: "ReproGate/HandoffRepository/v1",
+            commonDirectory: repository.commonDir,
+          },
+    );
+    // The worktree of a path: any worktree of the repository in repository
+    // scope, or the workspace for a path inside it.
+    const worktreeFor = (cwd: unknown): string | undefined => {
+      if (
+        repository !== undefined &&
+        typeof cwd === "string" &&
+        isAbsolute(cwd)
+      ) {
+        const identity = repositoryIdentity(cwd);
+        if (identity?.commonDir === repository.commonDir)
+          return identity.worktree;
+      }
+      return workspaceContains(files.workspaceRoot, cwd)
+        ? files.workspaceRoot
+        : undefined;
+    };
+    const ownWorktree =
+      worktreeFor(options.cwd ?? process.cwd()) ?? files.workspaceRoot;
+    const recordedWorktree = (worktree: string) =>
+      repository === undefined ? null : worktree;
     const ledger = contextStore.handoffSessions();
     // Sessions joined through this service; a closing connection ends them.
     const joined = new Set<string>();
@@ -257,11 +335,36 @@ export function createHandoffService(
         redactions: result.redactions,
       };
     };
-    const head = () => (observe ? observeHead(files.workspaceRoot) : null);
+    const head = (worktree: string) => (observe ? observeHead(worktree) : null);
+
+    type LatestHandoff = ReturnType<SqliteExecutionStore["latestHandoff"]>;
+    // How a document on disk relates to a recorded revision.
+    const documentRelation = (
+      latest: NonNullable<LatestHandoff>,
+      digest: string | null,
+    ): "synchronized" | "pending" | "drifted" => {
+      if (digest === latest.projectedDigest)
+        return latest.projected ? "synchronized" : "pending";
+      return !latest.projected &&
+        digest === latest.record.expectedDocumentDigest
+        ? "pending"
+        : "drifted";
+    };
+    const documentState = (latest: LatestHandoff): HandoffDocumentState => {
+      try {
+        const { digest } = files.document();
+        if (latest === undefined) return digest === null ? "none" : "untracked";
+        const relation = documentRelation(latest, digest);
+        return relation === "drifted" && digest === null ? "deleted" : relation;
+      } catch {
+        return "unavailable";
+      }
+    };
 
     const composeBrief = (
       exclude?: string,
       withGit = observe,
+      worktree = ownWorktree,
     ): HandoffBriefV1 => {
       const sessions = ledger.sessions(workspaceId);
       const time = now().getTime();
@@ -269,12 +372,14 @@ export function createHandoffService(
       // work of every agent that may have stopped mid-task, whatever it
       // recorded. Idle sessions never age, so they do not count; with none
       // unfinished, the newest other session is used.
-      // Subagents start from their parent's state, so they are skipped.
+      // Subagents start from their parent's state, so they are skipped, and
+      // a commit range only means something within one worktree's history.
       const candidates = sessions.filter(
         (session) =>
           session.sessionId !== exclude &&
           session.kind === "agent" &&
-          session.startHead !== null,
+          session.startHead !== null &&
+          (repository === undefined || session.worktree === worktree),
       );
       const unfinished = candidates
         .filter((session) =>
@@ -286,10 +391,12 @@ export function createHandoffService(
       const previous =
         unfinished ??
         [...candidates].sort((a, b) => b.startedAt - a.startedAt)[0];
+      const latest = contextStore.latestHandoff(workspaceId);
       return buildBrief({
         now: time,
         liveness,
-        latest: contextStore.latestHandoff(workspaceId)?.record,
+        latest: latest?.record,
+        document: documentState(latest),
         sessions,
         lastNotes: ledger.lastNotes(workspaceId),
         notes: ledger.notes(workspaceId, MAX_BRIEF_NOTES + 1, [
@@ -297,7 +404,11 @@ export function createHandoffService(
           "decision",
         ]),
         git: withGit
-          ? observeGit(files.workspaceRoot, previous?.startHead ?? null)
+          ? {
+              ...observeGit(worktree, previous?.startHead ?? null),
+              worktree:
+                repository === undefined ? null : worktreeName(worktree),
+            }
           : emptyGitObservation("disabled"),
       });
     };
@@ -380,10 +491,10 @@ export function createHandoffService(
       fitBrief(composeBrief(exclude), budget, (brief) =>
         Buffer.byteLength(JSON.stringify(brief)),
       );
-    const briefText = (maxChars: number, exclude?: string) =>
+    const briefText = (maxChars: number, exclude?: string, worktree?: string) =>
       renderBriefText(
         fitBrief(
-          composeBrief(exclude),
+          composeBrief(exclude, observe, worktree),
           maxChars,
           (brief) => renderBriefText(brief).length,
         ),
@@ -406,15 +517,10 @@ export function createHandoffService(
         binding.verify();
         latest = contextStore.latestHandoff(workspaceId);
         documentDigest = files.document().digest;
-        if (latest === undefined) state = "missing";
-        else if (documentDigest === latest.projectedDigest)
-          state = latest.projected ? "synchronized" : "pending";
-        else if (
-          !latest.projected &&
-          documentDigest === latest.record.expectedDocumentDigest
-        )
-          state = "pending";
-        else state = "drifted";
+        state =
+          latest === undefined
+            ? "missing"
+            : documentRelation(latest, documentDigest);
       } catch {
         state = "unavailable";
         latest = undefined;
@@ -467,7 +573,7 @@ export function createHandoffService(
         snapshotDigest: latest?.snapshotDigest ?? null,
         projectedDigest: latest?.projectedDigest ?? null,
         documentDigest,
-        provenance: "caller_asserted",
+        provenance: record?.provenance ?? "caller_asserted",
         counts: {
           completed: record?.context.completed.length ?? 0,
           touchedFiles: record?.context.touchedFiles.length ?? 0,
@@ -492,6 +598,7 @@ export function createHandoffService(
       clientSession: string,
       agent: string,
       revive: boolean,
+      worktree: string,
     ): HandoffSessionRow => {
       const found = ledger.find(workspaceId, client, clientSession, "");
       if (found !== undefined && (found.endedAt === null || !revive))
@@ -504,7 +611,8 @@ export function createHandoffService(
         kind: "agent",
         parentSessionId: null,
         task: null,
-        startHead: found === undefined ? head() : null,
+        startHead: found === undefined ? head(worktree) : null,
+        worktree: recordedWorktree(worktree),
         now: now().getTime(),
       }).session;
     };
@@ -512,6 +620,7 @@ export function createHandoffService(
     const lifecycleHook = (
       client: "claude-code" | "codex",
       payload: Record<string, unknown>,
+      worktree: string,
     ): HandoffHookResult => {
       const event = payload.hook_event_name;
       const sessionKey = clientId(payload.session_id);
@@ -529,7 +638,7 @@ export function createHandoffService(
           : undefined;
       };
       const main = (revive: boolean) =>
-        mainSession(client, sessionKey, client, revive);
+        mainSession(client, sessionKey, client, revive, worktree);
       // A subagent's session. Only SubagentStart creates one: Claude Code
       // also reports internal agents (prompt suggestions, /btw) that never
       // started, and those must not become sessions.
@@ -545,6 +654,7 @@ export function createHandoffService(
           parentSessionId: main(true).sessionId,
           task: null,
           startHead: null,
+          worktree: recordedWorktree(worktree),
           now: time(),
         }).session;
       };
@@ -563,8 +673,11 @@ export function createHandoffService(
             recorded: true,
             hookEventName: event,
             additionalContext:
-              briefText(HOOK_CONTEXT_CHARS - footer.length, session.sessionId) +
-              footer,
+              briefText(
+                HOOK_CONTEXT_CHARS - footer.length,
+                session.sessionId,
+                worktree,
+              ) + footer,
           };
         }
         case "SubagentStart": {
@@ -649,11 +762,12 @@ export function createHandoffService(
     // Codex's turn notification, passed as the last command argument.
     const codexNotify = (
       payload: Record<string, unknown>,
+      worktree: string,
     ): HandoffHookResult => {
       const thread = clientId(payload["thread-id"]);
       if (thread === undefined) return { recorded: false };
       // A late notification must not reopen a session that already ended.
-      const session = mainSession("codex", thread, "codex", false);
+      const session = mainSession("codex", thread, "codex", false, worktree);
       if (session.endedAt !== null) return { recorded: false };
       const reply = payload["last-assistant-message"];
       ledger.touch(
@@ -694,12 +808,56 @@ export function createHandoffService(
               renderHandoffRecord(owned),
             );
           });
+          projectSessions(true);
           return status({ handoffVersion: 1 });
         } catch (error) {
           throw error instanceof HandoffError
             ? error
             : new HandoffError("unavailable", { cause: error });
         }
+      },
+      adopt: (value: unknown) => {
+        const input = parseHandoffAdopt(value);
+        writable();
+        if (
+          input.agent !== undefined &&
+          redactHandoffText(input.agent).redactions > 0
+        )
+          throw new HandoffError("invalid_input");
+        return guard(() => {
+          contextStore.adoptHandoff(
+            workspaceId,
+            input,
+            () => {
+              const document = files.document();
+              return {
+                digest: document.digest,
+                context: () =>
+                  extractDocument(
+                    document.bytes ?? Buffer.alloc(0),
+                    input.agent,
+                  ).context,
+              };
+            },
+            now(),
+          );
+          projectSessions(true);
+          return status({ handoffVersion: 1 });
+        });
+      },
+      previewAdoption: () => {
+        live();
+        return guard(() => {
+          const { state, revision } = status({ handoffVersion: 1 });
+          const document = files.document();
+          return {
+            state,
+            revision,
+            documentDigest: document.digest,
+            extracted:
+              document.bytes === null ? null : extractDocument(document.bytes),
+          };
+        });
       },
       join: (value: unknown) => {
         const input = parseHandoffJoin(value);
@@ -718,7 +876,8 @@ export function createHandoffService(
             parentSessionId: input.parentSessionId ?? null,
             task:
               input.task === undefined ? null : redacted(input.task, 512).text,
-            startHead: head(),
+            startHead: head(ownWorktree),
+            worktree: recordedWorktree(ownWorktree),
             now: now().getTime(),
           });
           joined.add(session.sessionId);
@@ -796,13 +955,13 @@ export function createHandoffService(
         )
           return { recorded: false };
         const fields = payload as Record<string, unknown>;
-        if (!workspaceContains(files.workspaceRoot, fields.cwd))
-          return { recorded: false };
+        const worktree = worktreeFor(fields.cwd);
+        if (worktree === undefined) return { recorded: false };
         return guard(() => {
           const result =
             client === "codex" && fields.type === "agent-turn-complete"
-              ? codexNotify(fields)
-              : lifecycleHook(client, fields);
+              ? codexNotify(fields, worktree)
+              : lifecycleHook(client, fields, worktree);
           // Turn and activity events are frequent, so they are coalesced;
           // starts, ends and failures are written at once.
           if (result.recorded)

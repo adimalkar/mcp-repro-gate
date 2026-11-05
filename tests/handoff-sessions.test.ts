@@ -1284,11 +1284,13 @@ test("the skeleton fits 1 KiB even when every text is quote-heavy and counts are
     now: Date.parse("2026-10-30T00:00:00Z"),
     liveness: { leaseMs: 1, graceMs: 1 },
     latest: undefined,
+    document: "none",
     sessions: [],
     lastNotes: new Map(),
     notes: [],
     git: {
       state: "observed",
+      worktree: null,
       branch: quotes,
       head: "a".repeat(64),
       detached: false,
@@ -1859,6 +1861,7 @@ test("a dropped parent counts the subagents folded into it, and an orphan subage
     now: 0,
     liveness: { leaseMs: 1000, graceMs: 1000 },
     latest: undefined,
+    document: "none",
     sessions: [
       {
         sessionId: "22222222-2222-4222-8222-222222222222",
@@ -1879,6 +1882,7 @@ test("a dropped parent counts the subagents folded into it, and an orphan subage
         clientReason: null,
         lastMessage: null,
         noteCount: 0,
+        worktree: null,
       },
     ],
     lastNotes: new Map(),
@@ -1971,6 +1975,7 @@ test("every way fitBrief drops a listed session counts the subagents folded into
     lastNote: null,
     notes: 0,
     lastMessage: null,
+    worktree: null,
     subagents: {
       active: folded,
       idle: 0,
@@ -1984,11 +1989,13 @@ test("every way fitBrief drops a listed session counts the subagents folded into
     now: 0,
     liveness: { leaseMs: 1, graceMs: 1 },
     latest: undefined,
+    document: "none",
     sessions: [],
     lastNotes: new Map(),
     notes: [],
     git: {
       state: "disabled",
+      worktree: null,
       branch: null,
       head: null,
       detached: false,

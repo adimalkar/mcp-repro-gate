@@ -164,6 +164,37 @@
         }
       }
     },
+    "adopt": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Input to handoff_adopt. Take expectedRevision and expectedDocumentDigest from handoff_status.",
+      "required": [
+        "handoffVersion",
+        "updateId",
+        "expectedRevision",
+        "expectedDocumentDigest"
+      ],
+      "properties": {
+        "handoffVersion": {
+          "const": 1
+        },
+        "updateId": {
+          "$ref": "#/$defs/uuid"
+        },
+        "expectedRevision": {
+          "$ref": "#/$defs/count"
+        },
+        "expectedDocumentDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "agent": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+        }
+      }
+    },
     "statusInput": {
       "type": "object",
       "additionalProperties": false,
@@ -259,7 +290,7 @@
           ]
         },
         "provenance": {
-          "const": "caller_asserted"
+          "enum": ["caller_asserted", "adopted_document"]
         },
         "counts": {
           "type": "object",
@@ -345,7 +376,7 @@
           "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
         },
         "provenance": {
-          "const": "caller_asserted"
+          "enum": ["caller_asserted", "adopted_document"]
         },
         "expectedDocumentDigest": {
           "anyOf": [
@@ -369,6 +400,9 @@
           "items": {
             "$ref": "#/$defs/reference"
           }
+        },
+        "adoptedDocumentDigest": {
+          "$ref": "#/$defs/digest"
         }
       }
     },
@@ -487,7 +521,8 @@
         "lastNote",
         "notes",
         "lastMessage",
-        "subagents"
+        "subagents",
+        "worktree"
       ],
       "properties": {
         "sessionId": {
@@ -665,6 +700,9 @@
               "type": "null"
             }
           ]
+        },
+        "worktree": {
+          "type": ["string", "null"]
         }
       }
     },
@@ -683,7 +721,8 @@
         "changes",
         "paths",
         "omittedPaths",
-        "commitsSince"
+        "commitsSince",
+        "worktree"
       ],
       "properties": {
         "state": {
@@ -823,6 +862,9 @@
               "type": "null"
             }
           ]
+        },
+        "worktree": {
+          "type": ["string", "null"]
         }
       }
     },
@@ -859,7 +901,8 @@
             "updatedAt",
             "goal",
             "nextSteps",
-            "blockers"
+            "blockers",
+            "document"
           ],
           "properties": {
             "revision": {
@@ -909,6 +952,17 @@
               "items": {
                 "type": "string"
               }
+            },
+            "document": {
+              "enum": [
+                "none",
+                "untracked",
+                "synchronized",
+                "pending",
+                "drifted",
+                "deleted",
+                "unavailable"
+              ]
             }
           }
         },
@@ -944,7 +998,7 @@
           "required": ["handoff", "notes", "sessions", "git"],
           "properties": {
             "handoff": {
-              "const": "caller_asserted"
+              "enum": ["caller_asserted", "adopted_document"]
             },
             "notes": {
               "const": "caller_asserted"

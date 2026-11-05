@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 
+import { canonicalHandoffPath } from "./handoff-filesystem.js";
 import {
   MAX_OBSERVED_PATHS,
   MAX_OBSERVED_SUBJECTS,
@@ -17,6 +18,7 @@ export function emptyGitObservation(
 ): HandoffGitObservation {
   return {
     state,
+    worktree: null,
     branch: null,
     head: null,
     detached: false,
@@ -29,6 +31,49 @@ export function emptyGitObservation(
     omittedPaths: 0,
     commitsSince: null,
   };
+}
+
+export interface RepositoryIdentity {
+  /** The Git common directory every worktree of a repository shares. */
+  commonDir: string;
+  /** The root of the worktree `path` lies in. */
+  worktree: string;
+}
+
+/**
+ * Which repository and worktree a path belongs to, or undefined when it is
+ * in neither, or Git cannot say. Both paths are physical, so aliases of one
+ * repository compare equal.
+ */
+export function repositoryIdentity(
+  path: string,
+): RepositoryIdentity | undefined {
+  try {
+    const lines = runGit([
+      "-C",
+      path,
+      "rev-parse",
+      "--path-format=absolute",
+      "--git-common-dir",
+      "--show-toplevel",
+    ])
+      .toString("utf8")
+      .split("\n");
+    const [commonDir, worktree, rest] = lines;
+    if (
+      commonDir === undefined ||
+      worktree === undefined ||
+      rest !== "" ||
+      lines.length !== 3
+    )
+      return undefined;
+    return {
+      commonDir: canonicalHandoffPath(commonDir),
+      worktree: canonicalHandoffPath(worktree),
+    };
+  } catch {
+    return undefined;
+  }
 }
 
 /** The current HEAD commit, or null when there is none or Git fails. */
