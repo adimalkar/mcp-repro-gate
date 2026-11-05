@@ -199,8 +199,8 @@ test("the shared headings become a context, whatever their numbering", () => {
   assert.equal(omittedItems, 0);
   assert.deepEqual(context, {
     activeAgent: "Claude-on-the-laptop",
-    goal: "Finish the import.\nKeep the history.",
-    completed: ["Status: Blocked on review", "Wrote the parser", "Added tests"],
+    goal: "Status: Blocked on review\nFinish the import.\nKeep the history.",
+    completed: ["Wrote the parser", "Added tests"],
     touchedFiles: [],
     blockers: ["CI fails on Windows"],
     nextSteps: ["Fix the test", "Open the PR"],
@@ -365,7 +365,7 @@ test("an existing file-based handoff is imported once, as revision 1", (t) => {
   assert.equal(imported.revision, 1);
   const brief = service.brief();
   assert.equal(brief.handoff.document, "synchronized");
-  assert.equal(brief.handoff.goal, "Finish the import.\nKeep the history.");
+  assert.match(brief.handoff.goal ?? "", /^Status: Blocked on review\n/u);
   assert.deepEqual(brief.handoff.nextSteps, ["Fix the test", "Open the PR"]);
   assert.equal(brief.provenance.handoff, "adopted_document");
   assert.match(service.briefText(), /adopted from a document, revision 1/u);
@@ -618,8 +618,11 @@ test(
     assert.match(shown.stdout, /Made private: \.agent\n/u);
     assert.match(shown.stdout, /Made private: \.agent\/handoff\.md\n/u);
     assert.match(shown.stdout, /State: missing at revision 0/u);
-    assert.match(shown.stdout, /Goal: Finish the import\./u);
-    assert.match(shown.stdout, /Completed: 3, blockers: 1, next steps: 2/u);
+    assert.match(
+      shown.stdout,
+      /Goal: Status: Blocked on review\nFinish the import\./u,
+    );
+    assert.match(shown.stdout, /Completed: 2, blockers: 1, next steps: 2/u);
     assert.equal(statSync(f.agent).mode & 0o777, 0o700);
     assert.equal(statSync(f.document).mode & 0o777, 0o600);
     // Only the handoff's own files change.
