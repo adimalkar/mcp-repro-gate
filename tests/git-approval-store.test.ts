@@ -18,7 +18,12 @@ function git(root: string, ...args: string[]): string {
 function fixture(context: TestContext) {
   const scratch = mkdtempSync(join(tmpdir(), "reprogate-approval-test-"));
   context.after(() => {
-    rmSync(scratch, { recursive: true, force: true });
+    rmSync(scratch, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100,
+    });
   });
   const repositoryPath = join(scratch, "repository");
   mkdirSync(repositoryPath);
@@ -201,7 +206,12 @@ test("a grant rejects unreviewed effects and mismatched authority", (context) =>
 test("opening waits for another process's lock before identity inspection", async (context) => {
   const scratch = mkdtempSync(join(tmpdir(), "reprogate-approval-lock-"));
   context.after(() => {
-    rmSync(scratch, { recursive: true, force: true });
+    rmSync(scratch, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100,
+    });
   });
   const databasePath = join(scratch, "approvals.sqlite");
   new SqliteGitApprovalStore(databasePath).close();

@@ -50,7 +50,12 @@ test("runner preserves safe line-ending configuration avoiding spurious dirty st
     const drift = runGit(["-C", root, "status", "--porcelain", "-z"]);
     assert.equal(drift.toString("utf8"), " M value.txt\0");
   } finally {
-    rmSync(scratch, { recursive: true, force: true });
+    rmSync(scratch, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100,
+    });
   }
 });
 
@@ -71,7 +76,12 @@ for (const settings of [
       appendFileSync(join(root, ".git", "config"), `[core]\n\t${settings}\n`);
       assert.throws(() => runGit(["-C", root, "status", "--porcelain", "-z"]));
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      rmSync(root, {
+        recursive: true,
+        force: true,
+        maxRetries: 10,
+        retryDelay: 100,
+      });
     }
   });
 }
@@ -105,7 +115,12 @@ test("runner rejects oversized and invalid UTF-8 normalization values", () => {
       assert.throws(() => runGit(["-C", root, "status", "--porcelain", "-z"]));
     }
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    rmSync(root, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100,
+    });
   }
 });
 
@@ -163,7 +178,12 @@ test("exact metadata reads use one real Git spawn per command and retain observe
     );
     assert.equal(calls.length, commands.length);
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    rmSync(root, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100,
+    });
   }
 });
 
@@ -392,7 +412,12 @@ test("metadata optimization keeps fresh probes for every ambiguous or interpreti
       syncBuiltinESMExports();
     }
   } finally {
-    rmSync(scratch, { recursive: true, force: true });
+    rmSync(scratch, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100,
+    });
   }
 });
 
@@ -449,6 +474,11 @@ test("metadata classification and dispatch use one owned argument snapshot", () 
     assert.equal(optionReads, 1);
     assert.equal(revisionReads, 1);
   } finally {
-    rmSync(scratch, { recursive: true, force: true });
+    rmSync(scratch, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100,
+    });
   }
 });

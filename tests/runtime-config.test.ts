@@ -99,7 +99,12 @@ async function createFixture(context: test.TestContext) {
   let runtime: ConfiguredRuntime | undefined;
   context.after(() => {
     runtime?.close();
-    rmSync(directory, { recursive: true, force: true });
+    rmSync(directory, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100,
+    });
   });
   return {
     artifactPath,
