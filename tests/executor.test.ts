@@ -27,7 +27,12 @@ function setup(context: test.TestContext) {
   const store = new SqliteExecutionStore(join(directory, "reprogate.sqlite"));
   context.after(() => {
     store.close();
-    rmSync(directory, { recursive: true, force: true });
+    rmSync(directory, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100,
+    });
   });
   const kernel = new ReproGateKernel(demoCatalog, demoPolicy, store);
   const plan = kernel.plan({

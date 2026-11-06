@@ -144,7 +144,12 @@ test("the CLI prints the fixture report and measures a saved page", async () => 
       assert.match(bad.stderr, /Usage: reprogate bench research/u);
     }
   } finally {
-    rmSync(directory, { recursive: true, force: true });
+    rmSync(directory, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100,
+    });
   }
 });
 
