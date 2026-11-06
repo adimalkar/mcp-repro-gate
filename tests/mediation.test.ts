@@ -13,17 +13,22 @@ import test, { type TestContext } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
+import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import { Ajv2020 } from "ajv/dist/2020.js";
 
 import { demoPolicy } from "../src/demo-config.js";
 import { digestCanonical } from "../src/digest.js";
 import type { ReproGateExecutor } from "../src/executor.js";
-import { actionRunOutputSchema } from "../src/facade.js";
+import {
+  actionRunOutputSchema,
+  actionRunStrikesOutputSchema,
+} from "../src/facade.js";
 import { sha256File } from "../src/file-digest.js";
 import {
   HostMediator,
   MediationError,
   REDACTED,
+  StrikeCountedError,
   mediationConfigSchema,
 } from "../src/mediation.js";
 import { ReproGateKernel } from "../src/kernel.js";
@@ -114,6 +119,204 @@ test("bounding never splits a multi-byte character and reports truncation", () =
   assert.ok(Buffer.byteLength(kept) <= 256);
 });
 
+test("bounded results skip structured mirrors the text items already show", () => {
+  const mediator = unitMediator(65536);
+  const texts = (result: unknown) =>
+    mediator.bound(result).content.map((item) => item.text);
+  const structured = { items: [{ id: 1, name: "a" }], total: 1 };
+  for (const mirror of [
+    JSON.stringify(structured),
+    JSON.stringify(structured, null, 2),
+  ]) {
+    assert.deepEqual(
+      texts({
+        content: [{ type: "text", text: mirror }],
+        structuredContent: structured,
+      }),
+      [mirror],
+    );
+    // The mirror need not be the first text item.
+    assert.deepEqual(
+      texts({
+        content: [
+          { type: "text", text: "summary" },
+          { type: "text", text: mirror },
+        ],
+        structuredContent: structured,
+      }),
+      ["summary", mirror],
+    );
+  }
+
+  // A research-shaped result: readable text plus the same string as a field.
+  const page = `# Title\nSource: https://example.test/\n\n${"passage ".repeat(450)}`;
+  const research = {
+    content: [{ type: "text", text: page }],
+    structuredContent: {
+      url: "https://example.test/",
+      finalUrl: "https://example.test/",
+      title: "Title",
+      estimatedTokens: 900,
+      truncated: false,
+      text: page,
+    },
+  };
+  const view = texts(research);
+  assert.deepEqual(view, [
+    page,
+    JSON.stringify({
+      ...research.structuredContent,
+      text: "[text item 1]",
+    }),
+  ]);
+  const before =
+    Buffer.byteLength(page) +
+    Buffer.byteLength(JSON.stringify(research.structuredContent));
+  const after = view.reduce((sum, text) => sum + Buffer.byteLength(text), 0);
+  assert.ok(after * 2 <= before + 400, `${String(after)} of ${String(before)}`);
+
+  // Fields keep their names; each marker names the first equal text item.
+  const long = "a value longer than its marker";
+  assert.deepEqual(
+    texts({
+      content: [
+        { type: "text", text: "other text item" },
+        { type: "text", text: long },
+        { type: "text", text: long },
+      ],
+      structuredContent: { stdout: long, stderr: long, short: "", code: 0 },
+    }).at(-1),
+    JSON.stringify({
+      stdout: "[text item 2]",
+      stderr: "[text item 2]",
+      short: "",
+      code: 0,
+    }),
+  );
+  // Values shorter than the marker, and empty strings, are kept.
+  assert.deepEqual(
+    texts({
+      content: [
+        { type: "text", text: "ok" },
+        { type: "text", text: "" },
+      ],
+      structuredContent: { stdout: "ok", stderr: "" },
+    }),
+    ["ok", "", '{"stdout":"ok","stderr":""}'],
+  );
+  const proto = texts({
+    content: [{ type: "text", text: long }],
+    structuredContent: JSON.parse(
+      `{"__proto__":${JSON.stringify(long)},"n":1}`,
+    ) as unknown,
+  });
+  assert.deepEqual(proto, [long, '{"__proto__":"[text item 1]","n":1}']);
+
+  // Near misses are still appended whole.
+  for (const structuredContent of [
+    { items: [{ id: 1, name: "b" }], total: 1 },
+    { nested: { text: long } },
+    { text: `${long}!` },
+    [long],
+    {},
+  ])
+    assert.deepEqual(
+      texts({
+        content: [{ type: "text", text: long }],
+        structuredContent,
+      }),
+      [long, JSON.stringify(structuredContent)],
+      JSON.stringify(structuredContent),
+    );
+  assert.deepEqual(
+    texts({
+      content: [{ type: "text", text: "{not json" }],
+      structuredContent: { a: 1 },
+    }),
+    ["{not json", '{"a":1}'],
+  );
+});
+
+test("structured mirrors are kept whole when redaction or the bound could differ", () => {
+  // A host pattern spanning fields must still match after deduplication.
+  const pem = unitMediator(4096, [
+    "-----BEGIN [A-Z ]+-----[\\s\\S]*?-----END [A-Z ]+-----",
+  ]);
+  const footer = "-----END PRIVATE KEY-----";
+  const key = pem.bound({
+    content: [{ type: "text", text: footer }],
+    structuredContent: {
+      head: "-----BEGIN PRIVATE KEY-----",
+      body: "MIIEvQIBADANBgkqhkiG9w0BAQEFAASC",
+      foot: footer,
+    },
+  });
+  assert.equal(JSON.stringify(key.content).includes("MIIEvQ"), false);
+  assert.equal(key.redactions, 1);
+
+  // A secret the text spells with \u escapes is still counted once redacted
+  // in the structured copy, as before.
+  const mediator = unitMediator(4096);
+  const escaped = `{"k":"${Array.from(capabilitySecret, (char) => char)
+    .map((char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`)
+    .join("")}"}`;
+  const counted = mediator.bound({
+    content: [{ type: "text", text: escaped }],
+    structuredContent: { k: capabilitySecret },
+  });
+  assert.equal(counted.content.length, 2);
+  assert.equal(counted.redactions, 1);
+
+  // Redaction counts match the old view when a mirrored field is secret.
+  const secretText = `key ${capabilitySecret}`;
+  const both = mediator.bound({
+    content: [{ type: "text", text: secretText }],
+    structuredContent: { text: secretText },
+  });
+  assert.equal(both.redactions, 2);
+  assert.equal(JSON.stringify(both.content).includes(capabilitySecret), false);
+
+  // A cut text item stops the view before the structured JSON.
+  const small = unitMediator(256);
+  const huge = `[${"0,".repeat(5000)}0]`;
+  const cut = small.bound({
+    content: [{ type: "text", text: huge }],
+    structuredContent: JSON.parse(huge) as unknown,
+  });
+  assert.equal(cut.truncated, true);
+  assert.equal(cut.content.length, 1);
+});
+
+test("skipping a mirror can leave room that was truncated before", () => {
+  const mediator = unitMediator(4096);
+  const page = "z".repeat(3000);
+  const bounded = mediator.bound({
+    content: [{ type: "text", text: page }],
+    structuredContent: { text: page, title: "T" },
+  });
+  // Before, the escaped copy overflowed the 4096-byte bound.
+  assert.equal(bounded.truncated, false);
+  assert.deepEqual(
+    bounded.content.map((item) => item.text),
+    [page, '{"text":"[text item 1]","title":"T"}'],
+  );
+  assert.equal(bounded.redactions, 0);
+
+  // A skipped mirror that exactly fills the bound withholds nothing.
+  const exact = unitMediator(256);
+  const mirror = JSON.stringify({ text: "w".repeat(245) });
+  assert.equal(Buffer.byteLength(mirror), 256);
+  const full = exact.bound({
+    content: [{ type: "text", text: mirror }],
+    structuredContent: JSON.parse(mirror) as unknown,
+  });
+  assert.equal(full.truncated, false);
+  assert.deepEqual(
+    full.content.map((item) => item.text),
+    [mirror],
+  );
+});
+
 async function configuredRuntime(
   context: TestContext,
   mediation?: unknown,
@@ -149,6 +352,7 @@ async function configuredRuntime(
       databasePath: join(state, "reprogate.sqlite"),
       catalog: [
         tool("echo", echoEffects, textSchema),
+        tool("resolve", ["local_read"], textSchema),
         tool("publish", ["local_write"], {
           ...textSchema,
           properties: { content: { type: "string" } },
@@ -178,11 +382,22 @@ async function configuredRuntime(
       ...(mediation === undefined ? {} : { mediation }),
     }),
   );
-  const runtime = await createConfiguredRuntime(configPath, {
-    ...process.env,
-    MEDIATION_CAPABILITY_SECRET: capabilitySecret,
-    MEDIATION_RECEIPT_SECRET: receiptSecret,
-  });
+  let runtime: Awaited<ReturnType<typeof createConfiguredRuntime>>;
+  try {
+    runtime = await createConfiguredRuntime(configPath, {
+      ...process.env,
+      MEDIATION_CAPABILITY_SECRET: capabilitySecret,
+      MEDIATION_RECEIPT_SECRET: receiptSecret,
+    });
+  } catch (startError) {
+    rmSync(directory, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100,
+    });
+    throw startError;
+  }
   const [clientTransport, serverTransport] =
     InMemoryTransport.createLinkedPair();
   const server = createReproGateServer(
@@ -229,7 +444,7 @@ async function configuredRuntime(
       db.close();
     }
   };
-  return { runtime, client, call, plan, counts };
+  return { runtime, client, call, plan, counts, configPath };
 }
 
 test("action.run executes an allowed read with a host-issued capability and a bounded view", async (context) => {
@@ -250,12 +465,24 @@ test("action.run executes an allowed read with a host-issued capability and a bo
   );
   const text = `rg1.aaa.bbb ${capabilitySecret} Bearer xyz.123 ${"é".repeat(300)}`;
   const actionId = await plan("configured.echo", { text });
-  const result = await call("action.run", { actionId, arguments: { text } });
+  const result = await call("action.run", {
+    actionId,
+    arguments: { text },
+    detail: "full",
+  });
   assert.equal(result.isError, undefined, JSON.stringify(result.content));
   const summary = actionRunOutputSchema.parse(result.structuredContent);
+  assert.equal(summary.detail, "full");
   assert.equal(summary.outcome, "succeeded");
   assert.equal(summary.truncated, true);
   assert.ok(summary.redactions >= 3);
+  // The summary's JSON comes first, then the bounded text, which
+  // structuredContent also carries for hosts that read only that.
+  const { content: structuredText, ...withoutText } = summary;
+  assert.equal(result.content[0]?.text, JSON.stringify(withoutText));
+  assert.deepEqual(result.content.slice(1), structuredText);
+  assert.equal(result.content.length, 2);
+  assert.ok(Buffer.byteLength(result.content[1]?.text ?? "") <= 256);
   const visible = JSON.stringify(result);
   for (const hidden of ["rg1.aaa", capabilitySecret, "xyz.123"])
     assert.equal(visible.includes(hidden), false, hidden);
@@ -266,6 +493,22 @@ test("action.run executes an allowed read with a host-issued capability and a bo
   assert.equal(record.receipt.receiptDigest, summary.receiptDigest);
   assert.equal(record.receipt.resultDigest, summary.resultDigest);
   assert.equal(verifyExecutionReceipt(record.receipt, receiptSecret), true);
+});
+
+test("action.run shows a downstream result that mirrors itself once", async (context) => {
+  const { call, plan } = await configuredRuntime(context, {
+    effects: ["local_read"],
+  });
+  // The echo fixture returns { length } as structuredContent; this text is
+  // its own exact JSON mirror.
+  const text = '{"length":13}';
+  assert.equal(text.length, 13);
+  const actionId = await plan("configured.echo", { text });
+  const result = await call("action.run", { actionId, arguments: { text } });
+  assert.equal(result.isError, undefined, JSON.stringify(result.content));
+  const summary = actionRunOutputSchema.parse(result.structuredContent);
+  assert.deepEqual(summary.content, [{ type: "text", text }]);
+  assert.equal(summary.truncated, false);
 });
 
 test("action.run refuses plans outside mediation without executing", async (context) => {
@@ -329,6 +572,7 @@ test("the runtime configuration schema accepts and constrains mediation", () => 
     validate({
       effects: ["local_read", "network_read"],
       result: { maxTextBytes: 4096, redactPatterns: ["secret-[0-9]+"] },
+      strikes: { resolverToolRef: "research.resolve_stuck_error", limit: 3 },
     }),
     true,
   );
@@ -336,6 +580,8 @@ test("the runtime configuration schema accepts and constrains mediation", () => 
     { effects: ["local_write"] },
     { effects: [] },
     { effects: ["local_read"], result: { maxTextBytes: 1 } },
+    { effects: ["local_read"], strikes: { resolverToolRef: "x", limit: 1 } },
+    { effects: ["local_read"], strikes: {} },
   ])
     assert.equal(validate(invalid), false, JSON.stringify(invalid));
 });
@@ -542,9 +788,11 @@ test("network reads are mediated only when allowlisted, with an open-world hint"
     const result = await network.call("action.run", {
       actionId,
       arguments: { text },
+      detail: "full",
     });
     assert.equal(result.isError, undefined, JSON.stringify(result.content));
     const summary = actionRunOutputSchema.parse(result.structuredContent);
+    assert.equal(summary.detail, "full");
     const record = network.runtime.store.getExecution(summary.executionId);
     assert.equal(
       record?.capabilityId,
@@ -608,4 +856,435 @@ test("concurrent runs take the next free slot up to the limit", async (context) 
   assert.equal(runs.filter((run) => run.isError === undefined).length, 3);
   assert.equal(runs.filter((run) => run.isError === true).length, 1);
   assert.deepEqual(counts(), { executions: 3, tokenUses: 3 });
+});
+
+test("compact action.run summaries omit digests and reach text-only and structured-only hosts", async (context) => {
+  const { call, plan } = await configuredRuntime(context, {
+    effects: ["local_read"],
+  });
+  const text = "compact view";
+  const actionId = await plan("configured.echo", { text });
+  const result = await call("action.run", { actionId, arguments: { text } });
+  assert.equal(result.isError, undefined, JSON.stringify(result.content));
+  const summary = actionRunOutputSchema.parse(result.structuredContent);
+  assert.deepEqual(Object.keys(summary).sort(), [
+    "content",
+    "detail",
+    "executionId",
+    "omittedItems",
+    "outcome",
+    "redactions",
+    "truncated",
+  ]);
+  assert.equal(summary.detail, "compact");
+  const downstream = [text, JSON.stringify({ length: text.length })];
+  // Text-only hosts: the summary's JSON, then the downstream text unescaped.
+  const { content: structuredText, ...withoutText } = summary;
+  assert.deepEqual(
+    result.content.map((item) => item.text),
+    [JSON.stringify(withoutText), ...downstream],
+  );
+  // Structured-only hosts: the same bounded text in structuredContent.
+  assert.deepEqual(
+    structuredText.map((item) => item.text),
+    downstream,
+  );
+});
+
+test("action.run works through the stdio CLI in the modern protocol era", async (context) => {
+  const { configPath } = await configuredRuntime(context, {
+    effects: ["local_read"],
+  });
+  const client = new Client(
+    { name: "modern-run", version: "1.0.0" },
+    { versionNegotiation: { mode: { pin: "2026-07-28" } } },
+  );
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [
+      fileURLToPath(new URL("../src/cli.js", import.meta.url)),
+      "serve",
+      "--config",
+      configPath,
+    ],
+    env: {
+      ...process.env,
+      MEDIATION_CAPABILITY_SECRET: capabilitySecret,
+      MEDIATION_RECEIPT_SECRET: receiptSecret,
+    },
+    stderr: "pipe",
+  });
+  // Close the CLI child inside the test: the runtime helper's cleanup runs
+  // first and cannot remove the scratch directory on Windows while the
+  // child still holds the database open.
+  try {
+    await client.connect(transport);
+    assert.equal(client.getProtocolEra(), "modern");
+    const text = "modern era";
+    const plan = async () => {
+      const planned = await client.callTool({
+        name: "action.plan",
+        arguments: { toolRef: "configured.echo", arguments: { text } },
+      });
+      return (planned.structuredContent as { actionId: string }).actionId;
+    };
+    const compact = await client.callTool({
+      name: "action.run",
+      arguments: { actionId: await plan(), arguments: { text } },
+    });
+    assert.equal(compact.isError, undefined, JSON.stringify(compact.content));
+    const compactSummary = actionRunOutputSchema.parse(
+      compact.structuredContent,
+    );
+    assert.equal(compactSummary.detail, "compact");
+    assert.equal(compactSummary.receiptDigest, undefined);
+    assert.equal(compactSummary.content[0]?.text, text);
+    // Each plan runs once (default run limit), so full detail needs a new plan.
+    const full = await client.callTool({
+      name: "action.run",
+      arguments: {
+        actionId: await plan(),
+        arguments: { text },
+        detail: "full",
+      },
+    });
+    const fullSummary = actionRunOutputSchema.parse(full.structuredContent);
+    assert.equal(fullSummary.detail, "full");
+    assert.ok(fullSummary.receiptDigest);
+    assert.ok(fullSummary.resultDigest);
+  } finally {
+    await client.close();
+  }
+});
+
+function strikeHarness(limit?: number) {
+  const tools = ["build", "test", "resolve"].map((name) => ({
+    toolRef: `strike.${name}`,
+    serverRef: "strike",
+    toolName: name,
+    description: name,
+    inputSchema: {},
+    effects: ["local_read" as const],
+  }));
+  const kernel = new ReproGateKernel(tools, demoPolicy);
+  const ids: Record<string, string> = {};
+  const plans = new Map<string, unknown>();
+  for (const tool of tools) {
+    const plan = kernel.plan({ toolRef: tool.toolRef, arguments: {} });
+    ids[tool.toolName] = plan.envelope.actionId;
+    plans.set(plan.envelope.actionId, plan);
+  }
+  // Each call consumes the next scripted step; the default is success.
+  const script: ("succeeded" | "failed" | "throw" | "consumed")[] = [];
+  let executed = 0;
+  // A held run waits for release() before it finishes.
+  let held: Promise<undefined> | undefined;
+  const hold = () => {
+    let release: ((value: undefined) => void) | undefined;
+    held = new Promise<undefined>((resolve) => {
+      release = resolve;
+    });
+    return () => {
+      release?.(undefined);
+    };
+  };
+  const executor = {
+    store: {
+      get: (actionId: string) => plans.get(actionId),
+      countCapabilityUses: () => 0,
+    },
+    execute: async () => {
+      const step = script.shift() ?? "succeeded";
+      const wait = held;
+      held = undefined;
+      await wait;
+      if (step === "consumed")
+        throw new Error("Capability token has already been consumed");
+      executed++;
+      if (step === "throw")
+        throw new Error("Execution arguments do not match the approved action");
+      return {
+        receipt: {
+          executionId: `execution-${String(executed)}`,
+          outcome: step,
+          receiptDigest: `sha256:${"a".repeat(64)}`,
+          resultDigest: `sha256:${"b".repeat(64)}`,
+        },
+        downstreamResult: {
+          content: [{ type: "text", text: step }],
+          ...(step === "failed" ? { isError: true } : {}),
+        },
+      };
+    },
+  } as unknown as ReproGateExecutor;
+  const mediator = new HostMediator(
+    executor,
+    kernel,
+    mediationConfigSchema.parse({
+      effects: ["local_read"],
+      strikes: {
+        resolverToolRef: "strike.resolve",
+        ...(limit === undefined ? {} : { limit }),
+      },
+    }),
+    capabilitySecret,
+    receiptSecret,
+  );
+  const run = (name: string) =>
+    mediator.run({ actionId: ids[name] ?? "", arguments: {} });
+  return { mediator, kernel, script, run, hold, executed: () => executed };
+}
+
+const resolveRequired = (failures: number) => (error: unknown) =>
+  error instanceof MediationError &&
+  error.code === "resolve_required" &&
+  error.strikes?.failures === failures &&
+  error.strikes.resolverToolRef === "strike.resolve";
+
+test("two consecutive failures block a tool until the resolver succeeds", async () => {
+  const { script, run, executed } = strikeHarness();
+  script.push("failed");
+  assert.deepEqual((await run("build")).strikes, {
+    failures: 1,
+    limit: 2,
+    resolverToolRef: "strike.resolve",
+  });
+  // A success in between resets the count.
+  assert.equal((await run("build")).strikes, undefined);
+  script.push("failed", "throw");
+  assert.equal((await run("build")).strikes?.failures, 1);
+  // An executor error is a strike too, and reports its count.
+  await assert.rejects(
+    run("build"),
+    (error: unknown) =>
+      error instanceof StrikeCountedError &&
+      error.message.includes("do not match") &&
+      error.strikes.failures === 2,
+  );
+  const before = executed();
+  await assert.rejects(run("build"), resolveRequired(2));
+  assert.equal(executed(), before, "a blocked tool runs nothing");
+  // Other tools stay usable.
+  assert.equal((await run("test")).outcome, "succeeded");
+  // The resolver is never counted or blocked; only its success unblocks.
+  script.push("failed", "failed", "failed");
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const resolver = await run("resolve");
+    assert.equal(resolver.outcome, "failed");
+    assert.equal(resolver.strikes, undefined);
+  }
+  await assert.rejects(run("build"), resolveRequired(2));
+  assert.equal((await run("resolve")).outcome, "succeeded");
+  assert.equal((await run("build")).outcome, "succeeded");
+});
+
+test("executor errors reset on success and stale failures miss a fresh period", async () => {
+  const { script, run, hold } = strikeHarness();
+  script.push("throw");
+  await assert.rejects(run("build"), StrikeCountedError);
+  assert.equal((await run("build")).outcome, "succeeded");
+  script.push("failed");
+  assert.equal((await run("build")).strikes?.failures, 1);
+
+  // A failure in flight when the resolver succeeds does not count after it.
+  script.push("failed");
+  const release = hold();
+  const slow = run("build");
+  assert.equal((await run("resolve")).outcome, "succeeded");
+  release();
+  assert.equal((await slow).strikes?.failures, 0);
+  script.push("failed");
+  assert.equal((await run("build")).strikes?.failures, 1);
+});
+
+test("strike limits are configurable and refusals that run nothing do not count", async () => {
+  const three = strikeHarness(3);
+  three.script.push("failed", "failed", "failed");
+  for (const failures of [1, 2, 3])
+    assert.equal((await three.run("build")).strikes?.failures, failures);
+  await assert.rejects(three.run("build"), resolveRequired(3));
+
+  const { script, run } = strikeHarness();
+  script.push("failed", "consumed");
+  await run("build");
+  await assert.rejects(
+    run("build"),
+    (error: unknown) =>
+      error instanceof MediationError && error.code === "run_limit",
+  );
+  // run_limit ran nothing, so one failure still leaves the tool usable.
+  assert.equal((await run("build")).outcome, "succeeded");
+
+  for (const strikes of [
+    { resolverToolRef: "x", limit: 1 },
+    { resolverToolRef: "x", limit: 6 },
+    { resolverToolRef: "" },
+    { resolverToolRef: "x", unknown: true },
+  ])
+    assert.equal(
+      mediationConfigSchema.safeParse({ effects: ["local_read"], strikes })
+        .success,
+      false,
+      JSON.stringify(strikes),
+    );
+});
+
+test("the strike resolver must be a catalog tool with only mediated effects", () => {
+  const { kernel } = strikeHarness();
+  const network = new ReproGateKernel(
+    [
+      {
+        toolRef: "strike.web",
+        serverRef: "strike",
+        toolName: "web",
+        description: "web",
+        inputSchema: {},
+        effects: ["network_read"],
+      },
+    ],
+    demoPolicy,
+  );
+  for (const [live, resolverToolRef] of [
+    [kernel, "strike.missing"],
+    [network, "strike.web"],
+  ] as const)
+    assert.throws(
+      () =>
+        new HostMediator(
+          {} as ReproGateExecutor,
+          live,
+          mediationConfigSchema.parse({
+            effects: ["local_read"],
+            strikes: { resolverToolRef },
+          }),
+          capabilitySecret,
+          receiptSecret,
+        ),
+      /strike resolver/u,
+      resolverToolRef,
+    );
+});
+
+test("action.run reports strikes, refuses with the resolver and states the rule", async (context) => {
+  const plain = await configuredRuntime(context, { effects: ["local_read"] });
+  const plainRun = (await plain.client.listTools()).tools.find(
+    (tool) => tool.name === "action.run",
+  );
+  assert.ok(plainRun);
+  assert.equal(plainRun.description?.includes("resolve_required"), false);
+  assert.equal(
+    JSON.stringify(plainRun.outputSchema).includes("strikes"),
+    false,
+  );
+
+  // A resolver the agent could never run stops startup.
+  await assert.rejects(
+    configuredRuntime(context, {
+      effects: ["local_read"],
+      strikes: { resolverToolRef: "configured.publish" },
+    }),
+    /strike resolver/u,
+  );
+
+  const { runtime, client, call, plan, counts } = await configuredRuntime(
+    context,
+    {
+      effects: ["local_read"],
+      maxRunsPerPlan: 5,
+      strikes: { resolverToolRef: "configured.resolve" },
+    },
+  );
+  const run = (await client.listTools()).tools.find(
+    (tool) => tool.name === "action.run",
+  );
+  assert.match(run?.description ?? "", /After 2 consecutive failures/u);
+  assert.match(run?.description ?? "", /configured\.resolve/u);
+  assert.ok(JSON.stringify(run?.outputSchema).includes("strikes"));
+
+  for (const [text, failures] of [
+    ["fail:one", 1],
+    ["fail:two", 2],
+  ] as const) {
+    const actionId = await plan("configured.echo", { text });
+    const failed = await call("action.run", { actionId, arguments: { text } });
+    assert.equal(failed.isError, undefined, JSON.stringify(failed.content));
+    const summary = actionRunStrikesOutputSchema.parse(
+      failed.structuredContent,
+    );
+    assert.equal(summary.outcome, "failed");
+    assert.deepEqual(summary.strikes, {
+      failures,
+      limit: 2,
+      resolverToolRef: "configured.resolve",
+    });
+    assert.deepEqual(
+      (JSON.parse(failed.content[0]?.text ?? "") as { strikes?: unknown })
+        .strikes,
+      summary.strikes,
+    );
+  }
+  const fine = await plan("configured.echo", { text: "fine" });
+  const blocked = await call("action.run", {
+    actionId: fine,
+    arguments: { text: "fine" },
+  });
+  assert.equal(blocked.isError, true);
+  assert.deepEqual(JSON.parse(blocked.content[0]?.text ?? ""), {
+    error: "resolve_required",
+    resolverToolRef: "configured.resolve",
+    failures: 2,
+  });
+  assert.deepEqual(counts(), { executions: 2, tokenUses: 2 });
+  // Earlier refusals keep their own codes while a tool is blocked.
+  const expired = runtime.kernel.plan({
+    toolRef: "configured.echo",
+    arguments: { text: "old" },
+    now: new Date(Date.now() - 60 * 60 * 1000),
+  }).envelope.actionId;
+  assert.deepEqual(
+    JSON.parse(
+      (
+        await call("action.run", {
+          actionId: expired,
+          arguments: { text: "old" },
+        })
+      ).content[0]?.text ?? "",
+    ),
+    { error: "expired" },
+  );
+
+  const resolver = await plan("configured.resolve", { text: "fail:two" });
+  const resolved = await call("action.run", {
+    actionId: resolver,
+    arguments: { text: "fail:two" },
+  });
+  const resolvedSummary = actionRunStrikesOutputSchema.parse(
+    resolved.structuredContent,
+  );
+  assert.equal(resolvedSummary.outcome, "succeeded");
+  assert.equal(resolvedSummary.strikes, undefined);
+  const retried = await call("action.run", {
+    actionId: fine,
+    arguments: { text: "fine" },
+  });
+  assert.equal(
+    actionRunStrikesOutputSchema.parse(retried.structuredContent).outcome,
+    "succeeded",
+  );
+  // An executor error reports the strike it caused.
+  const mismatch = await call("action.run", {
+    actionId: fine,
+    arguments: { text: "other" },
+  });
+  assert.equal(mismatch.isError, true);
+  const reported = JSON.parse(mismatch.content[0]?.text ?? "") as {
+    error: string;
+    strikes: unknown;
+  };
+  assert.match(reported.error, /do not match the approved action/u);
+  assert.deepEqual(reported.strikes, {
+    failures: 1,
+    limit: 2,
+    resolverToolRef: "configured.resolve",
+  });
 });

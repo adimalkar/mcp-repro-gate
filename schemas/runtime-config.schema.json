@@ -33,11 +33,18 @@
   },
   "$defs": {
     "mediation": {
-      "description": "Opt-in host-mediated execution for allow-decided plans whose effects are all listed. Patterns compile with the gu flags and must not match the empty string.",
+      "description": "Opt-in host mediation: allow-decided plans whose effects are all listed run with a host-issued capability, and with heldApprovals an operator-approved plan runs once. Patterns compile with the gu flags and must not match the empty string.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["effects"],
+      "anyOf": [
+        { "required": ["effects"], "properties": { "effects": {} } },
+        {
+          "required": ["heldApprovals"],
+          "properties": { "heldApprovals": { "const": true } }
+        }
+      ],
       "properties": {
+        "heldApprovals": { "type": "boolean" },
         "effects": {
           "type": "array",
           "minItems": 1,
@@ -58,7 +65,45 @@
               "type": "array",
               "maxItems": 16,
               "items": { "type": "string", "minLength": 1, "maxLength": 256 }
+            },
+            "graphViews": {
+              "description": "Opt-in presentation profiles for exact catalog server/tool identities. Duplicate identities are rejected by runtime validation.",
+              "type": "array",
+              "maxItems": 64,
+              "uniqueItems": true,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["serverRef", "toolName", "view"],
+                "properties": {
+                  "serverRef": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  },
+                  "toolName": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  },
+                  "view": { "enum": ["search", "snippet"] }
+                }
+              }
             }
+          }
+        },
+        "strikes": {
+          "description": "Opt-in two-strike gate: after limit consecutive failures of one downstream tool, action.run refuses it with resolve_required until the resolver tool succeeds through action.run. The resolver must be a catalog tool whose effects are all mediated.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["resolverToolRef"],
+          "properties": {
+            "resolverToolRef": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "limit": { "type": "integer", "minimum": 2, "maximum": 5 }
           }
         }
       }

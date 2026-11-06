@@ -3,9 +3,22 @@ import { readFileSync } from "node:fs";
 
 import { serveStdio } from "@modelcontextprotocol/server/stdio";
 
+import { formatBenchmarkReport, runFacadeBenchmark } from "./benchmark.js";
 import { issueCapabilityToken } from "./capability-token.js";
 import { SqliteExecutionStore } from "./execution-store.js";
+import { runArtifactDigest, runCatalogImport } from "./catalog-cli.js";
 import { runGitReviewCli } from "./git-review-cli.js";
+import { runHeldApproval } from "./held-approval-cli.js";
+import {
+  formatResearchReport,
+  measurePage,
+  runResearchBenchmark,
+} from "./research/benchmark.js";
+import {
+  type SearchFunction,
+  createEndpointSearch,
+} from "./research/search.js";
+import { createResearchServer } from "./research/server.js";
 import { createHandoffService, type HandoffService } from "./handoff.js";
 import {
   loadHandoffConfig,
@@ -205,14 +218,21 @@ async function main(): Promise<void> {
     return;
   }
   if (command === "approve") {
-    if (process.argv[3] === "--config") {
-      const configPath = process.argv[4];
-      const actionId = process.argv[5];
-      if (configPath === undefined || actionId === undefined) {
-        throw new Error(
-          "Usage: reprogate approve --config <absolute-path> <action-id>",
-        );
-      }
+    const args = process.argv.slice(3);
+    const usage =
+      "Usage: reprogate approve [--config <absolute-path> <action-id> [--hold [--expires-in <seconds>]|--revoke-held]|<database> <action-id>]";
+    // Any extra or mistyped argument is an error: falling through to the
+    // token-printing path would do the opposite of the operator's intent.
+    if (args.length > 3 && args[0] === "--config") {
+      runHeldApproval(args, {
+        stdout: (text) => process.stdout.write(text),
+      });
+      return;
+    }
+    if (args[0] === "--config") {
+      const [, configPath, actionId] = args;
+      if (configPath === undefined || actionId === undefined)
+        throw new Error(usage);
       const config = loadRuntimeConfig(configPath);
       approve(
         config.databasePath,
@@ -221,13 +241,13 @@ async function main(): Promise<void> {
       );
       return;
     }
-    const databasePath = process.argv[3];
-    const actionId = process.argv[4];
-    if (databasePath === undefined || actionId === undefined) {
-      throw new Error(
-        "Usage: reprogate approve [--config <absolute-path> <action-id>|<database> <action-id>]",
-      );
-    }
+    const [databasePath, actionId] = args;
+    if (
+      databasePath === undefined ||
+      actionId === undefined ||
+      args.length !== 2
+    )
+      throw new Error(usage);
     approve(databasePath, actionId, "REPROGATE_CAPABILITY_SECRET");
     return;
   }
@@ -255,6 +275,123 @@ async function main(): Promise<void> {
     verifyReceiptFile(receiptPath, "REPROGATE_RECEIPT_SECRET");
     return;
   }
+  if (command === "catalog" && process.argv[3] === "import") {
+    await runCatalogImport(process.argv.slice(4), {
+      stdout: (text) => process.stdout.write(text),
+      stderr: (text) => process.stderr.write(text),
+    });
+    return;
+  }
+  if (command === "artifact" && process.argv[3] === "digest") {
+    await runArtifactDigest(process.argv.slice(4), {
+      stdout: (text) => process.stdout.write(text),
+      stderr: (text) => process.stderr.write(text),
+    });
+    return;
+  }
+  if (command === "bench" && process.argv[3] === "facade") {
+    const rest = process.argv.slice(4);
+    if (rest.length > 1 || (rest.length === 1 && rest[0] !== "--json"))
+      throw new Error("Usage: reprogate bench facade [--json]");
+    const report = await runFacadeBenchmark();
+    process.stdout.write(
+      rest[0] === "--json"
+        ? `${JSON.stringify(report, null, 2)}\n`
+        : formatBenchmarkReport(report),
+    );
+    return;
+  }
+  if (command === "bench" && process.argv[3] === "research") {
+    const usage =
+      "Usage: reprogate bench research [--html <file> --query <text>] [--json]";
+    const rest = process.argv.slice(4);
+    let json = false;
+    let htmlPath: string | undefined;
+    let query: string | undefined;
+    for (let index = 0; index < rest.length; index++) {
+      const option = rest[index];
+      if (option === "--json" && !json) {
+        json = true;
+        continue;
+      }
+      const value = rest[++index];
+      if (value === undefined || value.startsWith("--")) throw new Error(usage);
+      if (option === "--html" && htmlPath === undefined) htmlPath = value;
+      else if (option === "--query" && query === undefined) query = value;
+      else throw new Error(usage);
+    }
+    if ((htmlPath === undefined) !== (query === undefined))
+      throw new Error(usage);
+    const report =
+      htmlPath === undefined || query === undefined
+        ? await runResearchBenchmark()
+        : {
+            rows: [await measurePage(readFileSync(htmlPath, "utf8"), query)],
+          };
+    process.stdout.write(
+      json
+        ? `${JSON.stringify(report, null, 2)}\n`
+        : formatResearchReport(report),
+    );
+    return;
+  }
+  if (command === "research-server") {
+    const usage =
+      "Usage: reprogate research-server [--allow-host <host|.domain>]... [--search-endpoint <url-with-{query}> [--search-endpoint-private]]";
+    const rest = process.argv.slice(3);
+    const allowHosts: string[] = [];
+    let searchEndpoint: string | undefined;
+    let privateEndpoint = false;
+    for (let index = 0; index < rest.length; index++) {
+      const option = rest[index];
+      if (option === "--search-endpoint-private" && !privateEndpoint) {
+        privateEndpoint = true;
+        continue;
+      }
+      const value = rest[++index];
+      if (
+        option === "--search-endpoint" &&
+        value !== undefined &&
+        !value.startsWith("--") &&
+        searchEndpoint === undefined
+      ) {
+        searchEndpoint = value;
+        continue;
+      }
+      if (
+        option !== "--allow-host" ||
+        value === undefined ||
+        // A DNS hostname with an optional leading "." for subdomains;
+        // ".", ".." and lone hyphens are refused.
+        !/^\.?(?=[A-Za-z0-9.-]{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$/u.test(
+          value,
+        )
+      )
+        throw new Error(usage);
+      allowHosts.push(value);
+    }
+    if (privateEndpoint && searchEndpoint === undefined) throw new Error(usage);
+    let search: SearchFunction | undefined;
+    if (searchEndpoint !== undefined) {
+      try {
+        search = createEndpointSearch({
+          endpoint: searchEndpoint,
+          allowPrivateEndpoint: privateEndpoint,
+        });
+      } catch {
+        throw new Error(
+          `${usage}\nThe search endpoint must be an http(s) URL without credentials, with {query} after the host.`,
+        );
+      }
+    }
+    serveStdio(() =>
+      createResearchServer({
+        allowHosts,
+        ...(search === undefined ? {} : { search }),
+      }),
+    );
+    return;
+  }
   if (command === "git-review") {
     process.exitCode = runGitReviewCli(process.argv.slice(3), {
       stdout: (text) => process.stdout.write(text),
@@ -263,7 +400,7 @@ async function main(): Promise<void> {
     return;
   }
   process.stderr.write(
-    "Usage: reprogate [serve [--config <absolute-path>] [--handoff-config <absolute-path>]|demo|approve [--config <absolute-path>] <target> <action-id>|verify-receipt [--config <absolute-path>] <receipt.json>|git-review <prepare|sign|import|check|revoke> ...]\n",
+    "Usage: reprogate [serve [--config <absolute-path>] [--handoff-config <absolute-path>]|demo|approve [--config <absolute-path>] <target> <action-id>|verify-receipt [--config <absolute-path>] <receipt.json>|catalog import --config <absolute-path> --backend <name> --effects <effects> ...|artifact digest <absolute-path>|bench facade [--json]|research-server [--allow-host <host>]... [--search-endpoint <url> [--search-endpoint-private]]|bench research [--html <file> --query <text>] [--json]|git-review <prepare|sign|import|check|revoke> ...]\n",
   );
   process.exitCode = 2;
 }

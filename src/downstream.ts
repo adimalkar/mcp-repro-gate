@@ -9,6 +9,17 @@ export interface DownstreamTool {
   inputSchema: unknown;
 }
 
+/** A listed downstream tool, for host-side catalog review only. */
+export interface DownstreamToolDescription extends DownstreamTool {
+  description?: string;
+  annotations?: {
+    readOnlyHint?: boolean;
+    destructiveHint?: boolean;
+  };
+}
+
+const MAX_LISTED_TOOLS = 1024;
+
 export interface DownstreamSession {
   getTool(name: string): Promise<DownstreamTool | undefined>;
   callTool(name: string, arguments_: Record<string, unknown>): Promise<unknown>;
@@ -27,6 +38,8 @@ export interface StdioBackendConfig {
   args?: string[];
   cwd?: string;
   env?: Record<string, string>;
+  /** Where the backend's own stderr goes; the SDK default is "inherit". */
+  stderr?: "inherit" | "ignore";
   artifact?: {
     path: string;
     digest: Digest;
@@ -42,6 +55,36 @@ class McpDownstreamSession implements DownstreamSession {
     return tool === undefined
       ? undefined
       : { name: tool.name, inputSchema: tool.inputSchema };
+  }
+
+  async listTools(): Promise<DownstreamToolDescription[]> {
+    // The SDK client follows pagination itself, with its own page limit.
+    const listed = await this.client.listTools();
+    if (listed.tools.length > MAX_LISTED_TOOLS)
+      throw new Error("Downstream lists too many tools");
+    const tools: DownstreamToolDescription[] = [];
+    for (const tool of listed.tools) {
+      tools.push({
+        name: tool.name,
+        inputSchema: tool.inputSchema,
+        ...(tool.description === undefined
+          ? {}
+          : { description: tool.description }),
+        ...(tool.annotations === undefined
+          ? {}
+          : {
+              annotations: {
+                ...(tool.annotations.readOnlyHint === undefined
+                  ? {}
+                  : { readOnlyHint: tool.annotations.readOnlyHint }),
+                ...(tool.annotations.destructiveHint === undefined
+                  ? {}
+                  : { destructiveHint: tool.annotations.destructiveHint }),
+              },
+            }),
+      });
+    }
+    return tools;
   }
 
   async callTool(
@@ -61,6 +104,19 @@ export class StdioMcpConnector implements DownstreamConnector {
 
   constructor(backends: Readonly<Record<string, StdioBackendConfig>>) {
     this.#backends = new Map(Object.entries(backends));
+  }
+
+  /** List one backend's tools under the same artifact checks as execution. */
+  async describeTools(
+    serverRef: string,
+    expectedArtifactDigest?: Digest,
+  ): Promise<DownstreamToolDescription[]> {
+    const session = await this.connect(serverRef, expectedArtifactDigest);
+    try {
+      return await (session as McpDownstreamSession).listTools();
+    } finally {
+      await session.close().catch(() => undefined);
+    }
   }
 
   async connect(

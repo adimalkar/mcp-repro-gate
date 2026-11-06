@@ -7,6 +7,7 @@ import {
   actionIdInputSchema,
   actionInspectOutputSchema,
   actionRunOutputSchema,
+  actionRunStrikesOutputSchema,
   actionPlanOutputSchema,
   catalogDescribeOutputSchema,
   catalogSearchOutputSchema,
@@ -17,7 +18,11 @@ import {
   toolRefInputSchema,
 } from "./facade.js";
 import type { HandoffService } from "./handoff.js";
-import { MediationError, type HostMediator } from "./mediation.js";
+import {
+  MediationError,
+  StrikeCountedError,
+  type HostMediator,
+} from "./mediation.js";
 import {
   HandoffError,
   handoffStatusInputSchema,
@@ -27,18 +32,21 @@ import {
 import { ReproGateKernel } from "./kernel.js";
 
 // Error results carry text only, so they never have to satisfy outputSchema.
-function error(message: string) {
+function errorResult(value: { error: string } & Record<string, unknown>) {
   return {
-    content: [
-      { type: "text" as const, text: JSON.stringify({ error: message }) },
-    ],
+    content: [{ type: "text" as const, text: JSON.stringify(value) }],
     isError: true,
   };
 }
 
+function error(message: string) {
+  return errorResult({ error: message });
+}
+
+// Compact JSON: the mirror carries the same data without indentation.
 function result(value: unknown) {
   return {
-    content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }],
+    content: [{ type: "text" as const, text: JSON.stringify(value) }],
     structuredContent: value,
   };
 }
@@ -230,31 +238,83 @@ export function createReproGateServer(
   }
 
   if (executor !== undefined && mediator !== undefined) {
+    const gate = mediator.strikeGate;
     server.registerTool(
       "action.run",
       {
-        description:
-          "Run one previously planned action that policy allows with only host-mediated read effects; the host issues the one-use capability, so no token is passed. Returns a compact receipt summary and redacted, bounded downstream text",
+        description: `Run one previously planned action without passing a token: either a plan that policy allows with only host-mediated read effects, or, when enabled, a plan an operator approved on the host. The host issues the one-use capability. Returns a compact summary and redacted, bounded downstream text; detail "full" adds receipt digests${
+          gate === undefined
+            ? ""
+            : `. After ${String(gate.limit)} consecutive failures of one tool, its runs are refused with resolve_required until ${gate.resolverToolRef} succeeds through action.run: plan and run it with the error before retrying`
+        }`,
         inputSchema: z.object({
           actionId: actionIdInputSchema,
           arguments: z.record(z.string(), z.unknown()),
+          detail: z.enum(["compact", "full"]).default("compact"),
         }),
-        outputSchema: actionRunOutputSchema,
+        outputSchema:
+          gate === undefined
+            ? actionRunOutputSchema
+            : actionRunStrikesOutputSchema,
+        // Held approvals let operator-approved plans write, so claim
+        // nothing narrower than action.execute does.
         annotations: {
           readOnlyHint: false,
-          destructiveHint: false,
+          destructiveHint: mediator.runsApprovedPlans,
           idempotentHint: false,
-          openWorldHint: mediator.mediatesNetwork,
+          openWorldHint: mediator.mediatesNetwork || mediator.runsApprovedPlans,
         },
       },
-      async ({ actionId, arguments: toolArguments }) => {
+      async ({ actionId, arguments: toolArguments, detail }) => {
         try {
-          return result(
-            await mediator.run({ actionId, arguments: toolArguments }),
-          );
+          const run = await mediator.run({
+            actionId,
+            arguments: toolArguments,
+          });
+          const summary = {
+            detail,
+            executionId: run.executionId,
+            outcome: run.outcome,
+            truncated: run.truncated,
+            redactions: run.redactions,
+            omittedItems: run.omittedItems,
+            ...(run.strikes === undefined ? {} : { strikes: run.strikes }),
+            ...(detail === "full"
+              ? {
+                  receiptDigest: run.receiptDigest,
+                  resultDigest: run.resultDigest,
+                }
+              : {}),
+          };
+          // Hosts differ: some show the model only text content, others
+          // only structuredContent. Both carry the bounded text. The text
+          // side sends it unescaped after the summary's JSON, rather than
+          // inside a JSON-escaped mirror of the whole result.
+          return {
+            content: [
+              { type: "text" as const, text: JSON.stringify(summary) },
+              ...run.content,
+            ],
+            structuredContent: { ...summary, content: run.content },
+          };
         } catch (runError) {
           // Refusals are stable codes; executor failures keep their message.
           // Executor and downstream messages are bounded and redacted too.
+          if (
+            runError instanceof MediationError &&
+            runError.strikes !== undefined
+          )
+            return errorResult({
+              error: runError.code,
+              resolverToolRef: runError.strikes.resolverToolRef,
+              failures: runError.strikes.failures,
+            });
+          // A counted executor error tells the agent how close it is.
+          if (runError instanceof StrikeCountedError)
+            return errorResult({
+              error: mediator.redactMessage(runError.message),
+              strikes: runError.strikes,
+            });
           return error(
             runError instanceof MediationError
               ? runError.code

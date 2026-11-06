@@ -1,0 +1,410 @@
+{
+  "fixtureVersion": 1,
+  "unit": "utf8-bytes",
+  "measurement": "offline-mediation-replay",
+  "upstream": {
+    "commit": "e4c960058570a1f16de276bc9c9b83a78f9fe89e",
+    "path": "docs/benchmarks/code-discovery-v1.json",
+    "digest": "sha256:dac3d094e63952a5b771a36888f449f47fe579624d979398070903d8f6425fec",
+    "measuredAt": "2026-10-12T09:19:51.925Z",
+    "tools": {
+      "graphVersion": "codebase-memory-mcp 0.9.0",
+      "binaryDigest": "sha256:9f5a306d54a8248f736939a42cd19678273731d735f6a1c9a92659b5e2585e32",
+      "rgVersion": "ripgrep 15.2.0 (rev e89fff89ac)\n\nfeatures:+pcre2\nsimd(compile):+SSE2,-SSSE3,-AVX2\nsimd(runtime):+SSE2,+SSSE3,+AVX2\n\nPCRE2 10.45 is available (JIT is available)",
+      "node": "v22.23.3"
+    },
+    "sourceRevision": "6eabc20f04f1a0fe9edede5ab36a4338000bd155",
+    "sourceTree": "9f8a4384e512993cd9781f54e643baf19dd28733"
+  },
+  "maxTextBytes": 16384,
+  "denominator": "JSON serialized BoundedContent before projection, after mirror deduplication",
+  "tasks": [
+    {
+      "symbol": "canonicalJson",
+      "answersChecked": true,
+      "sourceDigest": "sha256:80e26e9bdd7837a1bfe43a043d81f18f70bef278e426457b0d7d970723cd720e",
+      "originalDigest": "sha256:70513dd50fbc364a8e966ba0fd7b3695f927f55f0f90fa41fbbbb21c9d50a46c",
+      "location": {
+        "beforeBytes": 1561,
+        "afterBytes": 348,
+        "reduction": 0.7770659833440102
+      },
+      "implementation": {
+        "beforeBytes": 5113,
+        "afterBytes": 2680,
+        "reduction": 0.4758458830432232
+      },
+      "before": {
+        "search": {
+          "content": [
+            {
+              "type": "text",
+              "text": "{\"total\":1,\"results\":[{\"name\":\"canonicalJson\",\"qualified_name\":\"reprogate-discovery-v1.src.canonical-json.canonicalJson\",\"label\":\"Function\",\"file_path\":\"src/canonical-json.ts\",\"in_degree\":20,\"out_degree\":1,\"complexity\":15,\"cognitive\":35,\"loop_count\":0,\"loop_depth\":0,\"self_recursive\":false,\"param_count\":1,\"max_access_depth\":1,\"linear_scan_in_loop\":0,\"alloc_in_loop\":0,\"recursion_in_loop\":false,\"unguarded_recursion\":false,\"lines\":58,\"is_exported\":true,\"is_test\":false,\"is_entry_point\":true,\"signature\":\"(value: unknown)\",\"return_type\":\": string\",\"fp\":\"013f04a900415a9a01ba3435002173b2005fbe360070d07e000a8b690093520a0047353200d4a3c400999ec0006236d000e5b22801172152001ef014004db28c005b79b20086a5da006a7c7701f27d310003ac430068e33e0004e834002909d20084878a004433de00079fb501ee51a40014f3c90018c19400833032003d72c10007a58e00276b55003bd8b2026fa321009bbd190042cc570028319f0099a0e40090118f006b5102001897ec005d62cb000f4d5300303a330066be6f0484acc7003c130900200606005a9fdf00cda2a2000b93b000ec671700279b6100c5c3500058e78a004e38a8002f924b001b07ac0318d3d7002063b500223d9901945bd1\",\"sp\":\"5,0,0,1,1,7,27,127,4,2,0,0,14,0,0,1,0,0,0,9,3,56,79,58,79\",\"bt\":\"ancestors Set encode current path JSON stringify Number isFinite TypeError has add Array isArray map item index String join prototype Object getPrototypeOf record keys sort key delete value\",\"transitive_loop_depth\":0,\"recursive\":false}],\"has_more\":false}"
+            }
+          ],
+          "truncated": false,
+          "redactions": 0,
+          "omittedItems": 0
+        },
+        "snippet": {
+          "content": [
+            {
+              "type": "text",
+              "text": "{\"name\":\"canonicalJson\",\"qualified_name\":\"reprogate-discovery-v1.src.canonical-json.canonicalJson\",\"label\":\"Function\",\"file_path\":\"/tmp/reprogate-discovery-PLi6tX/corpus/src/canonical-json.ts\",\"start_line\":8,\"end_line\":65,\"source\":\"export function canonicalJson(value: unknown): string {\\n  const ancestors = new Set<object>();\\n\\n  const encode = (current: unknown, path: string): string => {\\n    if (current === null) return \\\"null\\\";\\n\\n    switch (typeof current) {\\n      case \\\"string\\\":\\n        return JSON.stringify(current);\\n      case \\\"boolean\\\":\\n        return current ? \\\"true\\\" : \\\"false\\\";\\n      case \\\"number\\\":\\n        if (!Number.isFinite(current)) {\\n          throw new TypeError(`Non-finite number at ${path}`);\\n        }\\n        return JSON.stringify(current);\\n      case \\\"undefined\\\":\\n      case \\\"bigint\\\":\\n      case \\\"function\\\":\\n      case \\\"symbol\\\":\\n        throw new TypeError(`Unsupported JSON value at ${path}`);\\n      case \\\"object\\\": {\\n        if (ancestors.has(current)) {\\n          throw new TypeError(`Cyclic value at ${path}`);\\n        }\\n\\n        ancestors.add(current);\\n        try {\\n          if (Array.isArray(current)) {\\n            return `[${current\\n              .map((item, index) => encode(item, `${path}[${String(index)}]`))\\n              .join(\\\",\\\")}]`;\\n          }\\n\\n          const prototype: unknown = Object.getPrototypeOf(current);\\n          if (prototype !== Object.prototype && prototype !== null) {\\n            throw new TypeError(`Non-plain object at ${path}`);\\n          }\\n\\n          const record = current as Record<string, unknown>;\\n          const keys = Object.keys(record).sort();\\n          return `{${keys\\n            .map(\\n              (key) =>\\n                `${JSON.stringify(key)}:${encode(record[key], `${path}.${key}`)}`,\\n            )\\n            .join(\\\",\\\")}}`;\\n        } finally {\\n          ancestors.delete(current);\\n        }\\n      }\\n    }\\n\\n    throw new TypeError(`Unsupported JSON value at ${path}`);\\n  };\\n\\n  return encode(value, \\\"$\\\");\\n}\\n\",\"complexity\":15,\"cognitive\":35,\"loop_count\":0,\"loop_depth\":0,\"self_recursive\":false,\"param_count\":1,\"max_access_depth\":1,\"linear_scan_in_loop\":0,\"alloc_in_loop\":0,\"recursion_in_loop\":false,\"unguarded_recursion\":false,\"lines\":58,\"is_exported\":true,\"is_test\":false,\"is_entry_point\":true,\"signature\":\"(value: unknown)\",\"return_type\":\": string\",\"fp\":\"013f04a900415a9a01ba3435002173b2005fbe360070d07e000a8b690093520a0047353200d4a3c400999ec0006236d000e5b22801172152001ef014004db28c005b79b20086a5da006a7c7701f27d310003ac430068e33e0004e834002909d20084878a004433de00079fb501ee51a40014f3c90018c19400833032003d72c10007a58e00276b55003bd8b2026fa321009bbd190042cc570028319f0099a0e40090118f006b5102001897ec005d62cb000f4d5300303a330066be6f0484acc7003c130900200606005a9fdf00cda2a2000b93b000ec671700279b6100c5c3500058e78a004e38a8002f924b001b07ac0318d3d7002063b500223d9901945bd1\",\"sp\":\"5,0,0,1,1,7,27,127,4,2,0,0,14,0,0,1,0,0,0,9,3,56,79,58,79\",\"bt\":\"ancestors Set encode current path JSON stringify Number isFinite TypeError has add Array isArray map item index String join prototype Object getPrototypeOf record keys sort key delete value\",\"transitive_loop_depth\":0,\"recursive\":false,\"callers\":20,\"callees\":1}"
+            }
+          ],
+          "truncated": false,
+          "redactions": 0,
+          "omittedItems": 0
+        }
+      },
+      "after": {
+        "search": {
+          "content": [
+            {
+              "type": "text",
+              "text": "{\"view\":\"graph_search_v1\",\"total\":1,\"has_more\":false,\"results\":[{\"name\":\"canonicalJson\",\"qualified_name\":\"reprogate-discovery-v1.src.canonical-json.canonicalJson\",\"label\":\"Function\",\"file_path\":\"src/canonical-json.ts\",\"lines\":58}]}"
+            }
+          ],
+          "truncated": false,
+          "redactions": 0,
+          "omittedItems": 0
+        },
+        "snippet": {
+          "content": [
+            {
+              "type": "text",
+              "text": "{\"view\":\"graph_snippet_v1\",\"name\":\"canonicalJson\",\"qualified_name\":\"reprogate-discovery-v1.src.canonical-json.canonicalJson\",\"label\":\"Function\",\"file_path\":\"/tmp/reprogate-discovery-PLi6tX/corpus/src/canonical-json.ts\",\"start_line\":8,\"end_line\":65,\"source\":\"export function canonicalJson(value: unknown): string {\\n  const ancestors = new Set<object>();\\n\\n  const encode = (current: unknown, path: string): string => {\\n    if (current === null) return \\\"null\\\";\\n\\n    switch (typeof current) {\\n      case \\\"string\\\":\\n        return JSON.stringify(current);\\n      case \\\"boolean\\\":\\n        return current ? \\\"true\\\" : \\\"false\\\";\\n      case \\\"number\\\":\\n        if (!Number.isFinite(current)) {\\n          throw new TypeError(`Non-finite number at ${path}`);\\n        }\\n        return JSON.stringify(current);\\n      case \\\"undefined\\\":\\n      case \\\"bigint\\\":\\n      case \\\"function\\\":\\n      case \\\"symbol\\\":\\n        throw new TypeError(`Unsupported JSON value at ${path}`);\\n      case \\\"object\\\": {\\n        if (ancestors.has(current)) {\\n          throw new TypeError(`Cyclic value at ${path}`);\\n        }\\n\\n        ancestors.add(current);\\n        try {\\n          if (Array.isArray(current)) {\\n            return `[${current\\n              .map((item, index) => encode(item, `${path}[${String(index)}]`))\\n              .join(\\\",\\\")}]`;\\n          }\\n\\n          const prototype: unknown = Object.getPrototypeOf(current);\\n          if (prototype !== Object.prototype && prototype !== null) {\\n            throw new TypeError(`Non-plain object at ${path}`);\\n          }\\n\\n          const record = current as Record<string, unknown>;\\n          const keys = Object.keys(record).sort();\\n          return `{${keys\\n            .map(\\n              (key) =>\\n                `${JSON.stringify(key)}:${encode(record[key], `${path}.${key}`)}`,\\n            )\\n            .join(\\\",\\\")}}`;\\n        } finally {\\n          ancestors.delete(current);\\n        }\\n      }\\n    }\\n\\n    throw new TypeError(`Unsupported JSON value at ${path}`);\\n  };\\n\\n  return encode(value, \\\"$\\\");\\n}\\n\"}"
+            }
+          ],
+          "truncated": false,
+          "redactions": 0,
+          "omittedItems": 0
+        }
+      }
+    },
+    {
+      "symbol": "evaluatePolicy",
+      "answersChecked": true,
+      "sourceDigest": "sha256:08826af4af036005f9659e30a89a0417b8bd78fa4f05900d306f9ef268bd17b6",
+      "originalDigest": "sha256:a0b1cdcf8ba4aeddced91ab08c6fcb25551888355f48af62054740f957f98f9b",
+      "location": {
+        "beforeBytes": 1590,
+        "afterBytes": 334,
+        "reduction": 0.789937106918239
+      },
+      "implementation": {
+        "beforeBytes": 4241,
+        "afterBytes": 1722,
+        "reduction": 0.593963687809479
+      },
+      "before": {
+        "search": {
+          "content": [
+            {
+              "type": "text",
+              "text": "{\"total\":1,\"results\":[{\"name\":\"evaluatePolicy\",\"qualified_name\":\"reprogate-discovery-v1.src.policy.evaluatePolicy\",\"label\":\"Function\",\"file_path\":\"src/policy.ts\",\"in_degree\":4,\"out_degree\":5,\"complexity\":2,\"cognitive\":2,\"loop_count\":0,\"loop_depth\":0,\"self_recursive\":false,\"param_count\":3,\"max_access_depth\":2,\"linear_scan_in_loop\":0,\"alloc_in_loop\":0,\"recursion_in_loop\":false,\"unguarded_recursion\":false,\"lines\":39,\"is_exported\":true,\"is_test\":false,\"is_entry_point\":true,\"signature\":\"(\\n  policy: PolicyV1,\\n  toolRef: string,\\n  effects: EffectClass[],\\n)\",\"return_type\":\": PolicyDecision\",\"fp\":\"02501a8b00415a9a0095bce6000d7cb700e6b89500cd0e98000a8b6900490eb00040bff501139fc500999ec000e1a83400ca736802b133fc0260e11001247c7d01394c7f02219e4b0071d2c20047083b0033170300b9c21b00bd6c46000b699e0084878a013872f00013de8401ee51a4010644f3012af488025f4495003d72c100c71d0d0144f706003bd8b2026fa321009bbd190158c76d00b78754004f26db01688f9802eff449001897ec005d62cb01d9981300303a330119452900393ecf00cb1af600583caf00543f8d01d3512300c3b50c00ec671700e598fa00509a600077889b004f4f6e011232ee001b07ac0048f494002063b50014610d003cdcb2\",\"sp\":\"2,0,0,0,0,3,13,74,3,0,0,0,1,1,0,3,0,0,0,6,4,26,51,39,51\",\"bt\":\"effects length Error toolRef reasons Set sort map effect rule matchingRule policy decision ruleId id reason defaults reduce current severity policyDigest digestCanonical\",\"transitive_loop_depth\":0,\"recursive\":false}],\"has_more\":false}"
+            }
+          ],
+          "truncated": false,
+          "redactions": 0,
+          "omittedItems": 0
+        },
+        "snippet": {
+          "content": [
+            {
+              "type": "text",
+              "text": "{\"name\":\"evaluatePolicy\",\"qualified_name\":\"reprogate-discovery-v1.src.policy.evaluatePolicy\",\"label\":\"Function\",\"file_path\":\"/tmp/reprogate-discovery-PLi6tX/corpus/src/policy.ts\",\"start_line\":44,\"end_line\":82,\"source\":\"export function evaluatePolicy(\\n  policy: PolicyV1,\\n  toolRef: string,\\n  effects: EffectClass[],\\n): PolicyDecision {\\n  if (effects.length === 0) {\\n    throw new Error(`Catalog tool ${toolRef} must declare at least one effect`);\\n  }\\n\\n  const reasons = [...new Set(effects)].sort().map((effect) => {\\n    const rule = matchingRule(policy, toolRef, effect);\\n    if (rule !== undefined) {\\n      return {\\n        effect,\\n        decision: rule.decision,\\n        ruleId: rule.id,\\n        reason: rule.reason,\\n      };\\n    }\\n    return {\\n      effect,\\n      decision: policy.defaults[effect],\\n      ruleId: `default:${effect}`,\\n      reason: `Default decision for ${effect}`,\\n    };\\n  });\\n\\n  const decision = reasons.reduce<Decision>(\\n    (current, reason) =>\\n      severity[reason.decision] > severity[current] ? reason.decision : current,\\n    \\\"allow\\\",\\n  );\\n\\n  return {\\n    decision,\\n    policyDigest: digestCanonical(policy),\\n    reasons,\\n  };\\n}\\n\",\"complexity\":2,\"cognitive\":2,\"loop_count\":0,\"loop_depth\":0,\"self_recursive\":false,\"param_count\":3,\"max_access_depth\":2,\"linear_scan_in_loop\":0,\"alloc_in_loop\":0,\"recursion_in_loop\":false,\"unguarded_recursion\":false,\"lines\":39,\"is_exported\":true,\"is_test\":false,\"is_entry_point\":true,\"signature\":\"(\\n  policy: PolicyV1,\\n  toolRef: string,\\n  effects: EffectClass[],\\n)\",\"return_type\":\": PolicyDecision\",\"fp\":\"02501a8b00415a9a0095bce6000d7cb700e6b89500cd0e98000a8b6900490eb00040bff501139fc500999ec000e1a83400ca736802b133fc0260e11001247c7d01394c7f02219e4b0071d2c20047083b0033170300b9c21b00bd6c46000b699e0084878a013872f00013de8401ee51a4010644f3012af488025f4495003d72c100c71d0d0144f706003bd8b2026fa321009bbd190158c76d00b78754004f26db01688f9802eff449001897ec005d62cb01d9981300303a330119452900393ecf00cb1af600583caf00543f8d01d3512300c3b50c00ec671700e598fa00509a600077889b004f4f6e011232ee001b07ac0048f494002063b50014610d003cdcb2\",\"sp\":\"2,0,0,0,0,3,13,74,3,0,0,0,1,1,0,3,0,0,0,6,4,26,51,39,51\",\"bt\":\"effects length Error toolRef reasons Set sort map effect rule matchingRule policy decision ruleId id reason defaults reduce current severity policyDigest digestCanonical\",\"transitive_loop_depth\":0,\"recursive\":false,\"callers\":4,\"callees\":2}"
+            }
+          ],
+          "truncated": false,
+          "redactions": 0,
+          "omittedItems": 0
+        }
+      },
+      "after": {
+        "search": {
+          "content": [
+            {
+              "type": "text",
+              "text": "{\"view\":\"graph_search_v1\",\"total\":1,\"has_more\":false,\"results\":[{\"name\":\"evaluatePolicy\",\"qualified_name\":\"reprogate-discovery-v1.src.policy.evaluatePolicy\",\"label\":\"Function\",\"file_path\":\"src/policy.ts\",\"lines\":39}]}"
+            }
+          ],
+          "truncated": false,
+          "redactions": 0,
+          "omittedItems": 0
+        },
+        "snippet": {
+          "content": [
+            {
+              "type": "text",
+              "text": "{\"view\":\"graph_snippet_v1\",\"name\":\"evaluatePolicy\",\"qualified_name\":\"reprogate-discovery-v1.src.policy.evaluatePolicy\",\"label\":\"Function\",\"file_path\":\"/tmp/reprogate-discovery-PLi6tX/corpus/src/policy.ts\",\"start_line\":44,\"end_line\":82,\"source\":\"export function evaluatePolicy(\\n  policy: PolicyV1,\\n  toolRef: string,\\n  effects: EffectClass[],\\n): PolicyDecision {\\n  if (effects.length === 0) {\\n    throw new Error(`Catalog tool ${toolRef} must declare at least one effect`);\\n  }\\n\\n  const reasons = [...new Set(effects)].sort().map((effect) => {\\n    const rule = matchingRule(policy, toolRef, effect);\\n    if (rule !== undefined) {\\n      return {\\n        effect,\\n        decision: rule.decision,\\n        ruleId: rule.id,\\n        reason: rule.reason,\\n      };\\n    }\\n    return {\\n      effect,\\n      decision: policy.defaults[effect],\\n      ruleId: `default:${effect}`,\\n      reason: `Default decision for ${effect}`,\\n    };\\n  });\\n\\n  const decision = reasons.reduce<Decision>(\\n    (current, reason) =>\\n      severity[reason.decision] > severity[current] ? reason.decision : current,\\n    \\\"allow\\\",\\n  );\\n\\n  return {\\n    decision,\\n    policyDigest: digestCanonical(policy),\\n    reasons,\\n  };\\n}\\n\"}"
+            }
+          ],
+          "truncated": false,
+          "redactions": 0,
+          "omittedItems": 0
+        }
+      }
+    },
+    {
+      "symbol": "issueCapabilityToken",
+      "answersChecked": true,
+      "sourceDigest": "sha256:8092b1f6cad2d8e7106bef51932ad076668ca6aee8afe41ffe3556b302b931bb",
+      "originalDigest": "sha256:5e730856f369ec2bf3df09ee609f0d35c72b673b1cb510dcfcfaf01177a04870",
+      "location": {
+        "beforeBytes": 1748,
+        "afterBytes": 366,
+        "reduction": 0.7906178489702518
+      },
+      "implementation": {
+        "beforeBytes": 4320,
+        "afterBytes": 1549,
+        "reduction": 0.6414351851851852
+      },
+      "before": {
+        "search": {
+          "content": [
+            {
+              "type": "text",
+              "text": "{\"total\":1,\"results\":[{\"name\":\"issueCapabilityToken\",\"qualified_name\":\"reprogate-discovery-v1.src.capability-token.issueCapabilityToken\",\"label\":\"Function\",\"file_path\":\"src/capability-token.ts\",\"in_degree\":2,\"out_degree\":5,\"complexity\":0,\"cognitive\":0,\"loop_count\":0,\"loop_depth\":0,\"self_recursive\":false,\"param_count\":2,\"max_access_depth\":1,\"linear_scan_in_loop\":0,\"alloc_in_loop\":0,\"recursion_in_loop\":false,\"unguarded_recursion\":false,\"lines\":21,\"is_exported\":true,\"is_test\":false,\"is_entry_point\":true,\"signature\":\"(\\n  input: Omit<CapabilityClaimsV1, \\\"version\\\" | \\\"jti\\\" | \\\"issuedAt\\\"> & {\\n    issuedAt?: string;\\n    jti?: string;\\n  },\\n  secret: string | Uint8Array,\\n)\",\"return_type\":\": string\",\"fp\":\"016694f3006e74a00197b7c6002173b200b530bc021cb69f026fd666006c1eba0304153800d4a3c400999ec0005b228a02522f36034c722a0260e1100190c3b601394c7f0331aba0017cd7ca01f68185003cb1ac00b9c21b03a832de000b699e024240b7013872f000079fb5006a37b3010644f30018c194025f44950014a19001575af80144f706004eeede026fa32100edd1890158c76d039499cc017088cc01688f9800f11ab7001897ec01f2cdc300c595a200303a33012b19da007dd68000cb1af600bce06300543f8d01d351230482702000ec6717035eeea3011439c7067ca2aa01e0f784010babba001b07ac0233b8e9002063b500223d99008b7326\",\"sp\":\"0,0,0,0,0,1,12,53,2,0,0,0,2,1,0,2,0,0,0,4,4,24,43,21,43\",\"bt\":\"claims version jti input randomUUID actionId envelopeDigest scopes Set sort issuedAt Date toISOString expiresAt validateClaims payload Buffer from canonicalJson toString mac signature keyBytes secret\",\"transitive_loop_depth\":0,\"recursive\":false}],\"has_more\":false}"
+            }
+          ],
+          "truncated": false,
+          "redactions": 0,
+          "omittedItems": 0
+        },
+        "snippet": {
+          "content": [
+            {
+              "type": "text",
+              "text": "{\"name\":\"issueCapabilityToken\",\"qualified_name\":\"reprogate-discovery-v1.src.capability-token.issueCapabilityToken\",\"label\":\"Function\",\"file_path\":\"/tmp/reprogate-discovery-PLi6tX/corpus/src/capability-token.ts\",\"start_line\":80,\"end_line\":100,\"source\":\"export function issueCapabilityToken(\\n  input: Omit<CapabilityClaimsV1, \\\"version\\\" | \\\"jti\\\" | \\\"issuedAt\\\"> & {\\n    issuedAt?: string;\\n    jti?: string;\\n  },\\n  secret: string | Uint8Array,\\n): string {\\n  const claims: CapabilityClaimsV1 = {\\n    version: 1,\\n    jti: input.jti ?? randomUUID(),\\n    actionId: input.actionId,\\n    envelopeDigest: input.envelopeDigest,\\n    scopes: [...new Set(input.scopes)].sort(),\\n    issuedAt: input.issuedAt ?? new Date().toISOString(),\\n    expiresAt: input.expiresAt,\\n  };\\n  validateClaims(claims);\\n  const payload = Buffer.from(canonicalJson(claims)).toString(\\\"base64url\\\");\\n  const mac = signature(payload, keyBytes(secret)).toString(\\\"base64url\\\");\\n  return `rg1.${payload}.${mac}`;\\n}\\n\",\"complexity\":0,\"cognitive\":0,\"loop_count\":0,\"loop_depth\":0,\"self_recursive\":false,\"param_count\":2,\"max_access_depth\":1,\"linear_scan_in_loop\":0,\"alloc_in_loop\":0,\"recursion_in_loop\":false,\"unguarded_recursion\":false,\"lines\":21,\"is_exported\":true,\"is_test\":false,\"is_entry_point\":true,\"signature\":\"(\\n  input: Omit<CapabilityClaimsV1, \\\"version\\\" | \\\"jti\\\" | \\\"issuedAt\\\"> & {\\n    issuedAt?: string;\\n    jti?: string;\\n  },\\n  secret: string | Uint8Array,\\n)\",\"return_type\":\": string\",\"fp\":\"016694f3006e74a00197b7c6002173b200b530bc021cb69f026fd666006c1eba0304153800d4a3c400999ec0005b228a02522f36034c722a0260e1100190c3b601394c7f0331aba0017cd7ca01f68185003cb1ac00b9c21b03a832de000b699e024240b7013872f000079fb5006a37b3010644f30018c194025f44950014a19001575af80144f706004eeede026fa32100edd1890158c76d039499cc017088cc01688f9800f11ab7001897ec01f2cdc300c595a200303a33012b19da007dd68000cb1af600bce06300543f8d01d351230482702000ec6717035eeea3011439c7067ca2aa01e0f784010babba001b07ac0233b8e9002063b500223d99008b7326\",\"sp\":\"0,0,0,0,0,1,12,53,2,0,0,0,2,1,0,2,0,0,0,4,4,24,43,21,43\",\"bt\":\"claims version jti input randomUUID actionId envelopeDigest scopes Set sort issuedAt Date toISOString expiresAt validateClaims payload Buffer from canonicalJson toString mac signature keyBytes secret\",\"transitive_loop_depth\":0,\"recursive\":false,\"callers\":2,\"callees\":4}"
+            }
+          ],
+          "truncated": false,
+          "redactions": 0,
+          "omittedItems": 0
+        }
+      },
+      "after": {
+        "search": {
+          "content": [
+            {
+              "type": "text",
+              "text": "{\"view\":\"graph_search_v1\",\"total\":1,\"has_more\":false,\"results\":[{\"name\":\"issueCapabilityToken\",\"qualified_name\":\"reprogate-discovery-v1.src.capability-token.issueCapabilityToken\",\"label\":\"Function\",\"file_path\":\"src/capability-token.ts\",\"lines\":21}]}"
+            }
+          ],
+          "truncated": false,
+          "redactions": 0,
+          "omittedItems": 0
+        },
+        "snippet": {
+          "content": [
+            {
+              "type": "text",
+              "text": "{\"view\":\"graph_snippet_v1\",\"name\":\"issueCapabilityToken\",\"qualified_name\":\"reprogate-discovery-v1.src.capability-token.issueCapabilityToken\",\"label\":\"Function\",\"file_path\":\"/tmp/reprogate-discovery-PLi6tX/corpus/src/capability-token.ts\",\"start_line\":80,\"end_line\":100,\"source\":\"export function issueCapabilityToken(\\n  input: Omit<CapabilityClaimsV1, \\\"version\\\" | \\\"jti\\\" | \\\"issuedAt\\\"> & {\\n    issuedAt?: string;\\n    jti?: string;\\n  },\\n  secret: string | Uint8Array,\\n): string {\\n  const claims: CapabilityClaimsV1 = {\\n    version: 1,\\n    jti: input.jti ?? randomUUID(),\\n    actionId: input.actionId,\\n    envelopeDigest: input.envelopeDigest,\\n    scopes: [...new Set(input.scopes)].sort(),\\n    issuedAt: input.issuedAt ?? new Date().toISOString(),\\n    expiresAt: input.expiresAt,\\n  };\\n  validateClaims(claims);\\n  const payload = Buffer.from(canonicalJson(claims)).toString(\\\"base64url\\\");\\n  const mac = signature(payload, keyBytes(secret)).toString(\\\"base64url\\\");\\n  return `rg1.${payload}.${mac}`;\\n}\\n\"}"
+            }
+          ],
+          "truncated": false,
+          "redactions": 0,
+          "omittedItems": 0
+        }
+      }
+    },
+    {
+      "symbol": "verifyExecutionReceipt",
+      "answersChecked": true,
+      "sourceDigest": "sha256:d75245e7c9bf3e18afc2fb1e5dc86ff6dc3f24422a2a26fa3b2f825e400d3af6",
+      "originalDigest": "sha256:dbd71120f40a8e18db1b2530620fd050b247243451255eedef84fe77002741c4",
+      "location": {
+        "beforeBytes": 1595,
+        "afterBytes": 352,
+        "reduction": 0.7793103448275862
+      },
+      "implementation": {
+        "beforeBytes": 4346,
+        "afterBytes": 1853,
+        "reduction": 0.5736309249884952
+      },
+      "before": {
+        "search": {
+          "content": [
+            {
+              "type": "text",
+              "text": "{\"total\":1,\"results\":[{\"name\":\"verifyExecutionReceipt\",\"qualified_name\":\"reprogate-discovery-v1.src.receipt.verifyExecutionReceipt\",\"label\":\"Function\",\"file_path\":\"src/receipt.ts\",\"in_degree\":1,\"out_degree\":3,\"complexity\":6,\"cognitive\":11,\"loop_count\":0,\"loop_depth\":0,\"self_recursive\":false,\"param_count\":2,\"max_access_depth\":1,\"linear_scan_in_loop\":0,\"alloc_in_loop\":0,\"recursion_in_loop\":false,\"unguarded_recursion\":false,\"lines\":37,\"is_exported\":true,\"is_test\":false,\"is_entry_point\":true,\"signature\":\"(\\n  receipt: unknown,\\n  secret: string | Uint8Array,\\n)\",\"return_type\":\": receipt is ExecutionReceiptV1\",\"fp\":\"0036fcb20099a0bb02ad6ed7002173b200e6b895015e5a0e0201fbc20093520a01e413a100d4a3c401af6fe102df7de000ca736802b133fc04214a1800b386f60040c72d016e6ce90071d2c200243b31003cb1ac0324ff05006b7a1e000b699e007cd58302d61e6000327b44015b9aa1010644f301b025040088064a003d72c100c71d0d0144f706005fb4e0023f030400c837720103b012016bb85d0099a0e4006ae5d50016b2fe007f14e800a797be001e178e00303a33012b19da007dd68000cb1af60027920300543f8d01d3512303524e1d00d90ef4028a9df600f92cd700606313010e50a4042b8bcc0081ff3f01bacf08002063b500223d9900b5b55e\",\"sp\":\"4,0,0,0,2,6,9,60,14,4,0,0,6,0,5,2,0,0,0,8,4,40,41,37,41\",\"bt\":\"receipt signature signed unsigned receiptDigest signedRecord algorithm value digestCanonical received Buffer from expected secret byteLength timingSafeEqual\",\"transitive_loop_depth\":0,\"recursive\":false}],\"has_more\":false}"
+            }
+          ],
+          "truncated": false,
+          "redactions": 0,
+          "omittedItems": 0
+        },
+        "snippet": {
+          "content": [
+            {
+              "type": "text",
+              "text": "{\"name\":\"verifyExecutionReceipt\",\"qualified_name\":\"reprogate-discovery-v1.src.receipt.verifyExecutionReceipt\",\"label\":\"Function\",\"file_path\":\"/tmp/reprogate-discovery-PLi6tX/corpus/src/receipt.ts\",\"start_line\":77,\"end_line\":113,\"source\":\"export function verifyExecutionReceipt(\\n  receipt: unknown,\\n  secret: string | Uint8Array,\\n): receipt is ExecutionReceiptV1 {\\n  try {\\n    if (receipt === null || typeof receipt !== \\\"object\\\") return false;\\n    const {\\n      receiptDigest,\\n      signature: signed,\\n      ...unsigned\\n    } = receipt as Record<string, unknown>;\\n    if (\\n      typeof receiptDigest !== \\\"string\\\" ||\\n      signed === null ||\\n      typeof signed !== \\\"object\\\"\\n    ) {\\n      return false;\\n    }\\n    const signedRecord = signed as Record<string, unknown>;\\n    if (\\n      signedRecord.algorithm !== \\\"hmac-sha256\\\" ||\\n      typeof signedRecord.value !== \\\"string\\\"\\n    ) {\\n      return false;\\n    }\\n    if (digestCanonical(unsigned) !== receiptDigest) return false;\\n\\n    const received = Buffer.from(signedRecord.value, \\\"base64url\\\");\\n    const expected = signature(receiptDigest, secret);\\n    return (\\n      received.byteLength === expected.byteLength &&\\n      timingSafeEqual(received, expected)\\n    );\\n  } catch {\\n    return false;\\n  }\\n}\\n\",\"complexity\":6,\"cognitive\":11,\"loop_count\":0,\"loop_depth\":0,\"self_recursive\":false,\"param_count\":2,\"max_access_depth\":1,\"linear_scan_in_loop\":0,\"alloc_in_loop\":0,\"recursion_in_loop\":false,\"unguarded_recursion\":false,\"lines\":37,\"is_exported\":true,\"is_test\":false,\"is_entry_point\":true,\"signature\":\"(\\n  receipt: unknown,\\n  secret: string | Uint8Array,\\n)\",\"return_type\":\": receipt is ExecutionReceiptV1\",\"fp\":\"0036fcb20099a0bb02ad6ed7002173b200e6b895015e5a0e0201fbc20093520a01e413a100d4a3c401af6fe102df7de000ca736802b133fc04214a1800b386f60040c72d016e6ce90071d2c200243b31003cb1ac0324ff05006b7a1e000b699e007cd58302d61e6000327b44015b9aa1010644f301b025040088064a003d72c100c71d0d0144f706005fb4e0023f030400c837720103b012016bb85d0099a0e4006ae5d50016b2fe007f14e800a797be001e178e00303a33012b19da007dd68000cb1af60027920300543f8d01d3512303524e1d00d90ef4028a9df600f92cd700606313010e50a4042b8bcc0081ff3f01bacf08002063b500223d9900b5b55e\",\"sp\":\"4,0,0,0,2,6,9,60,14,4,0,0,6,0,5,2,0,0,0,8,4,40,41,37,41\",\"bt\":\"receipt signature signed unsigned receiptDigest signedRecord algorithm value digestCanonical received Buffer from expected secret byteLength timingSafeEqual\",\"transitive_loop_depth\":0,\"recursive\":false,\"callers\":1,\"callees\":2}"
+            }
+          ],
+          "truncated": false,
+          "redactions": 0,
+          "omittedItems": 0
+        }
+      },
+      "after": {
+        "search": {
+          "content": [
+            {
+              "type": "text",
+              "text": "{\"view\":\"graph_search_v1\",\"total\":1,\"has_more\":false,\"results\":[{\"name\":\"verifyExecutionReceipt\",\"qualified_name\":\"reprogate-discovery-v1.src.receipt.verifyExecutionReceipt\",\"label\":\"Function\",\"file_path\":\"src/receipt.ts\",\"lines\":37}]}"
+            }
+          ],
+          "truncated": false,
+          "redactions": 0,
+          "omittedItems": 0
+        },
+        "snippet": {
+          "content": [
+            {
+              "type": "text",
+              "text": "{\"view\":\"graph_snippet_v1\",\"name\":\"verifyExecutionReceipt\",\"qualified_name\":\"reprogate-discovery-v1.src.receipt.verifyExecutionReceipt\",\"label\":\"Function\",\"file_path\":\"/tmp/reprogate-discovery-PLi6tX/corpus/src/receipt.ts\",\"start_line\":77,\"end_line\":113,\"source\":\"export function verifyExecutionReceipt(\\n  receipt: unknown,\\n  secret: string | Uint8Array,\\n): receipt is ExecutionReceiptV1 {\\n  try {\\n    if (receipt === null || typeof receipt !== \\\"object\\\") return false;\\n    const {\\n      receiptDigest,\\n      signature: signed,\\n      ...unsigned\\n    } = receipt as Record<string, unknown>;\\n    if (\\n      typeof receiptDigest !== \\\"string\\\" ||\\n      signed === null ||\\n      typeof signed !== \\\"object\\\"\\n    ) {\\n      return false;\\n    }\\n    const signedRecord = signed as Record<string, unknown>;\\n    if (\\n      signedRecord.algorithm !== \\\"hmac-sha256\\\" ||\\n      typeof signedRecord.value !== \\\"string\\\"\\n    ) {\\n      return false;\\n    }\\n    if (digestCanonical(unsigned) !== receiptDigest) return false;\\n\\n    const received = Buffer.from(signedRecord.value, \\\"base64url\\\");\\n    const expected = signature(receiptDigest, secret);\\n    return (\\n      received.byteLength === expected.byteLength &&\\n      timingSafeEqual(received, expected)\\n    );\\n  } catch {\\n    return false;\\n  }\\n}\\n\"}"
+            }
+          ],
+          "truncated": false,
+          "redactions": 0,
+          "omittedItems": 0
+        }
+      }
+    },
+    {
+      "symbol": "deriveGitApprovalAuthorityFromPlan",
+      "answersChecked": true,
+      "sourceDigest": "sha256:854b7d089fc00b33152827315e164ee721dc3816988b18f213faa31a3005b274",
+      "originalDigest": "sha256:b5428baeea22719d30a67f0c216fb22aab1c7c8cfb372283df463f4ad007dd79",
+      "location": {
+        "beforeBytes": 1943,
+        "afterBytes": 394,
+        "reduction": 0.7972207925887802
+      },
+      "implementation": {
+        "beforeBytes": 7778,
+        "afterBytes": 4674,
+        "reduction": 0.39907431216250966
+      },
+      "before": {
+        "search": {
+          "content": [
+            {
+              "type": "text",
+              "text": "{\"total\":1,\"results\":[{\"name\":\"deriveGitApprovalAuthorityFromPlan\",\"qualified_name\":\"reprogate-discovery-v1.src.git-plan-binding.deriveGitApprovalAuthorityFromPlan\",\"label\":\"Function\",\"file_path\":\"src/git-plan-binding.ts\",\"in_degree\":7,\"out_degree\":13,\"complexity\":7,\"cognitive\":7,\"loop_count\":0,\"loop_depth\":0,\"self_recursive\":false,\"param_count\":2,\"max_access_depth\":3,\"linear_scan_in_loop\":0,\"alloc_in_loop\":0,\"recursion_in_loop\":false,\"unguarded_recursion\":false,\"lines\":96,\"is_exported\":true,\"is_test\":false,\"is_entry_point\":true,\"signature\":\"(\\n  input: GitChangeProposal,\\n  context: GitPlanBindingContext,\\n)\",\"return_type\":\": GitApprovalAuthority\",\"fp\":\"01c8b986006e74a000cd4834000d7cb700e6b8950070d07e01f0988500490eb001ec1f0c00d4a3c401c2da4000e1a83400ca736802b133fc001ef01401c5da590358f9d40187bd6503c28722011a8bec003cb1ac00df5c2802ca7279000b699e007cd58300b467910141379b0125a914010644f3005321e901a49aff003d72c100c71d0d0144f706003bd8b202d4d49c00edd18900b8fe1f0002f67f0099a0e4019230330016b2fe0078341d00b9891c00c595a200190aee00f11085007dd680005e26ad00ef78a300543f8d01d35123031569f800ec6717019f1f3301688dc00085e1db010e50a4002f924b001b07ac0233b8e9002063b500223d99005d2b51\",\"sp\":\"7,0,0,0,0,1,17,74,49,4,0,0,10,0,0,2,0,0,0,6,2,182,208,96,208\",\"bt\":\"proposal ownGitChangeProposal input intent gitChangeIntentFromProposal repositoryId context workspace destinationRef Error currentWorkspace observeGitWorkspaceForProposal repositoryPath digestCanonical plan plans get actionId envelope envelopeDigest argumentsDigest now Date Number isFinite parse plannedAt expiresAt tool catalogTool observedTrustSource trustSource serverRef toolName schemaDigest inputSchema artifactDigest authority effects sortedUnique\",\"transitive_loop_depth\":3,\"recursive\":false}],\"has_more\":false}"
+            }
+          ],
+          "truncated": false,
+          "redactions": 0,
+          "omittedItems": 0
+        },
+        "snippet": {
+          "content": [
+            {
+              "type": "text",
+              "text": "{\"name\":\"deriveGitApprovalAuthorityFromPlan\",\"qualified_name\":\"reprogate-discovery-v1.src.git-plan-binding.deriveGitApprovalAuthorityFromPlan\",\"label\":\"Function\",\"file_path\":\"/tmp/reprogate-discovery-PLi6tX/corpus/src/git-plan-binding.ts\",\"start_line\":34,\"end_line\":129,\"source\":\"export function deriveGitApprovalAuthorityFromPlan(\\n  input: GitChangeProposal,\\n  context: GitPlanBindingContext,\\n): GitApprovalAuthority {\\n  const proposal = ownGitChangeProposal(input);\\n  const intent = gitChangeIntentFromProposal(proposal);\\n  if (\\n    proposal.repositoryId !== context.repositoryId ||\\n    proposal.workspace.destinationRef !== context.destinationRef\\n  ) {\\n    throw new Error(\\n      \\\"Proposal does not match configured repository or destination\\\",\\n    );\\n  }\\n  // Reconstruct the exact witness version the proposal commits to.\\n  const currentWorkspace = observeGitWorkspaceForProposal(\\n    proposal,\\n    context.repositoryPath,\\n  );\\n  if (\\n    digestCanonical(currentWorkspace) !== digestCanonical(proposal.workspace)\\n  ) {\\n    throw new Error(\\\"Git workspace no longer matches the proposed intent\\\");\\n  }\\n\\n  const plan = context.plans.get(proposal.actionId);\\n  if (plan === undefined) {\\n    throw new Error(\\\"No persisted action plan matches the proposal\\\");\\n  }\\n  const envelope = plan.envelope;\\n  if (\\n    envelopeDigest(envelope) !== plan.envelopeDigest ||\\n    envelope.actionId !== proposal.actionId ||\\n    envelope.input.argumentsDigest !== digestCanonical(intent)\\n  ) {\\n    throw new Error(\\\"Action plan does not bind the exact Git change intent\\\");\\n  }\\n  const now = Date.now();\\n  if (\\n    !Number.isFinite(Date.parse(envelope.plannedAt)) ||\\n    Date.parse(envelope.plannedAt) > now ||\\n    !Number.isFinite(Date.parse(envelope.expiresAt)) ||\\n    Date.parse(envelope.expiresAt) <= now ||\\n    Date.parse(proposal.expiresAt) > Date.parse(envelope.expiresAt)\\n  ) {\\n    throw new Error(\\\"Action plan is not current for the proposal expiry\\\");\\n  }\\n\\n  const tool = context.catalogTool;\\n  const observedTrustSource: unknown = envelope.tool.trustSource;\\n  if (\\n    observedTrustSource !== \\\"operator_catalog\\\" ||\\n    envelope.tool.serverRef !== tool.serverRef ||\\n    envelope.tool.toolName !== tool.toolName ||\\n    envelope.tool.schemaDigest !== digestCanonical(tool.inputSchema) ||\\n    envelope.tool.artifactDigest !== tool.artifactDigest ||\\n    digestCanonical(envelope.authority.effects) !==\\n      digestCanonical(sortedUnique(tool.effects)) ||\\n    digestCanonical(envelope.authority.scopes) !==\\n      digestCanonical(sortedUnique(tool.scopes ?? [])) ||\\n    digestCanonical(envelope.authority.filesystemRoots) !==\\n      digestCanonical(sortedUnique(tool.filesystemRoots ?? [])) ||\\n    digestCanonical(envelope.authority.networkDestinations) !==\\n      digestCanonical(sortedUnique(tool.networkDestinations ?? [])) ||\\n    digestCanonical(envelope.authority.secretHandles) !==\\n      digestCanonical(sortedUnique(tool.secretHandles ?? [])) ||\\n    !envelope.authority.scopes.includes(GIT_CHANGE_PROMOTE_SCOPE) ||\\n    !envelope.authority.effects.includes(\\\"local_write\\\")\\n  ) {\\n    throw new Error(\\n      \\\"Action plan does not match the configured Git catalog tool\\\",\\n    );\\n  }\\n\\n  const currentDecision = evaluatePolicy(\\n    context.currentPolicy,\\n    tool.toolRef,\\n    tool.effects,\\n  );\\n  if (\\n    currentDecision.decision === \\\"deny\\\" ||\\n    digestCanonical(plan.policy) !== digestCanonical(currentDecision) ||\\n    envelope.authority.policyDigest !== currentDecision.policyDigest ||\\n    proposal.policyDigest !== currentDecision.policyDigest\\n  ) {\\n    throw new Error(\\\"Action plan is denied or its policy has changed\\\");\\n  }\\n  return {\\n    repositoryId: context.repositoryId,\\n    actionId: envelope.actionId,\\n    policyDigest: currentDecision.policyDigest,\\n    workspaceRootDigest: currentWorkspace.rootDigest,\\n    destinationRef: context.destinationRef,\\n    maxExpiresAt: envelope.expiresAt,\\n  };\\n}\\n\",\"complexity\":7,\"cognitive\":7,\"loop_count\":0,\"loop_depth\":0,\"self_recursive\":false,\"param_count\":2,\"max_access_depth\":3,\"linear_scan_in_loop\":0,\"alloc_in_loop\":0,\"recursion_in_loop\":false,\"unguarded_recursion\":false,\"lines\":96,\"is_exported\":true,\"is_test\":false,\"is_entry_point\":true,\"signature\":\"(\\n  input: GitChangeProposal,\\n  context: GitPlanBindingContext,\\n)\",\"return_type\":\": GitApprovalAuthority\",\"fp\":\"01c8b986006e74a000cd4834000d7cb700e6b8950070d07e01f0988500490eb001ec1f0c00d4a3c401c2da4000e1a83400ca736802b133fc001ef01401c5da590358f9d40187bd6503c28722011a8bec003cb1ac00df5c2802ca7279000b699e007cd58300b467910141379b0125a914010644f3005321e901a49aff003d72c100c71d0d0144f706003bd8b202d4d49c00edd18900b8fe1f0002f67f0099a0e4019230330016b2fe0078341d00b9891c00c595a200190aee00f11085007dd680005e26ad00ef78a300543f8d01d35123031569f800ec6717019f1f3301688dc00085e1db010e50a4002f924b001b07ac0233b8e9002063b500223d99005d2b51\",\"sp\":\"7,0,0,0,0,1,17,74,49,4,0,0,10,0,0,2,0,0,0,6,2,182,208,96,208\",\"bt\":\"proposal ownGitChangeProposal input intent gitChangeIntentFromProposal repositoryId context workspace destinationRef Error currentWorkspace observeGitWorkspaceForProposal repositoryPath digestCanonical plan plans get actionId envelope envelopeDigest argumentsDigest now Date Number isFinite parse plannedAt expiresAt tool catalogTool observedTrustSource trustSource serverRef toolName schemaDigest inputSchema artifactDigest authority effects sortedUnique\",\"transitive_loop_depth\":3,\"recursive\":false,\"callers\":7,\"callees\":7}"
+            }
+          ],
+          "truncated": false,
+          "redactions": 0,
+          "omittedItems": 0
+        }
+      },
+      "after": {
+        "search": {
+          "content": [
+            {
+              "type": "text",
+              "text": "{\"view\":\"graph_search_v1\",\"total\":1,\"has_more\":false,\"results\":[{\"name\":\"deriveGitApprovalAuthorityFromPlan\",\"qualified_name\":\"reprogate-discovery-v1.src.git-plan-binding.deriveGitApprovalAuthorityFromPlan\",\"label\":\"Function\",\"file_path\":\"src/git-plan-binding.ts\",\"lines\":96}]}"
+            }
+          ],
+          "truncated": false,
+          "redactions": 0,
+          "omittedItems": 0
+        },
+        "snippet": {
+          "content": [
+            {
+              "type": "text",
+              "text": "{\"view\":\"graph_snippet_v1\",\"name\":\"deriveGitApprovalAuthorityFromPlan\",\"qualified_name\":\"reprogate-discovery-v1.src.git-plan-binding.deriveGitApprovalAuthorityFromPlan\",\"label\":\"Function\",\"file_path\":\"/tmp/reprogate-discovery-PLi6tX/corpus/src/git-plan-binding.ts\",\"start_line\":34,\"end_line\":129,\"source\":\"export function deriveGitApprovalAuthorityFromPlan(\\n  input: GitChangeProposal,\\n  context: GitPlanBindingContext,\\n): GitApprovalAuthority {\\n  const proposal = ownGitChangeProposal(input);\\n  const intent = gitChangeIntentFromProposal(proposal);\\n  if (\\n    proposal.repositoryId !== context.repositoryId ||\\n    proposal.workspace.destinationRef !== context.destinationRef\\n  ) {\\n    throw new Error(\\n      \\\"Proposal does not match configured repository or destination\\\",\\n    );\\n  }\\n  // Reconstruct the exact witness version the proposal commits to.\\n  const currentWorkspace = observeGitWorkspaceForProposal(\\n    proposal,\\n    context.repositoryPath,\\n  );\\n  if (\\n    digestCanonical(currentWorkspace) !== digestCanonical(proposal.workspace)\\n  ) {\\n    throw new Error(\\\"Git workspace no longer matches the proposed intent\\\");\\n  }\\n\\n  const plan = context.plans.get(proposal.actionId);\\n  if (plan === undefined) {\\n    throw new Error(\\\"No persisted action plan matches the proposal\\\");\\n  }\\n  const envelope = plan.envelope;\\n  if (\\n    envelopeDigest(envelope) !== plan.envelopeDigest ||\\n    envelope.actionId !== proposal.actionId ||\\n    envelope.input.argumentsDigest !== digestCanonical(intent)\\n  ) {\\n    throw new Error(\\\"Action plan does not bind the exact Git change intent\\\");\\n  }\\n  const now = Date.now();\\n  if (\\n    !Number.isFinite(Date.parse(envelope.plannedAt)) ||\\n    Date.parse(envelope.plannedAt) > now ||\\n    !Number.isFinite(Date.parse(envelope.expiresAt)) ||\\n    Date.parse(envelope.expiresAt) <= now ||\\n    Date.parse(proposal.expiresAt) > Date.parse(envelope.expiresAt)\\n  ) {\\n    throw new Error(\\\"Action plan is not current for the proposal expiry\\\");\\n  }\\n\\n  const tool = context.catalogTool;\\n  const observedTrustSource: unknown = envelope.tool.trustSource;\\n  if (\\n    observedTrustSource !== \\\"operator_catalog\\\" ||\\n    envelope.tool.serverRef !== tool.serverRef ||\\n    envelope.tool.toolName !== tool.toolName ||\\n    envelope.tool.schemaDigest !== digestCanonical(tool.inputSchema) ||\\n    envelope.tool.artifactDigest !== tool.artifactDigest ||\\n    digestCanonical(envelope.authority.effects) !==\\n      digestCanonical(sortedUnique(tool.effects)) ||\\n    digestCanonical(envelope.authority.scopes) !==\\n      digestCanonical(sortedUnique(tool.scopes ?? [])) ||\\n    digestCanonical(envelope.authority.filesystemRoots) !==\\n      digestCanonical(sortedUnique(tool.filesystemRoots ?? [])) ||\\n    digestCanonical(envelope.authority.networkDestinations) !==\\n      digestCanonical(sortedUnique(tool.networkDestinations ?? [])) ||\\n    digestCanonical(envelope.authority.secretHandles) !==\\n      digestCanonical(sortedUnique(tool.secretHandles ?? [])) ||\\n    !envelope.authority.scopes.includes(GIT_CHANGE_PROMOTE_SCOPE) ||\\n    !envelope.authority.effects.includes(\\\"local_write\\\")\\n  ) {\\n    throw new Error(\\n      \\\"Action plan does not match the configured Git catalog tool\\\",\\n    );\\n  }\\n\\n  const currentDecision = evaluatePolicy(\\n    context.currentPolicy,\\n    tool.toolRef,\\n    tool.effects,\\n  );\\n  if (\\n    currentDecision.decision === \\\"deny\\\" ||\\n    digestCanonical(plan.policy) !== digestCanonical(currentDecision) ||\\n    envelope.authority.policyDigest !== currentDecision.policyDigest ||\\n    proposal.policyDigest !== currentDecision.policyDigest\\n  ) {\\n    throw new Error(\\\"Action plan is denied or its policy has changed\\\");\\n  }\\n  return {\\n    repositoryId: context.repositoryId,\\n    actionId: envelope.actionId,\\n    policyDigest: currentDecision.policyDigest,\\n    workspaceRootDigest: currentWorkspace.rootDigest,\\n    destinationRef: context.destinationRef,\\n    maxExpiresAt: envelope.expiresAt,\\n  };\\n}\\n\"}"
+            }
+          ],
+          "truncated": false,
+          "redactions": 0,
+          "omittedItems": 0
+        }
+      }
+    },
+    {
+      "symbol": "loadGitReviewConfigSnapshot",
+      "answersChecked": true,
+      "sourceDigest": "sha256:ffdca3afc02cb5c3b320d6f0e0dd609e3e8a7b4e8aeb15521a3113c48b56af67",
+      "originalDigest": "sha256:a7dc84368c4b9856c417911af3780f919cf0b1c27bd3e84cd14233451a2b9fbd",
+      "location": {
+        "beforeBytes": 1689,
+        "afterBytes": 382,
+        "reduction": 0.7738306690349319
+      },
+      "implementation": {
+        "beforeBytes": 4219,
+        "afterBytes": 1598,
+        "reduction": 0.6212372600142213
+      },
+      "before": {
+        "search": {
+          "content": [
+            {
+              "type": "text",
+              "text": "{\"total\":1,\"results\":[{\"name\":\"loadGitReviewConfigSnapshot\",\"qualified_name\":\"reprogate-discovery-v1.src.git-review-config.loadGitReviewConfigSnapshot\",\"label\":\"Function\",\"file_path\":\"src/git-review-config.ts\",\"in_degree\":3,\"out_degree\":7,\"complexity\":2,\"cognitive\":3,\"loop_count\":0,\"loop_depth\":0,\"self_recursive\":false,\"param_count\":2,\"max_access_depth\":1,\"linear_scan_in_loop\":0,\"alloc_in_loop\":0,\"recursion_in_loop\":false,\"unguarded_recursion\":false,\"lines\":21,\"is_exported\":true,\"is_test\":false,\"is_entry_point\":true,\"signature\":\"(\\n  path: string,\\n  options: GitReviewConfigOptions = {},\\n)\",\"return_type\":\": GitReviewConfigSnapshot\",\"fp\":\"0037262a00c8affc0095bce6000d7cb700e6b895028be44c0359bd8900490eb003dd8e6800d4a3c400999ec000e1a834016871aa0106f5340190d12e00c20b160299a2f00331aba00071d2c200243b31003cb1ac00a0f42c009913fc01bff48901c6271900bd42190141379b03973ede0064312c001d72e200c0308e006794d300c71d0d0144f706004eeede015e1ac600edd1890158c76d006c0803017088cc019230330017acd20078341d01f2cdc300c595a200303a33011a0e00007dd68000cb1af604292d2900543f8d01f4df6702c167ba00d90ef40453dcef005456d0002a3fd1010e50a4042b8bcc005a224f01a9c988002063b500a72b4201945bd1\",\"sp\":\"0,0,0,0,2,1,13,48,0,0,0,1,4,0,1,2,0,0,1,6,3,13,26,21,26\",\"bt\":\"assertAbsolute path bytes readBoundedRegularFile MAX_GIT_REVIEW_CONFIG_BYTES value JSON parse TextDecoder fatal decode Error config parseGitReviewConfig paths resolveGitReviewStatePaths options digest gitReviewConfigDigest\",\"transitive_loop_depth\":2,\"recursive\":false}],\"has_more\":false}"
+            }
+          ],
+          "truncated": false,
+          "redactions": 0,
+          "omittedItems": 0
+        },
+        "snippet": {
+          "content": [
+            {
+              "type": "text",
+              "text": "{\"name\":\"loadGitReviewConfigSnapshot\",\"qualified_name\":\"reprogate-discovery-v1.src.git-review-config.loadGitReviewConfigSnapshot\",\"label\":\"Function\",\"file_path\":\"/tmp/reprogate-discovery-PLi6tX/corpus/src/git-review-config.ts\",\"start_line\":525,\"end_line\":545,\"source\":\"export function loadGitReviewConfigSnapshot(\\n  path: string,\\n  options: GitReviewConfigOptions = {},\\n): GitReviewConfigSnapshot {\\n  assertAbsolute(path, \\\"Git review config path\\\");\\n  const bytes = readBoundedRegularFile(\\n    path,\\n    MAX_GIT_REVIEW_CONFIG_BYTES,\\n    \\\"Git review config\\\",\\n  );\\n  let value: unknown;\\n  try {\\n    value = JSON.parse(new TextDecoder(\\\"utf-8\\\", { fatal: true }).decode(bytes));\\n  } catch {\\n    // Parser diagnostics can quote input; report only the failure class.\\n    throw new Error(\\\"Git review config is not valid UTF-8 JSON\\\");\\n  }\\n  const config = parseGitReviewConfig(value);\\n  const paths = resolveGitReviewStatePaths(config, options);\\n  return { config, digest: gitReviewConfigDigest(config), paths };\\n}\\n\",\"complexity\":2,\"cognitive\":3,\"loop_count\":0,\"loop_depth\":0,\"self_recursive\":false,\"param_count\":2,\"max_access_depth\":1,\"linear_scan_in_loop\":0,\"alloc_in_loop\":0,\"recursion_in_loop\":false,\"unguarded_recursion\":false,\"lines\":21,\"is_exported\":true,\"is_test\":false,\"is_entry_point\":true,\"signature\":\"(\\n  path: string,\\n  options: GitReviewConfigOptions = {},\\n)\",\"return_type\":\": GitReviewConfigSnapshot\",\"fp\":\"0037262a00c8affc0095bce6000d7cb700e6b895028be44c0359bd8900490eb003dd8e6800d4a3c400999ec000e1a834016871aa0106f5340190d12e00c20b160299a2f00331aba00071d2c200243b31003cb1ac00a0f42c009913fc01bff48901c6271900bd42190141379b03973ede0064312c001d72e200c0308e006794d300c71d0d0144f706004eeede015e1ac600edd1890158c76d006c0803017088cc019230330017acd20078341d01f2cdc300c595a200303a33011a0e00007dd68000cb1af604292d2900543f8d01f4df6702c167ba00d90ef40453dcef005456d0002a3fd1010e50a4042b8bcc005a224f01a9c988002063b500a72b4201945bd1\",\"sp\":\"0,0,0,0,2,1,13,48,0,0,0,1,4,0,1,2,0,0,1,6,3,13,26,21,26\",\"bt\":\"assertAbsolute path bytes readBoundedRegularFile MAX_GIT_REVIEW_CONFIG_BYTES value JSON parse TextDecoder fatal decode Error config parseGitReviewConfig paths resolveGitReviewStatePaths options digest gitReviewConfigDigest\",\"transitive_loop_depth\":2,\"recursive\":false,\"callers\":3,\"callees\":5}"
+            }
+          ],
+          "truncated": false,
+          "redactions": 0,
+          "omittedItems": 0
+        }
+      },
+      "after": {
+        "search": {
+          "content": [
+            {
+              "type": "text",
+              "text": "{\"view\":\"graph_search_v1\",\"total\":1,\"has_more\":false,\"results\":[{\"name\":\"loadGitReviewConfigSnapshot\",\"qualified_name\":\"reprogate-discovery-v1.src.git-review-config.loadGitReviewConfigSnapshot\",\"label\":\"Function\",\"file_path\":\"src/git-review-config.ts\",\"lines\":21}]}"
+            }
+          ],
+          "truncated": false,
+          "redactions": 0,
+          "omittedItems": 0
+        },
+        "snippet": {
+          "content": [
+            {
+              "type": "text",
+              "text": "{\"view\":\"graph_snippet_v1\",\"name\":\"loadGitReviewConfigSnapshot\",\"qualified_name\":\"reprogate-discovery-v1.src.git-review-config.loadGitReviewConfigSnapshot\",\"label\":\"Function\",\"file_path\":\"/tmp/reprogate-discovery-PLi6tX/corpus/src/git-review-config.ts\",\"start_line\":525,\"end_line\":545,\"source\":\"export function loadGitReviewConfigSnapshot(\\n  path: string,\\n  options: GitReviewConfigOptions = {},\\n): GitReviewConfigSnapshot {\\n  assertAbsolute(path, \\\"Git review config path\\\");\\n  const bytes = readBoundedRegularFile(\\n    path,\\n    MAX_GIT_REVIEW_CONFIG_BYTES,\\n    \\\"Git review config\\\",\\n  );\\n  let value: unknown;\\n  try {\\n    value = JSON.parse(new TextDecoder(\\\"utf-8\\\", { fatal: true }).decode(bytes));\\n  } catch {\\n    // Parser diagnostics can quote input; report only the failure class.\\n    throw new Error(\\\"Git review config is not valid UTF-8 JSON\\\");\\n  }\\n  const config = parseGitReviewConfig(value);\\n  const paths = resolveGitReviewStatePaths(config, options);\\n  return { config, digest: gitReviewConfigDigest(config), paths };\\n}\\n\"}"
+            }
+          ],
+          "truncated": false,
+          "redactions": 0,
+          "omittedItems": 0
+        }
+      }
+    }
+  ],
+  "medianLocationReduction": 0.7846237258729126,
+  "medianImplementationReduction": 0.5837973063989871,
+  "hostTokensMeasured": false
+}

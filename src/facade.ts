@@ -83,15 +83,29 @@ export const policyExplainOutputSchema = z.object({
   policy: policySchema,
 });
 
+// One object with optional digests costs less in every tool list than a
+// compact/full union. Digests appear only with detail "full".
 export const actionRunOutputSchema = z.object({
+  detail: z.enum(["compact", "full"]),
   executionId: z.string(),
   outcome: z.enum(["succeeded", "failed"]),
-  receiptDigest: digestSchema,
-  resultDigest: digestSchema,
-  content: z.array(z.object({ type: z.literal("text"), text: z.string() })),
   truncated: z.boolean(),
   redactions: z.number().int().min(0),
   omittedItems: z.number().int().min(0),
+  receiptDigest: digestSchema.optional(),
+  resultDigest: digestSchema.optional(),
+  content: z.array(z.object({ type: z.literal("text"), text: z.string() })),
+});
+// Only a server with the strike gate lists this field, so the gate costs
+// nothing in other tool lists. It appears on failed runs.
+export const actionRunStrikesOutputSchema = actionRunOutputSchema.extend({
+  strikes: z
+    .object({
+      failures: z.number().int().min(0),
+      limit: z.number().int().min(2),
+      resolverToolRef: z.string(),
+    })
+    .optional(),
 });
 
 /** One catalog entry, including the schema digest a plan would bind. */

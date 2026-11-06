@@ -84,13 +84,43 @@ The opt-in handoff tools store context that is caller-asserted. The host fixes t
 
 ## Host-mediated execution boundary
 
+`action.run` returns downstream text unescaped as text items after the gateway's own summary. A malicious tool can emit text that looks like that summary, so `structuredContent`, and the first text item that mirrors its summary fields, are the authoritative run status.
+
 With the opt-in `mediation` configuration, the server issues a capability itself, but only for persisted plans that policy decided `allow` and whose effects are all in a host allowlist limited to `local_read` and `network_read`. The model can trigger such a run by naming an `actionId`, so the protection rests on three things:
 
 - the operator's catalog effect declarations being accurate;
 - the policy itself;
 - the unchanged executor checks.
 
-A plan row edited directly in the store could claim an `allow` decision, but write access to the store is already outside this boundary. Each run re-checks the envelope against the live catalog and policy, so tightening either withdraws mediation for existing plans immediately. A run limit per plan (default 1) is enforced atomically through single-use capability IDs. Mediated results and error messages are redacted and bounded before the model sees them: token shapes, every fragment of 12 or more characters of the configured secrets (raw or JSON-escaped), and host patterns. Mediation removes the human review of arguments, though, and redaction cannot stop a tool that can read the gateway's own secrets from leaking them in short or encoded pieces. Operators must not mediate any tool that can reach gateway secret material. In a shared store, `action.run` error codes also reveal whether an action ID exists.
+A plan row edited directly in the store could claim an `allow` decision, but write access to the store is already outside this boundary. Each run re-checks the envelope against the live catalog and policy, so tightening either withdraws mediation for existing plans immediately. A run limit per plan (default 1) is enforced atomically through single-use capability IDs. Mediated results and error messages are redacted and bounded before the model sees them: token shapes, every fragment of 12 or more characters of the configured secrets (raw or JSON-escaped), and host patterns. Mediation removes the human review of arguments, though, and redaction cannot stop a tool that can read the gateway's own secrets from leaking them in short or encoded pieces. Operators must not mediate any tool that can reach gateway secret material. In a shared store, `action.run` error codes also reveal whether an action ID exists. The optional two-strike gate (`mediation.strikes`) only refuses further mediated runs of a repeatedly failing tool until a resolver succeeds. Its counts are in memory and per process, so it steers agents but grants and protects nothing.
+
+## Host-held approval boundary
+
+With `mediation.heldApprovals`, an operator approves an exact plan on the host, and the model runs it through `action.run` without ever handling a capability token. Held approvals are HMAC-signed with the capability secret under a separate domain, and are checked against the plan's action ID, envelope digest, scopes and expiry. Each one yields one run, because its single-use capability ID is `host-held:<approvalId>`. Live policy and catalog drift makes it stale. Revocation consumes that ID as a tombstone in the same transaction that removes the row, so a run that already verified the approval cannot execute after a successful revoke.
+
+A store writer without the secret cannot forge, extend, or transplant an approval to another plan. Unlike capability tokens, however, signed approvals live in the store. A writer who has read one can delete its tombstone or `token_uses` row and re-run the approved plan, or re-insert a revoked approval, until it expires. Single use and revocation therefore rely on store integrity, as the rest of the execution record does. Keep approvals short with `--hold --expires-in <seconds>` and protect the store. Approval proves secret possession on the host, not who approved. The model chooses when an approved run happens and supplies its arguments, but the arguments must match the planned digest.
+
+## Catalog import boundary
+
+`reprogate catalog import` is a host-side review aid. It copies a pinned backend's live input schemas and descriptions into proposed catalog entries. Effects are exactly what the operator declares; downstream annotations and tool names only produce warnings. The backend's stderr is discarded during import, and downstream text that appears in errors is shown with control and bidirectional characters escaped. Copied descriptions are stripped of those characters, but their remaining text is still downstream-authored, and so are the input schemas, which must be copied exactly for the schema pin. Import's stdout escapes control and bidirectional characters inside the JSON, so reviewing it in a terminal is safe. Once added to the catalog, it is model-visible through `catalog.search` and `catalog.describe` and can carry prompt-injection content, so operators should review descriptions as well as effects before adding entries.
+
+## Optional code-discovery benchmark
+
+The developer-only code-discovery harness executes an explicit trusted local
+graph binary and ripgrep, reads pinned Git objects, and writes temporary source,
+graph indexes and private configuration. It uses a fresh CBM_CACHE_DIR and XDG
+directories, disables auto-index/watch/UI there, indexes without artifact
+persistence, closes its client, and removes temporary state on normal exit.
+A hard kill may leave temporary state. This isolates configuration; it does
+not sandbox a malicious binary or authorize gateway actions. The JSON report
+retains complete responses and copies of the public pinned source. See
+[measurement scope and retention](CODE_DISCOVERY_BENCHMARK.md).
+
+## Research backend boundary
+
+`reprogate research-server` is a separate stdio backend, so web fetches pass through the same catalog, policy, mediation and receipt path as other tools. ReproGate itself makes no network requests. The backend accepts only `http(s)` URLs without credentials. It checks every resolved address at connect time against loopback, private, link-local, shared, documentation, multicast and reserved ranges. It judges IPv4-mapped and well-known NAT64 addresses by their embedded IPv4 address, and refuses the IPv4-compatible, local-use NAT64, 6to4 and Teredo prefixes outright. It checks every redirect again and refuses https-to-http downgrades. Distillation is a single linear pass, so a hostile page cannot stall the backend. It bounds time, size and content type, and reports stable error codes without echoing response bodies. Fetched content is untrusted and may contain prompt-injection text; distillation does not remove it. Search is optional and uses only an operator-configured provider. Queries, including cleaned error text, go to that provider; secret and address redaction in that text is best-effort, not a guarantee. The endpoint template must place `{query}` after the host, and every request is checked against the configured origin, so `--search-endpoint-private` exempts only that origin, without following redirects, and search result URLs always get the full checks. Search results can be poisoned to promote harmful fixes. See [RESEARCH.md](RESEARCH.md).
+
+Compact graph views are opt-in and keyed by exact catalog server/tool identities. They omit known diagnostic fields only from recognized successful replies whose shape is fully validated. Unknown fields, errors, extra content, re-spelled JSON (such as duplicate keys) and oversized replies keep the normal view, so a new field or channel is never silently dropped. The known free-form fields `docstring`, `signature` and `return_type` are omitted by design. Projection runs only when redaction finds nothing in the original text, and a structured mirror must serialize to that same text. The `graph_search_v1` and `graph_snippet_v1` markers describe the view; they do not authenticate content, and a downstream can imitate them. The signed `resultDigest` still covers the complete original result.
 
 ## Known gaps before execution is production-safe
 
