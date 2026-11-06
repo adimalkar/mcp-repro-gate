@@ -362,28 +362,39 @@ export function handoffPermissionIssues(workspaceRoot: string): {
  */
 export function repairHandoffPermissions(workspaceRoot: string): string[] {
   if (process.platform === "win32") return [];
-  const entries = handoffEntries(workspaceRoot).flatMap((entry) => {
-    const stats = existingEntry(entry.path);
-    if (stats === undefined) return [];
-    if (!ownEntry(stats, entry.directory))
-      throw new HandoffError("unavailable");
-    return (stats.mode & 0o077n) === 0n ? [] : [{ ...entry, stats }];
-  });
-  for (const { path, directory, stats } of entries) {
-    const fd = openSync(
-      path,
-      readFlags | (directory ? constants.O_DIRECTORY : 0),
-    );
+  // Every decision is made on a descriptor opened without following links,
+  // never on a path checked earlier: a path swapped between check and use
+  // cannot redirect the change. A symlink fails to open and is refused.
+  const inspect = <T>(
+    entry: { path: string; directory: boolean },
+    use: (fd: number, stats: BigIntStats) => T,
+  ): T | undefined => {
+    let fd: number;
     try {
-      const opened = fstatSync(fd, { bigint: true });
-      if (!sameIdentity(stats, opened) || !ownEntry(opened, directory))
+      fd = openSync(entry.path, readFlags);
+    } catch (error) {
+      if (missing(error)) return undefined;
+      throw new HandoffError("unavailable", { cause: error });
+    }
+    try {
+      const stats = fstatSync(fd, { bigint: true });
+      if (!ownEntry(stats, entry.directory))
         throw new HandoffError("unavailable");
-      fchmodSync(fd, directory ? 0o700 : 0o600);
+      return use(fd, stats);
     } finally {
       closeSync(fd);
     }
-  }
-  return entries.map(({ name }) => name);
+  };
+  // Refuse before changing anything.
+  const loose = handoffEntries(workspaceRoot).filter(
+    (entry) =>
+      inspect(entry, (_fd, stats) => (stats.mode & 0o077n) !== 0n) === true,
+  );
+  for (const entry of loose)
+    inspect(entry, (fd) => {
+      fchmodSync(fd, entry.directory ? 0o700 : 0o600);
+    });
+  return loose.map(({ name }) => name);
 }
 export function loadHandoffConfig(path: string): HandoffConfigV1 {
   try {
