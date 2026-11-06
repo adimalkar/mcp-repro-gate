@@ -29,7 +29,12 @@ function git(root: string, ...args: string[]): string {
 function repository(context: TestContext): string {
   const root = mkdtempSync(join(tmpdir(), "reprogate-change-proposal-"));
   context.after(() => {
-    rmSync(root, { recursive: true, force: true });
+    rmSync(root, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100,
+    });
   });
   git(root, "init", "-q", "-b", "main");
   git(root, "config", "user.name", "ReproGate Test");

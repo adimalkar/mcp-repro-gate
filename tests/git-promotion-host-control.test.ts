@@ -105,7 +105,12 @@ function probeInvalidBytePaths(platform = process.platform): boolean {
     );
   } finally {
     if (fd !== undefined) closeSync(fd);
-    rmSync(probeScratch, { recursive: true, force: true });
+    rmSync(probeScratch, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100,
+    });
   }
 }
 const supportsInvalidBytePaths = probeInvalidBytePaths();
@@ -223,7 +228,13 @@ for (const drift of ["remove-control", "replace-parent"] as const) {
     } finally {
       opening.mock.restore();
       syncBuiltinESMExports();
-      if (moved) rmSync(moved, { recursive: true, force: true });
+      if (moved)
+        rmSync(moved, {
+          recursive: true,
+          force: true,
+          maxRetries: 10,
+          retryDelay: 100,
+        });
     }
     assert.equal(invalidAttempts, 1);
     assert.ok(control);
@@ -281,7 +292,12 @@ function fixture(t: TestContext) {
         failures,
         "Owned fixture workers could not all be reaped",
       );
-    rmSync(scratch, { recursive: true, force: true });
+    rmSync(scratch, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100,
+    });
   });
   return { scratch, root, host, config, workers };
 }
@@ -1963,7 +1979,12 @@ function redirectGitdirIntoFenceParent(
     f.layout === "directory" ||
     f.layout === "symlink-directory" ||
     f.layout === "directory-commondir";
-  rmSync(dotGit, { recursive: true, force: true });
+  rmSync(dotGit, {
+    recursive: true,
+    force: true,
+    maxRetries: 10,
+    retryDelay: 100,
+  });
   if (directoryLink)
     symlinkSync(
       f.host,

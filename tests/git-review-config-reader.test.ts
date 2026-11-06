@@ -23,7 +23,12 @@ import { readBoundedRegularFile } from "../src/git-review-config.js";
 function fixture(t: TestContext, bytes = "fixture-only bytes") {
   const root = mkdtempSync(join(tmpdir(), "reprogate bounded reader "));
   t.after(() => {
-    rmSync(root, { recursive: true, force: true });
+    rmSync(root, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100,
+    });
   });
   const path = join(root, "fixture.bin");
   writeFileSync(path, bytes, { mode: 0o600 });

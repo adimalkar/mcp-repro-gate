@@ -26,7 +26,12 @@ function git(root: string, ...args: string[]): string {
 function repository(context: TestContext): string {
   const root = mkdtempSync(join(tmpdir(), "reprogate-stage-test-"));
   context.after(() => {
-    rmSync(root, { recursive: true, force: true });
+    rmSync(root, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100,
+    });
   });
   git(root, "init", "-q", "-b", "main");
   git(root, "config", "user.name", "ReproGate Test");
@@ -115,7 +120,12 @@ test("review staging returns exact Git binary diff bytes with compatible metadat
       if (value === undefined) Reflect.deleteProperty(process.env, name);
       else process.env[name] = value;
     });
-    rmSync(scratch, { recursive: true, force: true });
+    rmSync(scratch, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100,
+    });
   });
   tempVariables.forEach((name) => {
     process.env[name] = scratch;
