@@ -47,6 +47,22 @@ export interface GitReviewConfigV1 {
   trust: GitOperatorReviewTrustV1;
 }
 
+/**
+ * Version 2 adds Git promotion: the destination must not be checked out in
+ * any worktree, and one persistent host fence serializes promotion. Version 1
+ * configurations keep their exact behavior and can never promote.
+ */
+export interface GitReviewConfigV2 extends Omit<
+  GitReviewConfigV1,
+  "configVersion"
+> {
+  configVersion: 2;
+  destinationMode: "uncheckout_destination";
+  ownership: { kind: "persistent_directory"; fencePath: string };
+}
+
+export type GitReviewConfig = GitReviewConfigV1 | GitReviewConfigV2;
+
 export interface GitReviewConfigOptions {
   /** Plan operations read persisted plans and must not create an empty DB. */
   requirePlanDatabase?: boolean;
@@ -59,10 +75,12 @@ export interface GitReviewStatePaths {
   protectedRoots: string[];
   planDatabasePath: string;
   approvalDatabasePath: string;
+  /** Version 2 only: the canonical persistent fence location. */
+  fencePath?: string;
 }
 
 export interface GitReviewConfigSnapshot {
-  config: GitReviewConfigV1;
+  config: GitReviewConfig;
   digest: Digest;
   paths: GitReviewStatePaths;
 }
@@ -138,8 +156,7 @@ const policySchema = z.strictObject({
   ),
 });
 
-const configSchema = z.strictObject({
-  configVersion: z.literal(1),
+const commonConfigFields = {
   repositoryPath: pathSchema,
   repositoryId: z.string().min(1).max(256).regex(IDENTIFIER_PATTERN),
   destinationRef: z.string().min(12).max(1024).regex(REF_PATTERN),
@@ -148,7 +165,19 @@ const configSchema = z.strictObject({
   catalogTool: catalogToolSchema,
   currentPolicy: policySchema,
   trust: z.unknown(),
-});
+};
+const configSchema = z.discriminatedUnion("configVersion", [
+  z.strictObject({ configVersion: z.literal(1), ...commonConfigFields }),
+  z.strictObject({
+    configVersion: z.literal(2),
+    ...commonConfigFields,
+    destinationMode: z.literal("uncheckout_destination"),
+    ownership: z.strictObject({
+      kind: z.literal("persistent_directory"),
+      fencePath: pathSchema,
+    }),
+  }),
+]);
 
 function optionalFlag(name: "O_NOFOLLOW" | "O_NONBLOCK"): number {
   // Not every platform defines these flags (notably Windows).
@@ -276,7 +305,7 @@ function describeIssues(error: z.ZodError): string {
  * unknown fields, canonical catalog input schema, Git promote scope and
  * local_write effect, unambiguous policy, and valid public host trust.
  */
-export function parseGitReviewConfig(value: unknown): GitReviewConfigV1 {
+export function parseGitReviewConfig(value: unknown): GitReviewConfig {
   const parsed = configSchema.safeParse(value);
   if (!parsed.success) {
     throw new Error(
@@ -492,7 +521,7 @@ function checkStatePath(
  * these checks; this is not a sandbox.
  */
 export function resolveGitReviewStatePaths(
-  config: GitReviewConfigV1,
+  config: GitReviewConfig,
   options: GitReviewConfigOptions = {},
 ): GitReviewStatePaths {
   const protectedRoots = gitReviewProtectedRoots(config.repositoryPath);
@@ -513,11 +542,33 @@ export function resolveGitReviewStatePaths(
       "planDatabasePath and approvalDatabasePath must be different files",
     );
   }
-  return { protectedRoots, planDatabasePath, approvalDatabasePath };
+  if (config.configVersion === 1)
+    return { protectedRoots, planDatabasePath, approvalDatabasePath };
+  // The host fence enforces its own private-location rules on every use;
+  // this rejects plain misconfiguration before any operation starts.
+  assertAbsolute(config.ownership.fencePath, "ownership.fencePath");
+  const fencePath = assertOutsideProtectedRepository(
+    config.ownership.fencePath,
+    protectedRoots,
+    "ownership.fencePath",
+  );
+  if (
+    [planDatabasePath, approvalDatabasePath].some((database) =>
+      ["", ...SQLITE_SIDECARS].some(
+        (suffix) =>
+          isWithin(database + suffix, fencePath) ||
+          isWithin(fencePath, database + suffix),
+      ),
+    )
+  )
+    throw new Error(
+      "ownership.fencePath must be separate from the plan and approval databases",
+    );
+  return { protectedRoots, planDatabasePath, approvalDatabasePath, fencePath };
 }
 
 /** Canonical digest of the parsed config, used for drift detection. */
-export function gitReviewConfigDigest(config: GitReviewConfigV1): Digest {
+export function gitReviewConfigDigest(config: GitReviewConfig): Digest {
   return digestCanonical(config);
 }
 
@@ -547,6 +598,6 @@ export function loadGitReviewConfigSnapshot(
 export function loadGitReviewConfig(
   path: string,
   options: GitReviewConfigOptions = {},
-): GitReviewConfigV1 {
+): GitReviewConfig {
   return loadGitReviewConfigSnapshot(path, options).config;
 }

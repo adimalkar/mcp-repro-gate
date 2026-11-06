@@ -400,7 +400,7 @@ async function main(): Promise<void> {
     return;
   }
   process.stderr.write(
-    "Usage: reprogate [serve [--config <absolute-path>] [--handoff-config <absolute-path>]|demo|approve [--config <absolute-path>] <target> <action-id>|verify-receipt [--config <absolute-path>] <receipt.json>|catalog import --config <absolute-path> --backend <name> --effects <effects> ...|artifact digest <absolute-path>|bench facade [--json]|research-server [--allow-host <host>]... [--search-endpoint <url> [--search-endpoint-private]]|bench research [--html <file> --query <text>] [--json]|git-review <prepare|sign|import|check|revoke> ...]\n",
+    "Usage: reprogate [serve [--config <absolute-path>] [--handoff-config <absolute-path>]|demo|approve [--config <absolute-path>] <target> <action-id>|verify-receipt [--config <absolute-path>] <receipt.json>|catalog import --config <absolute-path> --backend <name> --effects <effects> ...|artifact digest <absolute-path>|bench facade [--json]|research-server [--allow-host <host>]... [--search-endpoint <url> [--search-endpoint-private]]|bench research [--html <file> --query <text>] [--json]|git-review <prepare|sign|import|check|revoke|promote|resume|status|recover> ...]\n",
   );
   process.exitCode = 2;
 }

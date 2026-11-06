@@ -1,4 +1,9 @@
-import { createPrivateKey, createPublicKey, type KeyObject } from "node:crypto";
+import {
+  createPrivateKey,
+  createPublicKey,
+  randomUUID,
+  type KeyObject,
+} from "node:crypto";
 import { lstatSync, type BigIntStats } from "node:fs";
 import { resolve } from "node:path";
 
@@ -10,7 +15,7 @@ import {
   SqliteGitApprovalStore,
   type GitApprovalAuthority,
 } from "./git-approval-store.js";
-import type { GitChangeProposalV1 } from "./git-change-proposal.js";
+import type { GitChangeProposal } from "./git-change-proposal.js";
 import {
   authenticateGitOperatorReview,
   gitOperatorKeyId,
@@ -22,9 +27,12 @@ import {
   applyGitOperatorReviewFromPlan,
   matchesOperatorReviewedGitApprovalFromPlan,
   prepareGitOperatorReviewFromPlan,
-  type GitOperatorReviewRequestV1,
+  type GitOperatorReviewRequest,
 } from "./git-operator-review-plan.js";
 import type { GitPlanBindingContext } from "./git-plan-binding.js";
+import type { GitPromotionResultV1 } from "./git-approval-store.js";
+import type { GitPromotionHostControlConfig } from "./git-promotion-host-control.js";
+import { prepareGitPromotionObjects } from "./git-promotion-objects.js";
 import {
   assertOutsideProtectedRepository,
   loadGitReviewConfigSnapshot,
@@ -32,6 +40,7 @@ import {
   type GitReviewConfigOptions,
   type GitReviewConfigSnapshot,
 } from "./git-review-config.js";
+import { createGitPromotionHostControl } from "./git-promotion-host-control.js";
 import type { PlanStore, PlannedAction } from "./kernel.js";
 
 export interface GitReviewCliIo {
@@ -61,13 +70,20 @@ export const GIT_REVIEW_USAGE = `Usage:
   reprogate git-review import --config <absolute-path> --proposal <proposal.json> --patch <change.patch> --review <review.json>
   reprogate git-review check --config <absolute-path> --proposal <proposal.json> --patch <change.patch> --approval-id <uuid>
   reprogate git-review revoke --config <absolute-path> --approval-id <uuid>
+  reprogate git-review promote --config <absolute-path> --proposal <proposal.json> --patch <change.patch> --approval-id <uuid>
+  reprogate git-review resume --config <absolute-path> --attempt-id <uuid>
+  reprogate git-review status --config <absolute-path> --attempt-id <uuid>
+  reprogate git-review recover --config <absolute-path> --attempt-id <uuid> --confirm-quiescent
 
-Every listed option is required exactly once, as "--name value". --config must
-be absolute; other paths resolve against the current working directory.
+Every listed option is required exactly once, as "--name value";
+--confirm-quiescent takes no value. --config must be absolute; other paths
+resolve against the current working directory. Proposals must match the
+config version. promote, resume, status and recover need a version 2 config.
 --expires-at is canonical UTC such as 2030-01-01T00:00:00.000Z.
 JSON results go to stdout; sign shows the escaped staged diff on stderr.
-Exit status: 0 success or true, 1 failure or a false result
-({"valid":false} or {"revoked":false}), 2 usage error.
+Exit status: 0 success or true (promote/resume: confirmed), 1 failure or a
+false result ({"valid":false}, {"revoked":false}, {"found":false}, or a
+promotion that is failed or indeterminate), 2 usage error.
 `;
 
 const COMMANDS = {
@@ -85,7 +101,14 @@ const COMMANDS = {
   import: ["config", "proposal", "patch", "review"],
   check: ["config", "proposal", "patch", "approval-id"],
   revoke: ["config", "approval-id"],
+  promote: ["config", "proposal", "patch", "approval-id"],
+  resume: ["config", "attempt-id"],
+  status: ["config", "attempt-id"],
+  recover: ["config", "attempt-id", "confirm-quiescent"],
 } as const;
+
+// Options that are present-or-absent flags rather than "--name value".
+const FLAGS: ReadonlySet<string> = new Set(["confirm-quiescent"]);
 
 type Command = keyof typeof COMMANDS;
 type Options = ReadonlyMap<string, string>;
@@ -211,6 +234,11 @@ function parseOptions(command: Command, args: string[]): Options {
       throw new UsageError(`Unknown option ${escapeUntrustedText(flag)}`);
     }
     if (options.has(name)) throw new UsageError(`Duplicate option --${name}`);
+    if (FLAGS.has(name)) {
+      options.set(name, "");
+      index -= 1;
+      continue;
+    }
     const value = args[index + 1];
     if (value === undefined || value === "" || value.startsWith("--")) {
       throw new UsageError(`Option --${name} requires a value`);
@@ -249,13 +277,25 @@ function readJsonFile(path: string, maxBytes: number, label: string): unknown {
   }
 }
 
-function readProposal(path: string): GitChangeProposalV1 {
+const ATTEMPT_ID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$(?![\s\S])/u;
+
+function attemptIdOption(options: Options): string {
+  const value = option(options, "attempt-id");
+  if (!ATTEMPT_ID_PATTERN.test(value)) {
+    throw new UsageError("--attempt-id must be a lowercase UUIDv4");
+  }
+  return value;
+}
+
+/** A proposal of exactly the config's version: v1 reviews, v2 promotes. */
+function readProposal(path: string, version: 1 | 2): GitChangeProposal {
   const value = readJsonFile(path, MAX_PROPOSAL_BYTES, "Git change proposal");
   try {
-    return snapshotGitChangeProposal(value);
+    return snapshotGitChangeProposal(value, version);
   } catch {
     throw new Error(
-      "Git change proposal is malformed or failed its integrity check",
+      `Git change proposal is malformed or failed its integrity check, or is not version ${String(version)} like the config`,
     );
   }
 }
@@ -356,13 +396,35 @@ class GitReviewSession {
   openApprovals(): SqliteGitApprovalStore {
     return new SqliteGitApprovalStore(this.snapshot.paths.approvalDatabasePath);
   }
+
+  get version(): 1 | 2 {
+    return this.snapshot.config.configVersion;
+  }
+
+  /**
+   * The persistent fence configuration for promotion. The plan database
+   * and this config file are host state the fence must never overlap.
+   */
+  hostControl(): GitPromotionHostControlConfig {
+    const { config, paths } = this.snapshot;
+    if (config.configVersion !== 2 || paths.fencePath === undefined)
+      throw new Error(
+        "Git promotion needs a version 2 review config; version 1 cannot promote",
+      );
+    return {
+      repositoryPath: config.repositoryPath,
+      approvalDatabasePath: paths.approvalDatabasePath,
+      fencePath: paths.fencePath,
+      statePaths: [paths.planDatabasePath, this.#path],
+    };
+  }
 }
 
 function prepareRequest(
   session: GitReviewSession,
-  proposal: GitChangeProposalV1,
+  proposal: GitChangeProposal,
   patch: Uint8Array,
-): { request: GitOperatorReviewRequestV1; stagedPatch: Uint8Array } {
+): { request: GitOperatorReviewRequest; stagedPatch: Uint8Array } {
   const plans = session.openPlans();
   try {
     return prepareGitOperatorReviewFromPlan({
@@ -379,7 +441,7 @@ function runPrepare(options: Options, io: GitReviewCliIo): number {
   const session = new GitReviewSession(option(options, "config"), {
     requirePlanDatabase: true,
   });
-  const proposal = readProposal(option(options, "proposal"));
+  const proposal = readProposal(option(options, "proposal"), session.version);
   const patch = readPatch(option(options, "patch"));
   const { request } = prepareRequest(session, proposal, patch);
   session.assertUnchanged();
@@ -414,7 +476,7 @@ function authorizedOperator(
 
 function assertReviewExpiry(
   expiresAt: string,
-  request: GitOperatorReviewRequestV1,
+  request: GitOperatorReviewRequest,
   trust: GitOperatorReviewTrustV1,
   issuedAt: number,
 ): void {
@@ -433,7 +495,7 @@ function assertReviewExpiry(
 }
 
 function renderSigningReview(input: {
-  request: GitOperatorReviewRequestV1;
+  request: GitOperatorReviewRequest;
   stagedPatch: Uint8Array;
   repositoryPath: string;
   operatorId: string;
@@ -569,7 +631,7 @@ function runSign(options: Options, io: GitReviewCliIo): number {
   const session = new GitReviewSession(option(options, "config"), {
     requirePlanDatabase: true,
   });
-  const proposal = readProposal(option(options, "proposal"));
+  const proposal = readProposal(option(options, "proposal"), session.version);
   const patch = readPatch(option(options, "patch"));
   const claimed = readJsonFile(
     option(options, "request"),
@@ -664,7 +726,7 @@ function runImport(options: Options, io: GitReviewCliIo): number {
   const session = new GitReviewSession(option(options, "config"), {
     requirePlanDatabase: true,
   });
-  const proposal = readProposal(option(options, "proposal"));
+  const proposal = readProposal(option(options, "proposal"), session.version);
   const patch = readPatch(option(options, "patch"));
   const review = readJsonFile(
     option(options, "review"),
@@ -698,7 +760,7 @@ function runCheck(options: Options, io: GitReviewCliIo): number {
     requirePlanDatabase: true,
     requireApprovalDatabase: true,
   });
-  const proposal = readProposal(option(options, "proposal"));
+  const proposal = readProposal(option(options, "proposal"), session.version);
   const patch = readPatch(option(options, "patch"));
   let valid: boolean;
   const plans = session.openPlans();
@@ -748,6 +810,181 @@ function runRevoke(options: Options, io: GitReviewCliIo): number {
   return revoked ? 0 : 1;
 }
 
+// The compact promotion summary every promotion command prints. Full
+// evidence stays in the ledger; `status` prints it.
+function promotionSummary(result: GitPromotionResultV1): unknown {
+  const { status, fence } = result;
+  return {
+    attemptId: status.attempt.attemptId,
+    state: status.state,
+    reason: status.outcome?.reason ?? null,
+    fence,
+    destinationRef: status.attempt.proposal.workspace.destinationRef,
+    expectedOldOid: status.attempt.prepared.expectedOldOid,
+    candidateCommitOid: status.attempt.prepared.candidateCommitOid,
+    observedDestinationOid: status.outcome?.observedDestinationOid ?? null,
+  };
+}
+
+const QUIESCENT = { childrenQuiescent: true } as const;
+
+function runPromote(options: Options, io: GitReviewCliIo): number {
+  const approvalId = approvalIdOption(options);
+  const session = new GitReviewSession(option(options, "config"), {
+    requirePlanDatabase: true,
+    requireApprovalDatabase: true,
+  });
+  const hostControl = session.hostControl();
+  const proposal = readProposal(option(options, "proposal"), 2);
+  if (proposal.proposalVersion !== 2)
+    throw new Error("Git promotion needs a version 2 proposal");
+  const patch = readPatch(option(options, "patch"));
+  const attemptId = randomUUID();
+  const plans = session.openPlans();
+  try {
+    const approvals = session.openApprovals();
+    try {
+      const control = createGitPromotionHostControl(hostControl);
+      const owner = control.acquire(attemptId);
+      const context = session.context(plans);
+      let reserved = false;
+      try {
+        const prepared = prepareGitPromotionObjects({
+          proposal,
+          repositoryPath: session.snapshot.config.repositoryPath,
+          patch,
+          attemptId,
+        });
+        approvals.reserveGitPromotionFromPlan({
+          proposal,
+          prepared,
+          approvalId,
+          context,
+          trust: session.trust,
+          hostControl,
+          owner,
+        });
+        reserved = true;
+        const result = approvals.promoteGitPromotionAttempt({
+          attemptId,
+          context,
+          trust: session.trust,
+          hostControl,
+          owner,
+        });
+        io.stdout(asciiJson(promotionSummary(result)));
+        return result.status.state === "confirmed" ? 0 : 1;
+      } catch (error) {
+        let fence = "retained";
+        if (!reserved) {
+          // Every Git child of this process has exited. The library still
+          // refuses if a reservation row exists despite the error.
+          try {
+            approvals.releaseUnreservedGitPromotionFence({
+              attemptId,
+              hostControl,
+              acknowledgement: QUIESCENT,
+            });
+            fence = "released";
+          } catch {
+            // Keep the fence; status or recover can inspect the attempt.
+          }
+        }
+        throw new Error(
+          `Promotion attempt ${attemptId} stopped (fence ${fence}): ${
+            error instanceof Error ? error.message : "unknown error"
+          }`,
+          { cause: error },
+        );
+      }
+    } finally {
+      approvals.close();
+    }
+  } finally {
+    plans.close();
+  }
+}
+
+function runResume(options: Options, io: GitReviewCliIo): number {
+  const attemptId = attemptIdOption(options);
+  const session = new GitReviewSession(option(options, "config"), {
+    requirePlanDatabase: true,
+    requireApprovalDatabase: true,
+  });
+  const hostControl = session.hostControl();
+  const plans = session.openPlans();
+  try {
+    const approvals = session.openApprovals();
+    try {
+      const attempt = approvals.getGitPromotionAttempt(attemptId);
+      if (!attempt) throw new Error("Unknown promotion attempt");
+      // The gate requires that this persisted owner still holds the fence.
+      const result = approvals.promoteGitPromotionAttempt({
+        attemptId,
+        context: session.context(plans),
+        trust: session.trust,
+        hostControl,
+        owner: attempt.fenceOwner,
+      });
+      io.stdout(asciiJson(promotionSummary(result)));
+      return result.status.state === "confirmed" ? 0 : 1;
+    } finally {
+      approvals.close();
+    }
+  } finally {
+    plans.close();
+  }
+}
+
+function runStatus(options: Options, io: GitReviewCliIo): number {
+  const attemptId = attemptIdOption(options);
+  const session = new GitReviewSession(option(options, "config"), {
+    requirePlanDatabase: false,
+    requireApprovalDatabase: true,
+  });
+  session.hostControl();
+  const approvals = session.openApprovals();
+  try {
+    const status = approvals.getGitPromotionStatus(attemptId);
+    io.stdout(asciiJson(status ?? { found: false }));
+    return status ? 0 : 1;
+  } finally {
+    approvals.close();
+  }
+}
+
+function runRecover(options: Options, io: GitReviewCliIo): number {
+  const attemptId = attemptIdOption(options);
+  const session = new GitReviewSession(option(options, "config"), {
+    requirePlanDatabase: false,
+    requireApprovalDatabase: true,
+  });
+  const hostControl = session.hostControl();
+  const approvals = session.openApprovals();
+  try {
+    session.assertUnchanged();
+    if (approvals.getGitPromotionAttempt(attemptId)) {
+      const result = approvals.recoverGitPromotionAttempt({
+        attemptId,
+        hostControl,
+        acknowledgement: QUIESCENT,
+      });
+      io.stdout(asciiJson(promotionSummary(result)));
+    } else {
+      // Never reserved: nothing was consumed, only the fence can be held.
+      const { fence } = approvals.releaseUnreservedGitPromotionFence({
+        attemptId,
+        hostControl,
+        acknowledgement: QUIESCENT,
+      });
+      io.stdout(asciiJson({ attemptId, state: "unreserved", fence }));
+    }
+    return 0;
+  } finally {
+    approvals.close();
+  }
+}
+
 const RUNNERS: Record<
   Command,
   (options: Options, io: GitReviewCliIo) => number
@@ -757,6 +994,10 @@ const RUNNERS: Record<
   import: runImport,
   check: runCheck,
   revoke: runRevoke,
+  promote: runPromote,
+  resume: runResume,
+  status: runStatus,
+  recover: runRecover,
 };
 
 function isCommand(value: string | undefined): value is Command {

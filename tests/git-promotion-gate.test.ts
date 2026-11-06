@@ -499,3 +499,38 @@ test("published schemas accept real records and reject extra fields", (t) => {
     true,
   );
 });
+
+test("an unreserved fence is released only for its own attempt, never after reservation", (t) => {
+  const f = fixture(t);
+  const release = (
+    attemptId: string,
+    acknowledgement: unknown = { childrenQuiescent: true },
+  ) =>
+    f.store.releaseUnreservedGitPromotionFence({
+      attemptId,
+      hostControl: f.hostControl,
+      acknowledgement: acknowledgement as { childrenQuiescent: true },
+    });
+  assert.throws(() => release(randomUUID()), /No fence is held/u);
+  assert.throws(() =>
+    release(f.prepared.attemptId, { childrenQuiescent: false }),
+  );
+  assert.equal(f.control.query().status, "held");
+  reserve(f);
+  assert.throws(() => release(f.prepared.attemptId), /recover it instead/u);
+  assert.equal(f.control.query().status, "held");
+});
+
+test("a never-reserved attempt's fence is released and nothing is recorded", (t) => {
+  const f = fixture(t);
+  assert.deepEqual(
+    f.store.releaseUnreservedGitPromotionFence({
+      attemptId: f.prepared.attemptId,
+      hostControl: f.hostControl,
+      acknowledgement: { childrenQuiescent: true },
+    }),
+    { fence: "released" },
+  );
+  assert.equal(f.control.query().status, "available");
+  assert.equal(f.store.getGitPromotionAttempt(f.prepared.attemptId), undefined);
+});
