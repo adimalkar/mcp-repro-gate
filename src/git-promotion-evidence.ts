@@ -1,5 +1,5 @@
 import { createPublicKey, sign, verify, type KeyObject } from "node:crypto";
-import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -30,7 +30,7 @@ import {
   type GitPromotionStatusV1,
   type ImmutablePromotion,
 } from "./git-promotion-contract.js";
-import { runGit } from "./git-runner.js";
+import { removeScratch, runGit } from "./git-runner.js";
 import type { Digest } from "./types.js";
 
 /**
@@ -459,6 +459,6 @@ function withBorrowedObjects(
       runGit(["-C", repo, "-c", "core.commitGraph=false", ...args], input),
     );
   } finally {
-    rmSync(scratch, { recursive: true, force: true });
+    removeScratch(scratch);
   }
 }
