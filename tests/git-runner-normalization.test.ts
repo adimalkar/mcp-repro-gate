@@ -190,7 +190,12 @@ for (const configuration of configurations) {
         if (value === undefined) Reflect.deleteProperty(process.env, name);
         else process.env[name] = value;
       }
-      rmSync(scratch, { recursive: true, force: true });
+      rmSync(scratch, {
+        recursive: true,
+        force: true,
+        maxRetries: 10,
+        retryDelay: 100,
+      });
     }
   });
 }

@@ -194,7 +194,12 @@ interface Env {
 function fixture(context: TestContext, options: FixtureOptions = {}) {
   const scratch = mkdtempSync(join(tmpdir(), "reprogate-git-review-cli-"));
   context.after(() => {
-    rmSync(scratch, { recursive: true, force: true });
+    rmSync(scratch, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100,
+    });
   });
   const repositoryPath = join(scratch, "repository");
   const statePath = join(scratch, "state");
