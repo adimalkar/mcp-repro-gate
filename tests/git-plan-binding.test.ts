@@ -60,7 +60,12 @@ function fixture(context: TestContext, planArguments?: unknown) {
   context.after(() => {
     handles.approvalStore?.close();
     handles.plans?.close();
-    rmSync(scratch, { recursive: true, force: true });
+    rmSync(scratch, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100,
+    });
   });
   const repositoryPath = join(scratch, "repository");
   mkdirSync(repositoryPath);

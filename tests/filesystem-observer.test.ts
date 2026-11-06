@@ -11,7 +11,12 @@ import { ReproGateKernel } from "../src/kernel.js";
 test("filesystem observer detects content changes without returning content", async (context) => {
   const root = mkdtempSync(join(tmpdir(), "reprogate-observer-"));
   context.after(() => {
-    rmSync(root, { recursive: true, force: true });
+    rmSync(root, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100,
+    });
   });
   const path = join(root, "value.txt");
   writeFileSync(path, "before", { mode: 0o600 });
@@ -47,8 +52,18 @@ test("filesystem observer rejects roots not configured by the operator", async (
   const allowed = mkdtempSync(join(tmpdir(), "reprogate-allowed-"));
   const unconfigured = mkdtempSync(join(tmpdir(), "reprogate-unconfigured-"));
   context.after(() => {
-    rmSync(allowed, { recursive: true, force: true });
-    rmSync(unconfigured, { recursive: true, force: true });
+    rmSync(allowed, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100,
+    });
+    rmSync(unconfigured, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100,
+    });
   });
   const envelope = new ReproGateKernel(
     [
