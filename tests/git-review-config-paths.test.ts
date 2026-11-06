@@ -36,7 +36,12 @@ function fixture(context: TestContext, temporaryParent = tmpdir()) {
     mkdtempSync(join(temporaryParent, "reprogate-review-paths-")),
   );
   context.after(() => {
-    rmSync(scratch, { recursive: true, force: true });
+    rmSync(scratch, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100,
+    });
   });
   const main = join(scratch, "main");
   const state = join(scratch, "state");
@@ -158,7 +163,12 @@ test("an aliased temporary parent resolves state paths to native physical paths"
   );
   const f = fixture(context, alias);
   context.after(() => {
-    rmSync(temporaryRoot, { recursive: true, force: true });
+    rmSync(temporaryRoot, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100,
+    });
   });
   assert.equal(f.scratch, realpathSync.native(f.scratch));
   const linked = join(alias, basename(f.scratch), "linked");
