@@ -1,4 +1,4 @@
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -10,7 +10,11 @@ import {
   type GitChangeProposal,
   type GitChangeProposalV2,
 } from "./git-change-proposal.js";
-import { runGit as git, runGitLine as gitLine } from "./git-runner.js";
+import {
+  removeScratch,
+  runGit as git,
+  runGitLine as gitLine,
+} from "./git-runner.js";
 import type { PreparedGitPromotionObjectsV1 } from "./git-promotion-objects.js";
 import type { Digest } from "./types.js";
 
@@ -221,7 +225,7 @@ function stageGitChange(
       throw new Error("Git workspace changed during staging");
     return { staged, stagedPatch, prepared };
   } finally {
-    rmSync(scratch, { recursive: true, force: true });
+    removeScratch(scratch);
   }
 }
 
