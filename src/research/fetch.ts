@@ -130,25 +130,29 @@ export function checkUrl(value: string, allowHosts?: readonly string[]): URL {
 // family selection (the Node 20+ default) Node asks for every address.
 function guardedLookup(allowed: (address: string) => boolean): LookupFunction {
   return (hostname, options, callback) => {
-    dnsLookup(hostname, { all: true, verbatim: true }, (error, addresses) => {
-      if (error !== null) {
-        callback(error, "", 4);
-        return;
-      }
-      const first = addresses[0];
-      if (
-        first === undefined ||
-        addresses.some(({ address }) => !allowed(address))
-      ) {
-        callback(new ResearchError("blocked_address"), "", 4);
-        return;
-      }
-      if (options.all === true) {
-        callback(null, addresses);
-        return;
-      }
-      callback(null, first.address, first.family);
-    });
+    dnsLookup(
+      hostname,
+      { all: true, order: "verbatim" },
+      (error, addresses) => {
+        if (error !== null) {
+          callback(error, "", 4);
+          return;
+        }
+        const first = addresses[0];
+        if (
+          first === undefined ||
+          addresses.some(({ address }) => !allowed(address))
+        ) {
+          callback(new ResearchError("blocked_address"), "", 4);
+          return;
+        }
+        if (options.all === true) {
+          callback(null, addresses);
+          return;
+        }
+        callback(null, first.address, first.family);
+      },
+    );
   };
 }
 
