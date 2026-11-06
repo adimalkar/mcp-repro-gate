@@ -390,7 +390,12 @@ async function configuredRuntime(
       MEDIATION_RECEIPT_SECRET: receiptSecret,
     });
   } catch (startError) {
-    rmSync(directory, { recursive: true, force: true });
+    rmSync(directory, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100,
+    });
     throw startError;
   }
   const [clientTransport, serverTransport] =

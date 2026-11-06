@@ -148,7 +148,12 @@ function newRepository(
         // Already closed by the test.
       }
     }
-    rmSync(scratch, { recursive: true, force: true });
+    rmSync(scratch, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100,
+    });
   });
   const root = join(scratch, "source repo é");
   mkdirSync(root);
@@ -1814,7 +1819,12 @@ test("the porcelain worktree parser accepts real records and fails closed otherw
 test("V1 frozen schema bytes survive an actual autocrlf checkout", (context) => {
   const root = mkdtempSync(join(tmpdir(), "reprogate-schema-checkout-"));
   context.after(() => {
-    rmSync(root, { recursive: true, force: true });
+    rmSync(root, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100,
+    });
   });
   git(root, "init", "-q", "-b", "main");
   git(root, "config", "user.name", "Schema checkout fixture");

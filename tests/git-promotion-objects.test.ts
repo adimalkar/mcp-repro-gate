@@ -41,7 +41,12 @@ function fixture(t: TestContext, format?: "sha256") {
     mkdtempSync(join(tmpdir(), "reprogate objects é ")),
   );
   t.after(() => {
-    rmSync(scratch, { recursive: true, force: true });
+    rmSync(scratch, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100,
+    });
   });
   const root = join(scratch, "source ü repo");
   mkdirSync(root);
@@ -714,7 +719,12 @@ test("rejects symlink/submodule effects before importing any candidate", async (
     const patch = git(root, "diff", "--cached", "--binary");
     git(root, "reset", "--hard", "-q", "HEAD");
     // A reset may retain the empty submodule directory; remove only our fixture.
-    rmSync(join(root, "forbidden"), { recursive: true, force: true });
+    rmSync(join(root, "forbidden"), {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100,
+    });
     const proposal = proposalFor(root, patch, ["forbidden"]);
     const before = snapshot(root);
     assert.throws(

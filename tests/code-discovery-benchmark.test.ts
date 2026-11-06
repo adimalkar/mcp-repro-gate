@@ -92,7 +92,12 @@ test("source provenance check refuses changed, missing or extra corpus files", (
       checkCorpus(scratch, manifest);
     });
   } finally {
-    rmSync(scratch, { recursive: true, force: true });
+    rmSync(scratch, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100,
+    });
   }
 });
 
@@ -142,7 +147,12 @@ test("implementation check rejects stale, shortened, misplaced and answerless sn
         checkedSnippet(result(invalid), task, scratch);
       });
   } finally {
-    rmSync(scratch, { recursive: true, force: true });
+    rmSync(scratch, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100,
+    });
   }
 });
 
@@ -302,6 +312,11 @@ test("published discovery report replays source, answer and byte checks without 
       );
     }
   } finally {
-    rmSync(scratch, { recursive: true, force: true });
+    rmSync(scratch, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100,
+    });
   }
 });
