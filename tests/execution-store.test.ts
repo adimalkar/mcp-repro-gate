@@ -26,7 +26,12 @@ test("SQLite persists plans and atomically consumes a capability", (context) => 
   context.after(() => {
     second.close();
     first.close();
-    rmSync(directory, { recursive: true, force: true });
+    rmSync(directory, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100,
+    });
   });
 
   assert.equal(
@@ -74,7 +79,12 @@ test("restart recovery marks write-ahead records indeterminate", (context) => {
   const afterRestart = new SqliteExecutionStore(path);
   context.after(() => {
     afterRestart.close();
-    rmSync(directory, { recursive: true, force: true });
+    rmSync(directory, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100,
+    });
   });
   assert.equal(afterRestart.recoverIncomplete("2026-09-20T00:02:00.000Z"), 1);
   assert.equal(

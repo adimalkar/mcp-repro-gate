@@ -116,6 +116,25 @@ function isMetadataRead(
   return false;
 }
 
+/**
+ * Remove a private scratch directory once Git is done with it. Windows can
+ * hold a file open for a moment after a Git process exits, so the delete is
+ * retried, and if it still fails the directory is left in the system temp
+ * directory: cleanup must never turn finished work into a failure.
+ */
+export function removeScratch(path: string): void {
+  try {
+    rmSync(path, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100,
+    });
+  } catch {
+    // Left for the operating system's temp cleanup.
+  }
+}
+
 /** Internal concrete Git runner, not an execution/authorization extension point. */
 export function runGit(
   args: string[],
@@ -367,7 +386,7 @@ export function runGit(
     }
     return executeGit(args, environment, input, maxOutputBytes).stdout;
   } finally {
-    rmSync(scratch, { recursive: true, force: true });
+    removeScratch(scratch);
   }
 }
 

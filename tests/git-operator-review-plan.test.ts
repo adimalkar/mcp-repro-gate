@@ -131,7 +131,12 @@ function fixture(context: TestContext) {
         // Already closed by the test.
       }
     }
-    rmSync(scratch, { recursive: true, force: true });
+    rmSync(scratch, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100,
+    });
   });
   const repositoryPath = join(scratch, "repository");
   mkdirSync(repositoryPath);
