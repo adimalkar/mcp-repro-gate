@@ -366,7 +366,7 @@ export async function runFacadeBenchmark(): Promise<BenchmarkReport> {
         query: "handler",
       }),
       await measure("execution, small result", "graph.list_routes", {
-        prefix: "/api",
+        method: "GET",
       }),
     ];
     return {

@@ -38,7 +38,7 @@ Phase 1 remains a semantics prototype. The early Phase 2 library adds an opt-in,
 
 - plans and execution state can be persisted in SQLite without retaining raw arguments;
 - capability consumption and the pre-dispatch execution record share one transaction;
-- the live downstream schema is re-hashed and arguments are validated before consumption;
+- arguments are validated against the catalog schema at planning, and the live downstream schema is re-hashed and arguments validated again before consumption;
 - definite downstream responses produce signed receipts with result/effect digests;
 - transport errors, observer failures, and restart recovery become `indeterminate`;
 - the default server does not expose `action.execute` unless an executor is supplied;
@@ -66,13 +66,31 @@ Explicit V2 witnesses bind a distinct direct local destination that is not check
 
 A persistent host ownership fence provides cooperative exclusion and retains partial/invalid latches across worker death. Its full current physical-root and private host-state identity policy is rechecked across operations. Exact-owner release requires explicit trusted-host quiescence; PID absence or a released database lock is not proof that all possible Git children have stopped. Every relevant host writer must share one canonical repository-common-directory/ledger/fence mapping.
 
-Private POSIX modes or host-managed Windows ACLs do not exclude an agent with the same filesystem credentials. Bounded descriptor/path snapshot checks detect observable mutation, not changes invisible to filesystem metadata or changes after the last observation. There is no automatic latch stealing/repair, universal power-loss guarantee or OS-level reservation. One-use promotion journaling, final authenticated expected-old ref CAS and conservative recovery remain unimplemented in this foundation slice. See the [foundation guide](GIT_PROMOTION_FOUNDATIONS.md) for effects, requirements and platform limits.
+Private POSIX modes or host-managed Windows ACLs do not exclude an agent with the same filesystem credentials. Bounded descriptor/path snapshot checks detect observable mutation, not changes invisible to filesystem metadata or changes after the last observation. There is no automatic latch stealing/repair, universal power-loss guarantee or OS-level reservation. One-use promotion journaling, the final authenticated expected-old ref CAS and conservative recovery are separate layers, described in the two sections below. See the [foundation guide](GIT_PROMOTION_FOUNDATIONS.md) for effects, requirements and platform limits.
 
 ## Prepared Git promotion reservation boundary
 
 The [prepared promotion journal](GIT_PROMOTION_JOURNAL.md) permanently consumes an exact linked signed approval in the same private SQLite connection/transaction as its approval and review evidence. Reservation verifies installed candidate objects and rechecks live persisted-plan authority, trust, proof, expiry, and concrete fence ownership after acquiring the writer lock. Unique attempt/approval/proposal links, strict canonical readback, cross-column bindings, canonical timestamp-to-epoch triggers, immutable prepared records, and guarded raw revocation reject replay and ambiguous retained state. A commit/readback error cannot promise rollback or approval reuse; the fence must remain held for inspection.
 
-Disk SQLite connections open the lossless canonical physical filename before WAL/schema setup, including new ordinary leaves under a canonical parent. This prevents alias-specific WAL namespaces from hiding committed consumption from a canonical live reader. Dangling aliases fail closed. The connection's disk identity is obtained as SQLite filename bytes, validated with fatal UTF-8 and native byte realpath, and pinned by device/inode to the exact fence-owner ledger. This rejects invalid-byte filenames before they can alias a valid Unicode twin; valid U+FFFD names remain supported. Reservation requires an absolute disk ledger, foreign keys, and FULL synchronous mode. The host owns SQLite schema/functions and access, configuration, cooperative fence mapping, plan state, operator trust, signing-key isolation, and the clock. Windows ACLs and storage durability remain deployment assumptions. No status read or prepared record authorizes dispatch, proves ref mutation/quiescence, or implements final admission, ref compare-and-swap, recovery, or a promotion CLI.
+Disk SQLite connections open the lossless canonical physical filename before WAL/schema setup, including new ordinary leaves under a canonical parent. This prevents alias-specific WAL namespaces from hiding committed consumption from a canonical live reader. Dangling aliases fail closed. The connection's disk identity is obtained as SQLite filename bytes, validated with fatal UTF-8 and native byte realpath, and pinned by device/inode to the exact fence-owner ledger. This rejects invalid-byte filenames before they can alias a valid Unicode twin; valid U+FFFD names remain supported. Reservation requires an absolute disk ledger, foreign keys, and FULL synchronous mode. The host owns SQLite schema/functions and access, configuration, cooperative fence mapping, plan state, operator trust, signing-key isolation, and the clock. Windows ACLs and storage durability remain deployment assumptions. No status read or prepared record authorizes dispatch or proves ref mutation or quiescence.
+
+## Final Git promotion gate boundary
+
+The [final gate](GIT_PROMOTION_JOURNAL.md#final-gate-admission-compare-and-swap-and-outcomes) admits one prepared attempt under its exact fence owner and the ledger writer lock. It rechecks plan, catalog and policy authority, the V2 workspace and worktree list, the signed review under current trust, the candidate objects, and the admission deadline. A durable admission record is committed before `update-ref` runs with the expected old OID. Because dispatch only follows admission, a crash can never be read as "never dispatched", and an admitted attempt is never promoted twice.
+
+Only a zero exit with an exact readback is `confirmed`. A lost compare-and-swap, any nonzero exit, a non-exact readback, or a destination that some other writer already moved to the candidate is `indeterminate`, and the fence is retained. Recovery requires a trusted-host quiescence acknowledgement. It never retries, rolls back or overwrites refs, and never infers authorization from present-ref equality; destination OIDs it records are observations only.
+
+Residual limits:
+
+- Git and SQLite are not one atomic transaction. An interrupted dispatch stays `indeterminate`.
+- Expiry is checked at admission and again immediately before the ref write, under the same fence; the write itself is not atomic with that check. The clock is the trusted host's wall clock.
+- Policy, plan or trust changes after admission do not cancel the write. A destination checked out after admission is caught just before dispatch (`not_dispatched`); one checked out during the write is caught only by the readback (`readback_mismatch`).
+- A promoter that resumes after recovery has concluded does not write, but recovery's quiescence acknowledgement is still the host's assertion.
+- Ref and object durability relies on Git honouring `core.fsync=committed,reference` (Git 2.36 or later) and on the file system's fsync; older Git ignores the setting, and Git does not fsync the refs directory after renaming a ref lock file.
+- If SQLite stays busy beyond its timeout after admission, the attempt is left admitted without an outcome and recovery records `indeterminate` although nothing was written.
+- Writers that ignore the fence, a same-user attacker, and a raw writer of the trusted ledger, which could insert a consistent but false outcome, are outside the claim.
+- Reflog entries and unreachable candidate objects are retained effects.
+- The host-only `git-review` promotion commands add no authority of their own: `--confirm-quiescent` is an operator assertion, and a version 2 configuration is trusted host input. No portable signed promotion receipt exists yet.
 
 ## Native handoff context boundary
 
@@ -122,6 +140,21 @@ retains complete responses and copies of the public pinned source. See
 
 Compact graph views are opt-in and keyed by exact catalog server/tool identities. They omit known diagnostic fields only from recognized successful replies whose shape is fully validated. Unknown fields, errors, extra content, re-spelled JSON (such as duplicate keys) and oversized replies keep the normal view, so a new field or channel is never silently dropped. The known free-form fields `docstring`, `signature` and `return_type` are omitted by design. Projection runs only when redaction finds nothing in the original text, and a structured mirror must serialize to that same text. The `graph_search_v1` and `graph_snippet_v1` markers describe the view; they do not authenticate content, and a downstream can imitate them. The signed `resultDigest` still covers the complete original result.
 
+## Promotion evidence boundary
+
+A promotion evidence bundle combines two signatures:
+
+- **The operator's review signature** authorizes the effect. A verifier checks it against its own operator trust, at the admission time the host recorded.
+- **The host's evidence signature** attests that the host's ledger admitted the attempt and recorded this outcome.
+
+The host signature is not an independent witness. A compromised host or evidence key can sign a false admission, outcome or admission time, though it cannot forge an operator review. The verifier treats the bundle as data:
+
+- digests, schemas and record bindings are checked before any Git read;
+- `--repo` reads objects from a clone the verifier trusts, through the same hardened Git runner;
+- effect checks and patch application run only in an empty disposable repository that borrows the clone's objects, with commit-graph caches disabled.
+
+The verifier applies its own current operator trust, not the trust in force at promotion, and the bundle carries no revocation list: that the approval was unrevoked at admission is host-attested. It does not read the live destination ref. Effect checks run in an empty repository that borrows the trusted clone's objects, so that clone's working tree, attributes and configuration cannot change the result. The coverage statement fixes the claim to the Git ref transition. Filesystem, process, network and credential effects are not covered, and a `verified` result says nothing about them. The bundle omits host paths and the fence token, but it does contain the proposal's paths and digests.
+
 ## Known gaps before execution is production-safe
 
 - SQLite is durable locally but has no replica lease/ownership protocol;
@@ -129,7 +162,7 @@ Compact graph views are opt-in and keyed by exact catalog server/tool identities
 - no transport-authenticated principal extraction;
 - artifact identity covers one configured file but cannot eliminate a hostile same-host replacement race;
 - no OS-level process, filesystem, network, secret, or sandbox enforcement;
-- filesystem effects are content-addressed and Git proposals/staging have bounded witnesses, but atomic Git promotion and network/process/credential observation are not implemented;
+- filesystem effects are content-addressed and Git proposals/staging have bounded witnesses. Git promotion is a compare-and-swap of one ref, not an atomic transaction with SQLite, and network/process/credential observation is not implemented;
 - HMAC proves possession of a shared secret, not third-party/non-repudiable authorship;
 - a hash chain detects mutation only when an independent checkpoint or signature is retained;
 - no protection from a compromised gateway process or signing key.

@@ -1,5 +1,7 @@
 # Out-of-band Git operator review
 
+These commands review version 1 proposals under a version 1 configuration, and version 2 proposals under a [version 2 configuration](GIT_PROMOTION.md#version-2-configuration). Only version 2 can be promoted; see [promoting a reviewed Git change](GIT_PROMOTION.md).
+
 This workflow authenticates a configured operator key's decision about one exact staged Git effect. It does not promote a Git ref, prove human presence or actual inspection, or confine an agent process. The default MCP server exposes no Git approval/signing tool.
 
 ## Deployment roles and prerequisites
@@ -141,6 +143,6 @@ Check loads linked proof from the ledger and revalidates exact bindings, current
 - Every listed option is required exactly once as `--name value`. Unknown, duplicate, positional and `--name=value` arguments are rejected. Approval IDs must be lowercase UUIDs. `--config` must be absolute; other input paths resolve against the current working directory.
 - Reads are bounded during the read, from regular-file descriptors: configuration 1 MiB, patch/proposal 4 MiB, prepared request 8 MiB, signed review 64 KiB and key file 16 KiB. JSON must be valid UTF-8. Private-key parse/read failures do not echo supplied material.
 - The old Phase 2 `approve` and `verify-receipt` commands remain separate HMAC-based host primitives. Existing Git proposal/staging/approval contracts remain compatible; authenticated checks intentionally reject legacy grants without signed evidence.
-- No operation updates protected HEAD, index, worktree or ref. A successful check is repeatable and neither consumes nor reserves authorization. Atomic compare-and-swap promotion, revocation serialization at that boundary, crash recovery and portable promotion receipt bundles remain future work.
+- No review operation updates protected HEAD, index, worktree or ref. A successful check is repeatable and neither consumes nor reserves authorization. Promotion, with its compare-and-swap, revocation serialization and recovery, is the separate [`git-review promote`](GIT_PROMOTION.md) path. Portable promotion receipt bundles remain future work.
 
 See [Git contracts](GIT_CHANGE_PROPOSAL.md), the [threat model](THREAT_MODEL.md), and the [roadmap](ROADMAP.md).
