@@ -94,8 +94,18 @@ function verifyReceiptFile(
   if (!valid) process.exitCode = 1;
 }
 
+const USAGE =
+  "Usage: reprogate [serve [--config <absolute-path>] [--handoff-config <absolute-path>]|demo|approve [--config <absolute-path>] <target> <action-id>|verify-receipt [--config <absolute-path>] <receipt.json>|catalog import --config <absolute-path> --backend <name> --effects <effects> ...|artifact digest <absolute-path>|bench facade [--json]|research-server [--allow-host <host>]... [--search-endpoint <url> [--search-endpoint-private]]|bench research [--html <file> --query <text>] [--json]|handoff <hook|brief> --config <absolute-path> ...|git-review <prepare|sign|import|check|revoke|promote|resume|status|recover> ...]\n";
+
 async function main(): Promise<void> {
   const command = process.argv[2] ?? "serve";
+  if (
+    process.argv.length === 3 &&
+    (command === "help" || command === "--help" || command === "-h")
+  ) {
+    process.stdout.write(USAGE);
+    return;
+  }
   if (command === "serve") {
     const usage =
       "Usage: reprogate serve [--config <absolute-path>] [--handoff-config <absolute-path>]";
@@ -408,9 +418,7 @@ async function main(): Promise<void> {
     });
     return;
   }
-  process.stderr.write(
-    "Usage: reprogate [serve [--config <absolute-path>] [--handoff-config <absolute-path>]|demo|approve [--config <absolute-path>] <target> <action-id>|verify-receipt [--config <absolute-path>] <receipt.json>|catalog import --config <absolute-path> --backend <name> --effects <effects> ...|artifact digest <absolute-path>|bench facade [--json]|research-server [--allow-host <host>]... [--search-endpoint <url> [--search-endpoint-private]]|bench research [--html <file> --query <text>] [--json]|handoff <hook|brief> --config <absolute-path> ...|git-review <prepare|sign|import|check|revoke> ...]\n",
-  );
+  process.stderr.write(USAGE);
   process.exitCode = 2;
 }
 

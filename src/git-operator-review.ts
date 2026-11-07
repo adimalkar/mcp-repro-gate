@@ -53,10 +53,12 @@ export interface GitOperatorReviewTrustV1 {
 
 const DOMAIN = "ReproGate/GitOperatorReview/v1\0";
 const SIGNATURE_PATTERN = /^[A-Za-z0-9_-]{85}[AQgw]$(?![\s\S])/u;
-const PUBLIC_PEM_PATTERN =
+/** An SPKI public key PEM: never a private key or certificate. */
+export const PUBLIC_PEM_PATTERN =
   /^-----BEGIN PUBLIC KEY-----\r?\n(?:[A-Za-z0-9+/=]+\r?\n)+-----END PUBLIC KEY-----(?:\r?\n)?$(?![\s\S])/u;
 
-const signatureSchema = z
+/** Canonical unpadded base64url encoding of a 64-byte Ed25519 signature. */
+export const signatureSchema = z
   .string()
   .length(86)
   .regex(SIGNATURE_PATTERN)
@@ -243,6 +245,8 @@ export function authenticateGitOperatorReview(
   authority: GitApprovalAuthority,
   expectedEffectDigest: Digest,
   hostTrust: unknown,
+  // Offline evidence checks validity at a recorded time, not the clock.
+  at: number = Date.now(),
 ):
   | Readonly<{
       payload: Readonly<GitOperatorReviewPayloadV1>;
@@ -305,7 +309,8 @@ export function authenticateGitOperatorReview(
     const createdAt = Date.parse(expectedProposal.createdAt);
     const issuedAt = Date.parse(payload.issuedAt);
     const expiresAt = Date.parse(payload.expiresAt);
-    const now = Date.now();
+    if (!Number.isFinite(at)) return undefined;
+    const now = at;
     if (
       createdAt > issuedAt ||
       issuedAt > now ||

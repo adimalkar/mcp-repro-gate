@@ -9,7 +9,7 @@ ReproGate is an action-contract layer for MCP tool execution. Its intended contr
 
 The goal is narrower than “another MCP gateway”: make a tool action independently inspectable and make approval invalid as soon as the proposed action changes.
 
-## Current status: Phase 2 reference path and Phase 3 prepared Git promotion journal
+## Current status: Phase 2 reference path and Phase 3 Git promotion
 
 This repository contains the action-contract kernel, a plan-only MCP server by default, and the first opt-in Phase 2 execution boundary. It can:
 
@@ -33,8 +33,9 @@ This repository contains the action-contract kernel, a plan-only MCP server by d
 - prepare exact candidate commit objects without moving protected refs, HEAD, index or worktree;
 - retain a cooperative host ownership fence across worker death, with exact-owner quiescent release.
 - permanently reserve one linked signed Git approval as immutable prepared intent in the existing SQLite ledger, with guarded raw revocation.
+- promote that exact candidate to the destination branch through a final gate with a durable admission and an expected-old compare-and-swap, recording `confirmed`, `failed` or `indeterminate`, with conservative recovery, through host-only `git-review` commands.
 
-Execution is deliberately disabled in the default server and requires explicit executor wiring. The configured path is not a sandbox or a production authorization boundary. Git review authenticates a configured signing key and exact decision, not human presence or inspection. The host owns configuration, databases and key isolation; protected-ref promotion is not implemented. See the [Git change contract and limits](docs/GIT_CHANGE_PROPOSAL.md).
+Execution is deliberately disabled in the default server and requires explicit executor wiring. The configured path is not a sandbox or a production authorization boundary. Git review authenticates a configured signing key and exact decision, not human presence or inspection. The host owns configuration, databases and key isolation. Protected-ref promotion runs only through the host-only `git-review promote` path with a version 2 configuration, and its claim is limited to that Git ref. See the [Git change contract and limits](docs/GIT_CHANGE_PROPOSAL.md).
 
 ## Try it
 
@@ -74,7 +75,7 @@ Do not treat these HMAC keys or filesystem observation as OS-level enforcement. 
 
 The separate host-only `git-review` CLI prepares an exact staged-effect request, signs an explicit operator-key decision, imports linked evidence, checks current authorization, and revokes ledger approval. Signing reads a protected key file only after staging and displays the full safely escaped diff; no default MCP approval tool is added. See the [operator review guide](docs/GIT_OPERATOR_REVIEW.md) for configuration, commands, limits and deployment separation.
 
-The [Git promotion foundations](docs/GIT_PROMOTION_FOUNDATIONS.md) provide exact candidate objects and a cooperative ownership fence. Candidate preparation permits object/scratch writes and possible unreachable objects. The fence requires private host storage, cooperative writers and trusted-host child quiescence; it is not an OS sandbox. The [prepared promotion journal](docs/GIT_PROMOTION_JOURNAL.md) permanently consumes an exact linked signed approval in the existing SQLite ledger and guards raw revocation. Prepared records and status reads grant no dispatch authority. Final authenticated ref CAS, terminal evidence, conservative recovery and promotion CLI/config integration remain follow-up work.
+The [Git promotion foundations](docs/GIT_PROMOTION_FOUNDATIONS.md) provide exact candidate objects and a cooperative ownership fence. Candidate preparation permits object/scratch writes and possible unreachable objects. The fence requires private host storage, cooperative writers and trusted-host child quiescence; it is not an OS sandbox. The [prepared promotion journal](docs/GIT_PROMOTION_JOURNAL.md) permanently consumes an exact linked signed approval in the existing SQLite ledger and guards raw revocation. Prepared records and status reads grant no dispatch authority. A final gate rechecks authority under the fence and ledger lock, records a durable admission, and promotes with an expected-old compare-and-swap; outcomes are `confirmed`, `failed` or `indeterminate`, with conservative recovery. The host-only `git-review promote`, `resume`, `status` and `recover` commands drive it with a version 2 review configuration. See [promoting a reviewed Git change](docs/GIT_PROMOTION.md).
 
 The default server exposes exactly five tools, each with an output schema and conservative annotations:
 

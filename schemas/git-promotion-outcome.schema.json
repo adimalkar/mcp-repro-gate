@@ -1,0 +1,145 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://reprogate.dev/schemas/git-promotion-outcome-v1.json",
+  "title": "ReproGate Git promotion outcome v1",
+  "$comment": "Terminal, insert-only evidence for one attempt. confirmed requires an admission and observes the attempt's candidate commit; failed is never admitted (nothing was dispatched); indeterminate always was admitted. observedDestinationOid is a bounded observation, never proof of historical authorization. Real dates, admission bindings and canonical JSON require library and SQL checks.",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "outcomeVersion",
+        "attemptId",
+        "state",
+        "reason",
+        "decidedAt",
+        "observedDestinationOid"
+      ],
+      "properties": {
+        "outcomeVersion": {
+          "const": 1
+        },
+        "attemptId": {
+          "$ref": "#/$defs/uuid"
+        },
+        "decidedAt": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "state": {
+          "const": "confirmed"
+        },
+        "reason": {
+          "const": "ref_updated"
+        },
+        "observedDestinationOid": {
+          "$ref": "#/$defs/oid"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "outcomeVersion",
+        "attemptId",
+        "state",
+        "reason",
+        "decidedAt",
+        "observedDestinationOid"
+      ],
+      "properties": {
+        "outcomeVersion": {
+          "const": 1
+        },
+        "attemptId": {
+          "$ref": "#/$defs/uuid"
+        },
+        "decidedAt": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "state": {
+          "const": "failed"
+        },
+        "reason": {
+          "enum": [
+            "admission_expired",
+            "authority_rejected",
+            "approval_rejected",
+            "candidate_rejected",
+            "abandoned"
+          ]
+        },
+        "observedDestinationOid": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/oid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "outcomeVersion",
+        "attemptId",
+        "state",
+        "reason",
+        "decidedAt",
+        "observedDestinationOid"
+      ],
+      "properties": {
+        "outcomeVersion": {
+          "const": 1
+        },
+        "attemptId": {
+          "$ref": "#/$defs/uuid"
+        },
+        "decidedAt": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "state": {
+          "const": "indeterminate"
+        },
+        "reason": {
+          "enum": [
+            "dispatch_uncertain",
+            "readback_mismatch",
+            "interrupted",
+            "not_dispatched"
+          ]
+        },
+        "observedDestinationOid": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/oid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$(?![\\s\\S])"
+    },
+    "oid": {
+      "type": "string",
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$(?![\\s\\S])"
+    },
+    "timestamp": {
+      "type": "string",
+      "minLength": 24,
+      "maxLength": 27,
+      "pattern": "^(?:[0-9]{4}|[+-][0-9]{6})-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$(?![\\s\\S])"
+    }
+  }
+}
