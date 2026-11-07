@@ -61,6 +61,17 @@
           "$ref": "#/$defs/path"
         }
       }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["signingKeyPath"],
+      "properties": {
+        "signingKeyPath": {
+          "$ref": "#/$defs/path"
+        }
+      },
+      "description": "Optional Ed25519 private key that signs exported promotion evidence. It must not be an operator key."
     }
   },
   "$defs": {

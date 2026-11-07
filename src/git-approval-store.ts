@@ -1131,6 +1131,38 @@ export class SqliteGitApprovalStore {
   }
 
   /**
+   * The signed operator review an attempt reserved, cross-checked against
+   * the attempt's review digest. A read for evidence export: it does not
+   * require the approval to be active, and it authorizes nothing.
+   */
+  getGitPromotionReview(attemptId: string): GitOperatorReviewV1 | undefined {
+    const attempt = this.getGitPromotionAttempt(attemptId);
+    if (!attempt) return undefined;
+    const row = this.#database
+      .prepare(
+        `SELECT proposal_id, review_digest, decision, review_json
+         FROM git_operator_review_decisions WHERE approval_id = ?`,
+      )
+      .get(attempt.approvalId) as
+      | Pick<
+          DecisionRow,
+          "proposal_id" | "review_digest" | "decision" | "review_json"
+        >
+      | undefined;
+    if (!row) throw new Error("Corrupt promotion journal review");
+    const review = parseGitOperatorReview(JSON.parse(row.review_json));
+    if (
+      canonicalJson(review) !== row.review_json ||
+      row.decision !== "approve" ||
+      row.proposal_id !== attempt.proposalId ||
+      row.review_digest !== attempt.reviewDigest ||
+      gitOperatorReviewDigest(review.payload) !== attempt.reviewDigest
+    )
+      throw new Error("Corrupt promotion journal review");
+    return review;
+  }
+
+  /**
    * Strict readback of an attempt with its admission and outcome. An
    * idempotent read: NOT authorization, recovery, or proof of who moved a ref.
    */
