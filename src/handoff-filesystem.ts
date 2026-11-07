@@ -1,6 +1,7 @@
 import {
   closeSync,
   constants,
+  fchmodSync,
   fstatSync,
   fsyncSync,
   lstatSync,
@@ -19,6 +20,7 @@ import { randomUUID } from "node:crypto";
 import { sha256 } from "./digest.js";
 import {
   HandoffError,
+  MAX_ADOPTED_DOCUMENT_BYTES,
   MAX_HANDOFF_BYTES,
   MAX_HANDOFF_DOCUMENT_BYTES,
   parseHandoffConfig,
@@ -45,6 +47,8 @@ export function canonicalHandoffPath(path: string): string {
   if (!Buffer.from(text).equals(bytes)) throw new HandoffError("unavailable");
   return text;
 }
+// Bits refused on a file others cannot reach through the private .agent.
+const READABLE_IN_PRIVATE_DIRECTORY = 0o022n;
 function sameIdentity(a: BigIntStats, b: BigIntStats): boolean {
   return a.dev === b.dev && a.ino === b.ino;
 }
@@ -60,12 +64,18 @@ function stableFile(a: BigIntStats, b: BigIntStats): boolean {
     a.ctimeNs === b.ctimeNs
   );
 }
-function privateStats(stats: BigIntStats, directory: boolean): void {
+function privateStats(
+  stats: BigIntStats,
+  directory: boolean,
+  // Bits refused for group and others. The document may keep its read bits,
+  // because the private .agent directory already stops others reaching it.
+  refused = 0o077n,
+): void {
   if (directory ? !stats.isDirectory() : !stats.isFile() || stats.nlink !== 1n)
     throw new HandoffError("unavailable");
   if (
     process.platform !== "win32" &&
-    ((stats.mode & 0o077n) !== 0n ||
+    ((stats.mode & refused) !== 0n ||
       (process.getuid !== undefined && stats.uid !== BigInt(process.getuid())))
   )
     throw new HandoffError("unavailable");
@@ -101,7 +111,11 @@ function verifyDirectory(
 }
 // Open first (no-follow, non-blocking), judge the descriptor, then confirm
 // the path still names that same file; no check precedes the open.
-export function readPrivateHandoffFile(path: string, cap: number): Buffer {
+export function readPrivateHandoffFile(
+  path: string,
+  cap: number,
+  refused = 0o077n,
+): Buffer {
   const fd = openSync(path, readFlags);
   const chunks: Buffer[] = [];
   const chunk = Buffer.alloc(Math.min(cap + 1, 32768));
@@ -109,7 +123,7 @@ export function readPrivateHandoffFile(path: string, cap: number): Buffer {
   let opened: BigIntStats;
   try {
     opened = fstatSync(fd, { bigint: true });
-    privateStats(opened, false);
+    privateStats(opened, false, refused);
     if (opened.size > BigInt(cap)) throw new HandoffError("unavailable");
     for (;;) {
       const count = readSync(
@@ -125,7 +139,7 @@ export function readPrivateHandoffFile(path: string, cap: number): Buffer {
       chunks.push(Buffer.from(chunk.subarray(0, count)));
     }
     const after = fstatSync(fd, { bigint: true });
-    privateStats(after, false);
+    privateStats(after, false, refused);
     if (!stableFile(opened, after) || after.size !== BigInt(total))
       throw new HandoffError("unavailable");
   } finally {
@@ -133,21 +147,21 @@ export function readPrivateHandoffFile(path: string, cap: number): Buffer {
     chunk.fill(0);
   }
   const final = lstatSync(path, { bigint: true });
-  privateStats(final, false);
+  privateStats(final, false, refused);
   if (!stableFile(opened, final)) throw new HandoffError("unavailable");
   return Buffer.concat(chunks, total);
 }
-function verifyPrivateFile(path: string): BigIntStats {
+function verifyPrivateFile(path: string, refused = 0o077n): BigIntStats {
   const fd = openSync(path, readFlags);
   let opened: BigIntStats;
   try {
     opened = fstatSync(fd, { bigint: true });
-    privateStats(opened, false);
+    privateStats(opened, false, refused);
   } finally {
     closeSync(fd);
   }
   const after = lstatSync(path, { bigint: true });
-  privateStats(after, false);
+  privateStats(after, false, refused);
   if (!sameIdentity(opened, after)) throw new HandoffError("unavailable");
   return after;
 }
@@ -271,6 +285,117 @@ function syncDirectory(path: string): void {
     closeSync(fd);
   }
 }
+// What the handoff keeps in .agent: fixed names, and archives with our name
+// shape. Anything else in .agent belongs to someone else, and the service
+// never looks at it.
+function handoffEntries(workspaceRoot: string): {
+  path: string;
+  name: string;
+  directory: boolean;
+  refused: bigint;
+}[] {
+  const root = canonicalHandoffPath(workspaceRoot);
+  const entry = (name: string, directory: boolean, refused = 0o077n) => ({
+    path: join(root, name),
+    name,
+    directory,
+    refused,
+  });
+  const history = join(".agent", "handoff-history");
+  let archives: string[] = [];
+  try {
+    if (lstatSync(join(root, history)).isDirectory())
+      archives = readdirSync(join(root, history)).filter((name) =>
+        HISTORY_NAME.test(name),
+      );
+  } catch (error) {
+    if (!missing(error)) throw error;
+  }
+  return [
+    entry(".agent", true),
+    entry(join(".agent", "handoff.md"), false, READABLE_IN_PRIVATE_DIRECTORY),
+    entry(join(".agent", "sessions.md"), false, READABLE_IN_PRIVATE_DIRECTORY),
+    entry(history, true),
+    ...archives.map((name) => entry(join(history, name), false)),
+  ];
+}
+function ownEntry(stats: BigIntStats, directory: boolean): boolean {
+  return (
+    (directory ? stats.isDirectory() : stats.isFile() && stats.nlink === 1n) &&
+    (process.getuid === undefined || stats.uid === BigInt(process.getuid()))
+  );
+}
+function existingEntry(path: string): BigIntStats | undefined {
+  try {
+    return lstatSync(path, { bigint: true });
+  } catch (error) {
+    if (missing(error)) return undefined;
+    throw error;
+  }
+}
+/**
+ * Paths under the workspace that the handoff service would refuse: `loose`
+ * ones repair can fix, and `refused` ones it will not touch, which are
+ * symlinks, hard links or someone else's. Empty on Windows, which has no
+ * mode bits. For diagnosis only.
+ */
+export function handoffPermissionIssues(workspaceRoot: string): {
+  loose: string[];
+  refused: string[];
+} {
+  const issues = { loose: [] as string[], refused: [] as string[] };
+  if (process.platform === "win32") return issues;
+  for (const entry of handoffEntries(workspaceRoot)) {
+    const stats = existingEntry(entry.path);
+    if (stats === undefined) continue;
+    if (!ownEntry(stats, entry.directory)) issues.refused.push(entry.name);
+    else if ((stats.mode & entry.refused) !== 0n) issues.loose.push(entry.name);
+  }
+  return issues;
+}
+/**
+ * Make the handoff's existing files private, for a workspace that used
+ * plain files before. Only a person runs this: nothing in the service or
+ * the MCP tools repairs permissions. A symlink, a hard link or a file owned
+ * by someone else is refused before anything changes, and each change goes
+ * through a no-follow descriptor, so a swapped path cannot redirect it.
+ */
+export function repairHandoffPermissions(workspaceRoot: string): string[] {
+  if (process.platform === "win32") return [];
+  // Every decision is made on a descriptor opened without following links,
+  // never on a path checked earlier: a path swapped between check and use
+  // cannot redirect the change. A symlink fails to open and is refused.
+  const inspect = <T>(
+    entry: { path: string; directory: boolean },
+    use: (fd: number, stats: BigIntStats) => T,
+  ): T | undefined => {
+    let fd: number;
+    try {
+      fd = openSync(entry.path, readFlags);
+    } catch (error) {
+      if (missing(error)) return undefined;
+      throw new HandoffError("unavailable", { cause: error });
+    }
+    try {
+      const stats = fstatSync(fd, { bigint: true });
+      if (!ownEntry(stats, entry.directory))
+        throw new HandoffError("unavailable");
+      return use(fd, stats);
+    } finally {
+      closeSync(fd);
+    }
+  };
+  // Refuse before changing anything.
+  const loose = handoffEntries(workspaceRoot).filter(
+    (entry) =>
+      inspect(entry, (_fd, stats) => (stats.mode & 0o077n) !== 0n) === true,
+  );
+  for (const entry of loose)
+    inspect(entry, (fd) => {
+      fchmodSync(fd, entry.directory ? 0o700 : 0o600);
+    });
+  return loose.map(({ name }) => name);
+}
 export function loadHandoffConfig(path: string): HandoffConfigV1 {
   try {
     const bytes = readPrivateHandoffFile(path, MAX_HANDOFF_BYTES);
@@ -345,7 +470,8 @@ export class HandoffFiles {
     try {
       bytes = readPrivateHandoffFile(
         this.#documentPath,
-        MAX_HANDOFF_DOCUMENT_BYTES,
+        MAX_ADOPTED_DOCUMENT_BYTES,
+        READABLE_IN_PRIVATE_DIRECTORY,
       );
     } catch (error) {
       if (missing(error)) return { digest: null, bytes: null };
@@ -394,7 +520,7 @@ export class HandoffFiles {
       try {
         const archived = readPrivateHandoffFile(
           archive,
-          MAX_HANDOFF_DOCUMENT_BYTES,
+          MAX_ADOPTED_DOCUMENT_BYTES,
         );
         if (!archived.equals(base.bytes)) throw new HandoffError("unavailable");
       } catch (error) {
@@ -505,7 +631,9 @@ export class HandoffFiles {
 
   #checkGeneratedTarget(target: string): void {
     try {
-      verifyPrivateFile(target);
+      // It is replaced, never read, and .agent keeps others out, so read
+      // bits a sync left behind do not matter; the new file is private.
+      verifyPrivateFile(target, READABLE_IN_PRIVATE_DIRECTORY);
     } catch (error) {
       if (!missing(error)) throw error;
     }
@@ -610,7 +738,7 @@ export class HandoffFiles {
     const current = verifyPrivateFile(path);
     if (
       !sameIdentity(stats, current) ||
-      !readPrivateHandoffFile(path, MAX_HANDOFF_DOCUMENT_BYTES).equals(bytes)
+      !readPrivateHandoffFile(path, MAX_ADOPTED_DOCUMENT_BYTES).equals(bytes)
     )
       throw new HandoffError("unavailable");
     return current;

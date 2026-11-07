@@ -13,10 +13,15 @@ export const HANDOFF_UNSAFE_TEXT =
   /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/u;
 
 export const MAX_HANDOFF_BYTES = 64 * 1024;
+export const HANDOFF_PROVENANCES = [
+  "caller_asserted",
+  "adopted_document",
+] as const;
 export type HandoffErrorCode =
   | "invalid_input"
   | "revision_conflict"
   | "document_conflict"
+  | "not_drifted"
   | "update_conflict"
   | "unknown_plan"
   | "unknown_session"

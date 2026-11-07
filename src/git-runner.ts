@@ -68,6 +68,12 @@ function isMetadataRead(
     ["rev-parse", "--path-format=absolute", "--show-toplevel"],
     ["rev-parse", "--path-format=absolute", "--git-dir"],
     ["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    [
+      "rev-parse",
+      "--path-format=absolute",
+      "--git-common-dir",
+      "--show-toplevel",
+    ],
     ["rev-parse", "--verify", "HEAD^{commit}"],
     ["rev-parse", "--verify", "HEAD^{tree}"],
     ["symbolic-ref", "--quiet", "HEAD"],

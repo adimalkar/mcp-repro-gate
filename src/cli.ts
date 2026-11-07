@@ -95,7 +95,7 @@ function verifyReceiptFile(
 }
 
 const USAGE =
-  "Usage: reprogate [serve [--config <absolute-path>] [--handoff-config <absolute-path>]|demo|approve [--config <absolute-path>] <target> <action-id>|verify-receipt [--config <absolute-path>] <receipt.json>|catalog import --config <absolute-path> --backend <name> --effects <effects> ...|artifact digest <absolute-path>|bench facade [--json]|research-server [--allow-host <host>]... [--search-endpoint <url> [--search-endpoint-private]]|bench research [--html <file> --query <text>] [--json]|handoff <hook|brief> --config <absolute-path> ...|git-review <prepare|sign|import|check|revoke|promote|resume|status|recover> ...]\n";
+  "Usage: reprogate [serve [--config <absolute-path>] [--handoff-config <absolute-path>]|demo|approve [--config <absolute-path>] <target> <action-id>|verify-receipt [--config <absolute-path>] <receipt.json>|catalog import --config <absolute-path> --backend <name> --effects <effects> ...|artifact digest <absolute-path>|bench facade [--json]|research-server [--allow-host <host>]... [--search-endpoint <url> [--search-endpoint-private]]|bench research [--html <file> --query <text>] [--json]|handoff <hook|brief|adopt> --config <absolute-path> ...|git-review <prepare|sign|import|check|revoke|promote|resume|status|recover> ...]\n";
 
 async function main(): Promise<void> {
   const command = process.argv[2] ?? "serve";

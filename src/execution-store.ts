@@ -9,9 +9,11 @@ import { digestCanonical, sha256 } from "./digest.js";
 import {
   HandoffError,
   MAX_HANDOFF_BYTES,
+  parseHandoffAdopt,
   parseHandoffRecord,
   parseHandoffUpdate,
   renderHandoffRecord,
+  type HandoffContextV1,
   type HandoffRecordV1,
 } from "./handoff-contract.js";
 import {
@@ -21,6 +23,7 @@ import {
 import {
   HANDOFF_SESSION_SCHEMA,
   HandoffSessionLedger,
+  addSessionWorktreeColumn,
 } from "./handoff-sessions.js";
 import { envelopeDigest, verifyActionEnvelope } from "./envelope.js";
 import type { PlanStore, PlannedAction } from "./kernel.js";
@@ -109,6 +112,11 @@ function physicalOpenPath(path: string): string {
       return path;
     }
   }
+}
+
+// An adopted revision was never rendered: its digest is the file it accepted.
+function projectedRecordDigest(record: HandoffRecordV1): string {
+  return record.adoptedDocumentDigest ?? sha256(renderHandoffRecord(record));
 }
 
 export class SqliteExecutionStore implements PlanStore, TokenUseStore {
@@ -272,6 +280,7 @@ export class SqliteExecutionStore implements PlanStore, TokenUseStore {
             "INSERT OR IGNORE INTO handoff_instance(singleton, instance_id) VALUES(1, ?)",
           )
           .run(randomUUID().replaceAll("-", ""));
+        addSessionWorktreeColumn(this.#database);
       },
     );
     binding.verify();
@@ -347,7 +356,7 @@ export class SqliteExecutionStore implements PlanStore, TokenUseStore {
       canonicalJson(record) !== row.snapshot_json ||
       digestCanonical({ domain: "ReproGate/Handoff/v1", record }) !==
         row.snapshot_digest ||
-      sha256(renderHandoffRecord(record)) !== row.projected_digest
+      projectedRecordDigest(record) !== row.projected_digest
     )
       throw new HandoffError("unavailable");
     return {
@@ -397,6 +406,98 @@ export class SqliteExecutionStore implements PlanStore, TokenUseStore {
     | undefined {
     this.#verifyHandoff();
     return this.#handoffRow(workspaceId);
+  }
+
+  /**
+   * Record the document on disk as a new revision. Nothing is written to
+   * the file: it is already what was asked for, so the revision is projected
+   * from the moment it exists. It is observed under the writer lock, and
+   * only a document that differs from the recorded state can be adopted, so
+   * a projection still in flight is never discarded.
+   */
+  adoptHandoff(
+    workspaceId: string,
+    value: unknown,
+    observeDocument: () => {
+      digest: string | null;
+      bytes: Buffer | null;
+      context: () => HandoffContextV1;
+    },
+    now: Date = new Date(),
+  ): HandoffRecordV1 {
+    const input = parseHandoffAdopt(value);
+    this.#verifyHandoff();
+    const requestDigest = digestCanonical({
+      domain: "ReproGate/HandoffAdoptRequest/v1",
+      request: input,
+    });
+    this.#database.exec("BEGIN IMMEDIATE");
+    try {
+      this.#verifyHandoff();
+      const previous = this.#handoffRow(workspaceId);
+      const retry = this.#handoffRow(workspaceId, input.updateId);
+      if (retry !== undefined) {
+        if (retry.record.requestDigest !== requestDigest)
+          throw new HandoffError("update_conflict");
+        if (previous?.record.updateId !== input.updateId)
+          throw new HandoffError("revision_conflict");
+        this.#database.exec("COMMIT");
+        return retry.record;
+      }
+      if ((previous?.record.revision ?? 0) !== input.expectedRevision)
+        throw new HandoffError("revision_conflict");
+      const document = observeDocument();
+      if (document.digest !== input.expectedDocumentDigest)
+        throw new HandoffError("document_conflict");
+      if (
+        previous !== undefined &&
+        (document.digest === previous.projectedDigest ||
+          (!previous.projected &&
+            document.digest === previous.record.expectedDocumentDigest))
+      )
+        throw new HandoffError("not_drifted");
+      const record = parseHandoffRecord({
+        handoffVersion: 1,
+        workspaceId,
+        revision: input.expectedRevision + 1,
+        updateId: input.updateId,
+        createdAt: now.toISOString(),
+        provenance: "adopted_document",
+        expectedDocumentDigest: input.expectedDocumentDigest,
+        requestDigest,
+        context: document.context(),
+        // A document cannot carry execution counts, so plan references come
+        // from the revision it replaces, for as long as it still names them.
+        references: (previous?.record.references ?? []).filter(
+          ({ actionId }) => document.bytes?.includes(actionId) === true,
+        ),
+        adoptedDocumentDigest: input.expectedDocumentDigest,
+      });
+      this.#database
+        .prepare(
+          `INSERT INTO handoff_snapshots(workspace_id, revision, update_id, request_digest, snapshot_digest, projected_digest, snapshot_json) VALUES(?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          workspaceId,
+          record.revision,
+          record.updateId,
+          requestDigest,
+          digestCanonical({ domain: "ReproGate/Handoff/v1", record }),
+          projectedRecordDigest(record),
+          canonicalJson(record),
+        );
+      this.#database
+        .prepare(
+          "INSERT INTO handoff_projection_events(workspace_id, revision, state) VALUES(?, ?, 'projected')",
+        )
+        .run(workspaceId, record.revision);
+      this.#verifyHandoff();
+      this.#database.exec("COMMIT");
+      return record;
+    } catch (error) {
+      this.#rollback();
+      throw error;
+    }
   }
 
   reserveHandoff(
@@ -483,7 +584,7 @@ export class SqliteExecutionStore implements PlanStore, TokenUseStore {
           record.updateId,
           requestDigest,
           digestCanonical({ domain: "ReproGate/Handoff/v1", record }),
-          sha256(renderHandoffRecord(record)),
+          projectedRecordDigest(record),
           canonicalJson(record),
         );
       this.#verifyHandoff();

@@ -106,9 +106,24 @@ Edge cases:
 
 ### Slice 3: drift adoption and repository scope
 
-- `handoff_adopt { expectedDocumentDigest }` accepts a hand-edited or synced `handoff.md` as a new revision with provenance `adopted_document`. The previous projection is archived first, as today. This makes manual edits and laptop-to-workstation syncs safe instead of a dead end.
-- A one-time import of an existing file-based `.agent/handoff.md` as revision 1, so users of the plain protocol keep their history.
+- `handoff_adopt { expectedDocumentDigest }` accepts a hand-edited or synced `handoff.md` as a new revision with provenance `adopted_document`. It writes no file, so nothing needs archiving yet: the next update archives the adopted document. This makes manual edits and laptop-to-workstation syncs safe instead of a dead end.
+- A one-time import of an existing file-based `.agent/handoff.md` as revision 1, so users of the plain protocol keep their history. It is the same operation with `expectedRevision: 0`.
+- `reprogate handoff adopt` does the same for a person, without a model call: it shows what would be recorded, and records it given the digest.
+- `--repair-permissions` makes an existing `.agent/` private, once, at a person's request. The plain protocol leaves `.agent/` readable, which the service refuses at startup, so import could not work without it.
 - An opt-in `scope: "repository"` configuration keys the handoff by the Git common directory instead of the worktree root, so every worktree of one repository shares one task context and lanes record which worktree each session ran in. The default stays per workspace root.
+
+Design decisions:
+
+| Question                                               | Decision                                                                                                                                                                                                                                                 |
+| ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Adopt automatically on drift?                          | No. A silent adoption would remove the compare-and-swap that detects a changed document. Briefs tell the agent instead, and the agent or a person accepts one specific digest.                                                                           |
+| Store the adopted document?                            | No, only its digest and a short extract. The file stays the record, and a credential in a hand-written file is not copied into the database wholesale.                                                                                                   |
+| Parse the document, or ask the agent to summarize it?  | Parse the shared headings. A person can then import without a model call, which is the case the rate-limit work exists for. The parser is best effort; a document with no known heading still adopts.                                                    |
+| Adopt while a projection is pending?                   | Refused with `not_drifted` when the document is that projection's base, so the revision is not discarded. A document that moved on is a real drift and can be adopted.                                                                                   |
+| Repair permissions in the service?                     | No. Agents never change permissions. A person asks for it, and it uses no-follow descriptors and refuses links and other owners.                                                                                                                         |
+| Keep refusing a `0644` document in a private `.agent`? | No, this relaxes an earlier rule. Syncs and editors that replace the file reset its mode, which made status `unavailable`, a dead end for the agent. The private directory already stops others reading it. Write bits for group or others stay refused. |
+| Where do repository-scope files go?                    | One copy, in `workspaceRoot`. Per-worktree copies would each read as drifted after an update from another worktree.                                                                                                                                      |
+| What does a brief show of other worktrees' Git state?  | Nothing but their sessions. A brief reads the worktree it was asked from, and commits-since only compares sessions of that worktree.                                                                                                                     |
 
 ### Slice 4: task board with claims
 
@@ -223,6 +238,17 @@ Ranked by value for the context-switching workflow:
 - **Only a long-running server flushes a pending write by timer, and on close.** A hook command exits at once; flushing on its exit would defeat coalescing, so its pending write waits for the next event.
 - **`handoff_status` stays read-only:** it reports the file as `pending` but never writes it.
 - **Edge cases covered by tests:** attention subagents beside parent counts; lane budgets and counts; unknown lane session; immediate and coalesced writes; Markdown in notes kept inside the code block; the timer flush; a symlinked and a hard-linked file refused with the event still recorded; the file turned off and read-only; a one-shot hook leaving a pending write.
+
+## Implementation notes (slice 3)
+
+- `handoff_snapshots` keeps its schema. An adopted record adds `adoptedDocumentDigest`, and `projected_digest` holds that digest, since there is no render to hash. The record's integrity check uses the same value. A binary from before this slice reads an adopted revision as `unavailable`, so a downgrade fails closed.
+- `adoptHandoff` runs under one `BEGIN IMMEDIATE`: it reads the document, inserts the snapshot and inserts the `projected` event. Requests use their own digest domain, so an `updateId` cannot be reused across `handoff_update` and `handoff_adopt`.
+- `document()` reads up to 1 MiB (`MAX_ADOPTED_DOCUMENT_BYTES`), because a file kept by hand outgrows the 96 KiB render limit. Archives use the same cap.
+- `handoff_sessions` gains a nullable `worktree` column; older databases get it through `ALTER TABLE` at startup, and a process that loses that race carries on. The column holds the physical path, and views show only the directory name.
+- `update` now rewrites the sessions file, so its goal is never older than the handoff.
+- A one-shot hook shares one repository lookup between its checks. The query joins the runner's metadata reads, so it needs one Git process and no configuration probe: an event from another project costs two, and never opens the database.
+- A main session moves to a new worktree only on its own resumption (`SessionStart` or a prompt), never on a passing event or a subagent's, and this keeps its `failed` state. A subagent moves when it is started again.
+- Group-writable documents stay refused, including under `umask 002`, where an editor can recreate the file as `0664`: the brief warns, and `--repair-permissions` recovers it.
 
 ## Out of scope
 

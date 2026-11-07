@@ -15,6 +15,9 @@ import {
   type HandoffNoteKind,
 } from "./handoff-session-contract.js";
 
+const WORKTREE_CHECK =
+  "CHECK(worktree IS NULL OR length(CAST(worktree AS BLOB)) <= 4096)";
+
 /**
  * Additive tables, created with the handoff schema. Enumerated columns are
  * checked for shape only and validated on read, so a later version can add
@@ -41,6 +44,7 @@ export const HANDOFF_SESSION_SCHEMA = `
     client_reason TEXT CHECK(client_reason IS NULL OR length(client_reason) <= 64),
     last_message TEXT CHECK(last_message IS NULL OR length(CAST(last_message AS BLOB)) <= ${String(MAX_MESSAGE_BYTES)}),
     note_count INTEGER NOT NULL DEFAULT 0,
+    worktree TEXT ${WORKTREE_CHECK},
     CHECK((ended_at IS NULL) = (end_reason IS NULL))
   ) STRICT;
   CREATE UNIQUE INDEX IF NOT EXISTS handoff_sessions_client
@@ -85,6 +89,8 @@ export interface HandoffSessionRow {
   clientReason: string | null;
   lastMessage: string | null;
   noteCount: number;
+  /** The worktree it ran in; null outside repository scope. */
+  worktree: string | null;
 }
 export interface HandoffNoteRow {
   sessionId: string;
@@ -102,7 +108,27 @@ export interface HandoffSessionStart {
   parentSessionId: string | null;
   task: string | null;
   startHead: string | null;
+  worktree: string | null;
   now: number;
+}
+
+/** Add the worktree column to a database created before it existed. */
+export function addSessionWorktreeColumn(database: DatabaseSync): void {
+  const hasColumn = () =>
+    database
+      .prepare(
+        "SELECT 1 FROM pragma_table_info('handoff_sessions') WHERE name = 'worktree'",
+      )
+      .get() !== undefined;
+  if (hasColumn()) return;
+  try {
+    database.exec(
+      `ALTER TABLE handoff_sessions ADD COLUMN worktree TEXT ${WORKTREE_CHECK}`,
+    );
+  } catch (error) {
+    // Another process added it first.
+    if (!hasColumn()) throw error;
+  }
 }
 
 /**
@@ -133,7 +159,7 @@ function known<T>(parse: () => T): T[] {
 
 const SESSION_COLUMNS = `session_id, client, client_session, client_agent, agent, kind,
   parent_session_id, task, started_at, start_head, last_seen_at, turn_open, failure,
-  ended_at, end_reason, client_reason, last_message, note_count`;
+  ended_at, end_reason, client_reason, last_message, note_count, worktree`;
 
 function sessionRow(row: Record<string, unknown>): HandoffSessionRow {
   const string = (key: string) => {
@@ -187,6 +213,7 @@ function sessionRow(row: Record<string, unknown>): HandoffSessionRow {
     clientReason: optional("client_reason"),
     lastMessage: optional("last_message"),
     noteCount: integer("note_count"),
+    worktree: optional("worktree"),
   };
 }
 
@@ -235,6 +262,26 @@ export class HandoffSessionLedger {
     return this.#get(workspaceId, sessionId);
   }
 
+  /**
+   * Move a session to the worktree it resumed in, whatever its state: its
+   * old start head names a commit of the worktree it left.
+   */
+  relocate(
+    workspaceId: string,
+    sessionId: string,
+    worktree: string,
+    startHead: string | null,
+  ): HandoffSessionRow {
+    return this.#transaction(() => {
+      this.database
+        .prepare(
+          "UPDATE handoff_sessions SET worktree = ?, start_head = ? WHERE session_id = ? AND workspace_id = ?",
+        )
+        .run(worktree, startHead, sessionId, workspaceId);
+      return this.#get(workspaceId, sessionId);
+    });
+  }
+
   /** Start a session, or revive the one a client already registered. */
   start(
     workspaceId: string,
@@ -275,8 +322,8 @@ export class HandoffSessionLedger {
       this.database
         .prepare(
           `INSERT INTO handoff_sessions(session_id, workspace_id, client, client_session, client_agent,
-            agent, kind, parent_session_id, task, started_at, start_head, last_seen_at)
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            agent, kind, parent_session_id, task, started_at, start_head, last_seen_at, worktree)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           sessionId,
@@ -291,6 +338,7 @@ export class HandoffSessionLedger {
           input.now,
           input.startHead,
           input.now,
+          input.worktree,
         );
       return { session: this.#get(workspaceId, sessionId), created: true };
     });

@@ -1,6 +1,7 @@
 import { z } from "zod/v4";
 
 import {
+  HANDOFF_PROVENANCES,
   HANDOFF_UNSAFE_TEXT,
   HandoffError,
   handoffUuidSchema,
@@ -129,6 +130,8 @@ export const handoffSessionViewSchema = z.strictObject({
   lastNote: handoffNoteViewSchema.omit({ sessionId: true }).nullable(),
   notes: z.number().int().min(0),
   lastMessage: z.string().nullable(),
+  /** The worktree it ran in, by name; null outside repository scope. */
+  worktree: z.string().nullable(),
   /** Counts of this session's subagents by state; null without any. */
   subagents: z
     .strictObject(
@@ -143,6 +146,8 @@ export type HandoffSessionView = z.infer<typeof handoffSessionViewSchema>;
 
 export const handoffGitObservationSchema = z.strictObject({
   state: z.enum(["observed", "disabled", "unavailable"]),
+  /** The worktree read, by name; null outside repository scope. */
+  worktree: z.string().nullable(),
   branch: z.string().nullable(),
   head: z.string().nullable(),
   detached: z.boolean(),
@@ -170,11 +175,29 @@ export const handoffGitObservationSchema = z.strictObject({
 });
 export type HandoffGitObservation = z.infer<typeof handoffGitObservationSchema>;
 
+export const HANDOFF_DOCUMENT_STATES = [
+  /** No document and no revision. */
+  "none",
+  /** A document exists, but no revision was ever recorded. */
+  "untracked",
+  "synchronized",
+  "pending",
+  /** The document differs from the latest revision. */
+  "drifted",
+  /** The latest revision was projected, and the file is gone. */
+  "deleted",
+  "unavailable",
+] as const;
+export type HandoffDocumentState = (typeof HANDOFF_DOCUMENT_STATES)[number];
+
 export const handoffBriefSchema = z.strictObject({
   briefVersion: z.literal(1),
   generatedAt: isoSchema,
   handoff: z.strictObject({
     revision: z.number().int().min(0),
+    document: z.enum(HANDOFF_DOCUMENT_STATES),
+    /** The worktree holding the document; null outside repository scope. */
+    documentWorktree: z.string().nullable(),
     activeAgent: z.string().nullable(),
     updatedAt: isoSchema.nullable(),
     goal: z.string().nullable(),
@@ -189,7 +212,7 @@ export const handoffBriefSchema = z.strictObject({
   /** Set when anything beyond the counted omissions was removed or cut. */
   truncated: z.boolean(),
   provenance: z.strictObject({
-    handoff: z.literal("caller_asserted"),
+    handoff: z.enum(HANDOFF_PROVENANCES),
     notes: z.literal("caller_asserted"),
     sessions: z.literal("observed"),
     git: z.literal("observed"),

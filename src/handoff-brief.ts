@@ -1,10 +1,14 @@
+import { basename } from "node:path";
+
 import type { HandoffRecordV1 } from "./handoff-contract.js";
 import {
   MAX_BRIEF_NOTES,
   MAX_BRIEF_SESSIONS,
+  printableText,
   truncateBytes,
   HANDOFF_SESSION_STATES,
   type HandoffBriefV1,
+  type HandoffDocumentState,
   type HandoffGitObservation,
   type HandoffLaneV1,
   type HandoffSessionState,
@@ -51,6 +55,11 @@ const PRIORITY: Record<HandoffSessionState, number> = {
 
 const iso = (time: number) => new Date(time).toISOString();
 
+/** A worktree's name for briefs, which never carry host paths. */
+export function worktreeName(path: string): string {
+  return printableText(basename(path), 128);
+}
+
 export type HandoffSubagentCounts = Record<HandoffSessionState, number>;
 
 export function sessionView(
@@ -83,6 +92,7 @@ export function sessionView(
           },
     notes: session.noteCount,
     lastMessage: session.lastMessage,
+    worktree: session.worktree === null ? null : worktreeName(session.worktree),
     subagents,
   };
 }
@@ -139,6 +149,9 @@ export interface BriefInput {
   now: number;
   liveness: HandoffLiveness;
   latest: HandoffRecordV1 | undefined;
+  document: HandoffDocumentState;
+  /** The worktree that holds the document, by name, in repository scope. */
+  documentWorktree?: string | null;
   sessions: readonly HandoffSessionRow[];
   lastNotes: ReadonlyMap<string, HandoffNoteRow>;
   /** Recent blocker and decision notes, newest first. */
@@ -357,6 +370,8 @@ export function buildBrief(input: BriefInput): HandoffBriefV1 {
     generatedAt: iso(input.now),
     handoff: {
       revision: input.latest?.revision ?? 0,
+      document: input.document,
+      documentWorktree: input.documentWorktree ?? null,
       activeAgent: context?.activeAgent ?? null,
       updatedAt: input.latest?.createdAt ?? null,
       goal: context?.goal ?? null,
@@ -377,7 +392,7 @@ export function buildBrief(input: BriefInput): HandoffBriefV1 {
     git: input.git,
     truncated: false,
     provenance: {
-      handoff: "caller_asserted",
+      handoff: input.latest?.provenance ?? "caller_asserted",
       notes: "caller_asserted",
       sessions: "observed",
       git: "observed",
@@ -566,6 +581,18 @@ export function fitBrief(
               fitted.git.upstream = value;
             },
           },
+          {
+            get: () => fitted.git.worktree,
+            set: (value: string) => {
+              fitted.git.worktree = value;
+            },
+          },
+          {
+            get: () => fitted.handoff.documentWorktree,
+            set: (value: string) => {
+              fitted.handoff.documentWorktree = value;
+            },
+          },
         ],
         64,
       );
@@ -579,14 +606,18 @@ export function fitBrief(
       if (
         h.goal === null &&
         h.activeAgent === null &&
+        h.documentWorktree === null &&
         g.branch === null &&
-        g.upstream === null
+        g.upstream === null &&
+        g.worktree === null
       )
         return false;
       h.goal = null;
       h.activeAgent = null;
+      h.documentWorktree = null;
       g.branch = null;
       g.upstream = null;
+      g.worktree = null;
       fitted.truncated = true;
       return true;
     },
@@ -637,6 +668,8 @@ function describeSession(session: HandoffSessionView, now: string): string {
       break;
   }
   const parts = [`- ${who}: ${state}`];
+  if (session.worktree !== null)
+    parts.push(`  worktree: ${line(session.worktree)}`);
   if (session.task !== null) parts.push(`  task: ${line(session.task)}`);
   if (session.lastNote !== null)
     parts.push(
@@ -654,10 +687,37 @@ function describeSession(session: HandoffSessionView, now: string): string {
   return parts.join("\n");
 }
 
+// What an agent should do about the document; other states need nothing. In
+// repository scope the file may be in another worktree, so it is named.
+function documentAttention(
+  handoff: HandoffBriefV1["handoff"],
+  readOnly: boolean,
+): string | undefined {
+  const file =
+    handoff.documentWorktree === null
+      ? ".agent/handoff.md"
+      : `.agent/handoff.md in the ${line(handoff.documentWorktree)} worktree`;
+  const adopt = readOnly
+    ? "."
+    : "; if it is right, record it with handoff_adopt or reprogate handoff adopt.";
+  switch (handoff.document) {
+    case "untracked":
+      return `${file} exists but was never recorded. Read it${adopt}`;
+    case "drifted":
+      return `${file} was changed outside ReproGate, so the handoff below may be out of date. Read the file${adopt}`;
+    case "deleted":
+      return `${file} was deleted.${readOnly ? "" : " The next handoff_update writes it again."}`;
+    case "unavailable":
+      return `${file} could not be read, so the handoff below may be out of date. It may be too large, hard-linked or writable by others.`;
+    default:
+      return undefined;
+  }
+}
+
 /** Plain text for hook context and terminals; it renders the same facts. */
 export function renderBriefText(
   brief: HandoffBriefV1,
-  options: { includeGit?: boolean } = {},
+  options: { includeGit?: boolean; readOnly?: boolean } = {},
 ): string {
   const now = brief.generatedAt;
   const out: string[] = ["ReproGate handoff brief"];
@@ -668,11 +728,13 @@ export function renderBriefText(
       "",
       `Attention: a ${git.operation.replace("_", "-")} is in progress in the workspace. Finish or abort it before other work.`,
     );
+  const document = documentAttention(handoff, options.readOnly === true);
+  if (document !== undefined) out.push("", `Attention: ${document}`);
   if (brief.truncated || brief.omittedSessions > 0 || brief.omittedNotes > 0)
     out.push("", "This brief was shortened to fit its budget.");
   out.push(
     "",
-    `Handoff (asserted by agents, revision ${String(handoff.revision)}${handoff.updatedAt === null ? "" : `, ${ago(handoff.updatedAt, now)} by ${handoff.activeAgent ?? "unknown"}`}):`,
+    `Handoff (${brief.provenance.handoff === "adopted_document" ? "adopted from a document" : "asserted by agents"}, revision ${String(handoff.revision)}${handoff.updatedAt === null ? "" : `, ${ago(handoff.updatedAt, now)} by ${handoff.activeAgent ?? "unknown"}`}):`,
   );
   if (handoff.goal === null) out.push("- No handoff recorded.");
   else {
@@ -696,7 +758,10 @@ export function renderBriefText(
       out.push(`- ${String(brief.omittedNotes)} more not shown.`);
   }
   if (options.includeGit === false) return `${out.join("\n")}\n`;
-  out.push("", "Git (observed now):");
+  out.push(
+    "",
+    `Git (observed now${git.worktree === null ? "" : ` in ${line(git.worktree)}`}):`,
+  );
   if (git.state !== "observed")
     out.push(
       `- ${git.state === "disabled" ? "Observation is turned off." : "Unavailable: not a repository, or Git could not be read safely."}`,

@@ -1,12 +1,18 @@
+import { randomUUID } from "node:crypto";
 import { readSync } from "node:fs";
 
 import {
   createHandoffService,
-  workspaceContains,
+  workspaceAccepts,
   type HandoffService,
 } from "./handoff.js";
 import { HandoffError } from "./handoff-contract.js";
-import { loadHandoffConfig } from "./handoff-filesystem.js";
+import {
+  handoffPermissionIssues,
+  loadHandoffConfig,
+  repairHandoffPermissions,
+} from "./handoff-filesystem.js";
+import { memoizedRepositoryIdentity } from "./handoff-observe.js";
 import {
   HOOK_CONTEXT_CHARS,
   MAX_BRIEF_BYTES,
@@ -27,7 +33,26 @@ export interface HandoffCliIo {
 
 const USAGE =
   "Usage: reprogate handoff hook --config <absolute-path> [--client claude-code|codex] [<codex-notification-json>]\n" +
-  "       reprogate handoff brief --config <absolute-path> [--json] [--bytes <n>]\n";
+  "       reprogate handoff brief --config <absolute-path> [--json] [--bytes <n>]\n" +
+  "       reprogate handoff adopt --config <absolute-path> [--digest <sha256:...>] [--agent <name>] [--repair-permissions]\n";
+
+// A workspace that kept plain files is refused until .agent is private, and
+// "unavailable" alone gives no way forward.
+function failureText(error: unknown, workspaceRoot?: string): string {
+  const code = error instanceof HandoffError ? error.code : "unavailable";
+  if (code !== "unavailable" || workspaceRoot === undefined) return code;
+  try {
+    const { loose, refused } = handoffPermissionIssues(workspaceRoot);
+    // Repair stops at these, so asking for it would go nowhere.
+    if (refused.length > 0)
+      return `${code}: ${refused.join(", ")}: a symlink, a hard link or owned by someone else; fix it by hand`;
+    return loose.length === 0
+      ? code
+      : `${code}: not private: ${loose.join(", ")}; run reprogate handoff adopt --config <path> --repair-permissions`;
+  } catch {
+    return code;
+  }
+}
 
 export function readStdin(cap: number): Buffer | undefined {
   const chunks: Buffer[] = [];
@@ -72,6 +97,96 @@ function parseOptions(
   return { options, positional };
 }
 
+// Without --digest this only shows what would be recorded, so the person
+// sees the digest they are accepting before anything changes.
+function runAdopt(args: readonly string[], io: HandoffCliIo): number {
+  const parsed = parseOptions(
+    args,
+    new Set(["--repair-permissions"]),
+    new Set(["--config", "--digest", "--agent"]),
+  );
+  const configPath = parsed?.options.get("--config");
+  if (
+    parsed === undefined ||
+    configPath === undefined ||
+    parsed.positional.length > 0
+  ) {
+    io.stderr(USAGE);
+    return 1;
+  }
+  let service: HandoffService | undefined;
+  let workspaceRoot: string | undefined;
+  try {
+    const config = loadHandoffConfig(configPath);
+    workspaceRoot = config.workspaceRoot;
+    if (parsed.options.has("--repair-permissions"))
+      for (const path of repairHandoffPermissions(workspaceRoot))
+        io.stdout(`Made private: ${path}\n`);
+    service = createHandoffService(config, {
+      // A one-shot command: no timer may keep the process alive.
+      deferProjection: false,
+      ...(io.now === undefined ? {} : { now: io.now }),
+    });
+    const digest = parsed.options.get("--digest");
+    const agent = parsed.options.get("--agent");
+    if (digest !== undefined) {
+      const { revision } = service.status({ handoffVersion: 1 });
+      const adopted = service.adopt({
+        handoffVersion: 1,
+        updateId: randomUUID(),
+        expectedRevision: revision,
+        expectedDocumentDigest: digest,
+        ...(agent === undefined ? {} : { agent }),
+      });
+      io.stdout(
+        `Adopted the document as revision ${String(adopted.revision)}.\n`,
+      );
+      return 0;
+    }
+    const preview = service.previewAdoption(agent);
+    const lines = [
+      `State: ${preview.state} at revision ${String(preview.revision)}`,
+      `Document: ${preview.documentDigest ?? "none"}`,
+    ];
+    if (preview.extracted !== null) {
+      const { context, recognized, omittedItems, redactions } =
+        preview.extracted;
+      lines.push(
+        `Goal: ${context.goal}`,
+        `Agent: ${context.activeAgent}`,
+        `Completed: ${String(context.completed.length)}, blockers: ${String(context.blockers.length)}, next steps: ${String(context.nextSteps.length)}`,
+        ...(recognized ? [] : ["No shared-protocol sections were recognized."]),
+        ...(omittedItems === 0
+          ? []
+          : [`${String(omittedItems)} items stay only in the document.`]),
+        ...(redactions === 0
+          ? []
+          : [
+              `${String(redactions)} credential-shaped values are left out of the record, but remain in the file.`,
+            ]),
+      );
+    }
+    if (
+      config.allowUpdates &&
+      preview.documentDigest !== null &&
+      (preview.state === "drifted" || preview.state === "missing")
+    )
+      lines.push(
+        "To record it, run this again with:",
+        `  --digest ${preview.documentDigest}`,
+      );
+    io.stdout(`${lines.join("\n")}\n`);
+    return 0;
+  } catch (error) {
+    io.stderr(
+      `reprogate handoff adopt: ${failureText(error, workspaceRoot)}\n`,
+    );
+    return 1;
+  } finally {
+    service?.close();
+  }
+}
+
 /**
  * Host-side handoff commands. `hook` records client lifecycle events
  * without a model call, so a session that hits a rate limit or is closed
@@ -103,6 +218,7 @@ export function runHandoffCli(
       return 1;
     }
     let service: HandoffService | undefined;
+    let workspaceRoot: string | undefined;
     try {
       // Codex's turn notification arrives as the last argument; hook
       // payloads from Claude Code and Codex arrive on standard input.
@@ -125,20 +241,24 @@ export function runHandoffCli(
         return 0;
       }
       const config = loadHandoffConfig(configPath);
+      workspaceRoot = config.workspaceRoot;
+      const resolveRepository = memoizedRepositoryIdentity();
       // Hooks set for every project return here, before the database is
       // opened or locked.
       if (
         payload === null ||
         typeof payload !== "object" ||
-        !workspaceContains(
-          config.workspaceRoot,
+        !workspaceAccepts(
+          config,
           (payload as { cwd?: unknown }).cwd,
+          resolveRepository,
         )
       )
         return 0;
       service = createHandoffService(config, {
         // A one-shot command: no timer may keep the process alive.
         deferProjection: false,
+        resolveRepository,
         ...(io.now === undefined ? {} : { now: io.now }),
       });
       const result = service.hook(client, payload);
@@ -157,7 +277,7 @@ export function runHandoffCli(
       return 0;
     } catch (error) {
       io.stderr(
-        `reprogate handoff hook: ${error instanceof HandoffError ? error.code : "unavailable"}\n`,
+        `reprogate handoff hook: ${failureText(error, workspaceRoot)}\n`,
       );
       return 1;
     } finally {
@@ -186,8 +306,11 @@ export function runHandoffCli(
       return 1;
     }
     let service: HandoffService | undefined;
+    let workspaceRoot: string | undefined;
     try {
-      service = createHandoffService(loadHandoffConfig(configPath), {
+      const config = loadHandoffConfig(configPath);
+      workspaceRoot = config.workspaceRoot;
+      service = createHandoffService(config, {
         // A one-shot command: no timer may keep the process alive.
         deferProjection: false,
         ...(io.now === undefined ? {} : { now: io.now }),
@@ -200,13 +323,14 @@ export function runHandoffCli(
       return 0;
     } catch (error) {
       io.stderr(
-        `reprogate handoff brief: ${error instanceof HandoffError ? error.code : "unavailable"}\n`,
+        `reprogate handoff brief: ${failureText(error, workspaceRoot)}\n`,
       );
       return 1;
     } finally {
       service?.close();
     }
   }
+  if (command === "adopt") return runAdopt(rest, io);
   io.stderr(USAGE);
   return 1;
 }
