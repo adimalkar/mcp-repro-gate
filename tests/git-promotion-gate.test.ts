@@ -1,7 +1,7 @@
 import { Ajv2020 } from "ajv/dist/2020.js";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { chmodSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { canonicalJson } from "../src/canonical-json.js";
@@ -534,3 +534,20 @@ test("a never-reserved attempt's fence is released and nothing is recorded", (t)
   assert.equal(f.control.query().status, "available");
   assert.equal(f.store.getGitPromotionAttempt(f.prepared.attemptId), undefined);
 });
+
+test(
+  "a non-private ledger is refused with its path named",
+  { skip: process.platform === "win32" },
+  (t) => {
+    const f = fixture(t);
+    reserve(f);
+    chmodSync(f.databasePath, 0o644);
+    assert.throws(
+      () => promote(f),
+      (error: Error) =>
+        error.message.includes("files 0600") &&
+        error.message.includes(f.databasePath),
+    );
+    chmodSync(f.databasePath, 0o600);
+  },
+);

@@ -38,7 +38,7 @@ Phase 1 remains a semantics prototype. The early Phase 2 library adds an opt-in,
 
 - plans and execution state can be persisted in SQLite without retaining raw arguments;
 - capability consumption and the pre-dispatch execution record share one transaction;
-- the live downstream schema is re-hashed and arguments are validated before consumption;
+- arguments are validated against the catalog schema at planning, and the live downstream schema is re-hashed and arguments validated again before consumption;
 - definite downstream responses produce signed receipts with result/effect digests;
 - transport errors, observer failures, and restart recovery become `indeterminate`;
 - the default server does not expose `action.execute` unless an executor is supplied;
@@ -66,7 +66,7 @@ Explicit V2 witnesses bind a distinct direct local destination that is not check
 
 A persistent host ownership fence provides cooperative exclusion and retains partial/invalid latches across worker death. Its full current physical-root and private host-state identity policy is rechecked across operations. Exact-owner release requires explicit trusted-host quiescence; PID absence or a released database lock is not proof that all possible Git children have stopped. Every relevant host writer must share one canonical repository-common-directory/ledger/fence mapping.
 
-Private POSIX modes or host-managed Windows ACLs do not exclude an agent with the same filesystem credentials. Bounded descriptor/path snapshot checks detect observable mutation, not changes invisible to filesystem metadata or changes after the last observation. There is no automatic latch stealing/repair, universal power-loss guarantee or OS-level reservation. One-use promotion journaling, final authenticated expected-old ref CAS and conservative recovery remain unimplemented in this foundation slice. See the [foundation guide](GIT_PROMOTION_FOUNDATIONS.md) for effects, requirements and platform limits.
+Private POSIX modes or host-managed Windows ACLs do not exclude an agent with the same filesystem credentials. Bounded descriptor/path snapshot checks detect observable mutation, not changes invisible to filesystem metadata or changes after the last observation. There is no automatic latch stealing/repair, universal power-loss guarantee or OS-level reservation. One-use promotion journaling, the final authenticated expected-old ref CAS and conservative recovery are separate layers, described in the two sections below. See the [foundation guide](GIT_PROMOTION_FOUNDATIONS.md) for effects, requirements and platform limits.
 
 ## Prepared Git promotion reservation boundary
 
@@ -147,7 +147,7 @@ Compact graph views are opt-in and keyed by exact catalog server/tool identities
 - no transport-authenticated principal extraction;
 - artifact identity covers one configured file but cannot eliminate a hostile same-host replacement race;
 - no OS-level process, filesystem, network, secret, or sandbox enforcement;
-- filesystem effects are content-addressed and Git proposals/staging have bounded witnesses, but atomic Git promotion and network/process/credential observation are not implemented;
+- filesystem effects are content-addressed and Git proposals/staging have bounded witnesses. Git promotion is a compare-and-swap of one ref, not an atomic transaction with SQLite, and network/process/credential observation is not implemented;
 - HMAC proves possession of a shared secret, not third-party/non-repudiable authorship;
 - a hash chain detects mutation only when an independent checkpoint or signature is retained;
 - no protection from a compromised gateway process or signing key.

@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 
+import { Ajv2020, type ValidateFunction } from "ajv/dist/2020.js";
+
 import { digestCanonical } from "./digest.js";
 import { createActionEnvelope, envelopeDigest } from "./envelope.js";
 import { evaluatePolicy } from "./policy.js";
@@ -62,6 +64,28 @@ export class ReproGateKernel {
     this.#plans = plans;
   }
 
+  // Same validator settings as the executor, so a plan that passes here
+  // cannot be refused at execution for its arguments' shape alone.
+  readonly #validator = new Ajv2020({ allErrors: true, strict: true });
+  readonly #validators = new Map<string, ValidateFunction>();
+
+  #validate(tool: CatalogTool): ValidateFunction {
+    let validate = this.#validators.get(tool.toolRef);
+    if (validate === undefined) {
+      try {
+        validate = this.#validator.compile(
+          tool.inputSchema as object | boolean,
+        );
+      } catch {
+        throw new Error(
+          `Catalog input schema for ${tool.toolRef} cannot be compiled`,
+        );
+      }
+      this.#validators.set(tool.toolRef, validate);
+    }
+    return validate;
+  }
+
   search(query: string, limit = 10): CatalogTool[] {
     const terms = query.toLowerCase().split(/\s+/u).filter(Boolean);
     return [...this.#catalog.values()]
@@ -93,6 +117,17 @@ export class ReproGateKernel {
     const tool = this.#catalog.get(input.toolRef);
     if (tool === undefined) {
       throw new Error(`Unknown catalog tool: ${input.toolRef}`);
+    }
+
+    // Refuse arguments the tool can never accept before anything is bound,
+    // persisted or shown to an approver. Messages name schema paths only.
+    const validate = this.#validate(tool);
+    if (!validate(input.arguments)) {
+      throw new Error(
+        `Arguments fail the input schema of ${tool.toolRef}: ${this.#validator.errorsText(
+          validate.errors,
+        )}`,
+      );
     }
 
     const now = input.now ?? new Date();

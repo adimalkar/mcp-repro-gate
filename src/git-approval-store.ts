@@ -56,6 +56,7 @@ import {
   type GitOperatorReviewV1,
 } from "./git-operator-review.js";
 import type { Digest } from "./types.js";
+import { createPrivateDatabaseFile } from "./private-database.js";
 
 export interface GitChangeApprovalV1 {
   approvalVersion: 1;
@@ -448,6 +449,8 @@ export class SqliteGitApprovalStore {
 
   constructor(path: string) {
     const openPath = promotionDatabaseOpenPath(path);
+    // Promotion requires a private ledger; never create one others can read.
+    createPrivateDatabaseFile(openPath);
     this.#database = new DatabaseSync(openPath);
     try {
       // Wait out another process's lock (including WAL recovery) before the

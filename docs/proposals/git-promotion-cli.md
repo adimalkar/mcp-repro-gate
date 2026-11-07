@@ -22,7 +22,7 @@ Status: proposed implementation. This is Task 4 of the [journaled promotion plan
 - The host fence enforces its own private-location rules on every use. On POSIX that means current-user `0700` parents and `0600` ledger and state files.
 - Version 1 configurations keep their exact behavior and cannot promote.
 - A version 2 configuration accepts only version 2 proposals; a version 1 configuration only version 1.
-- A new [schema](../schemas/git-review-config-v2.schema.json) describes version 2; the version 1 schema is unchanged.
+- A new [schema](../../schemas/git-review-config-v2.schema.json) describes version 2; the version 1 schema is unchanged.
 
 ### Commands
 
