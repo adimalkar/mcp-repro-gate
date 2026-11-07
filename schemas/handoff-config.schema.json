@@ -29,6 +29,29 @@
     },
     "allowUpdates": {
       "type": "boolean"
+    },
+    "sessions": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Optional session tracking settings. Lease and grace lengths decide when a silent session reads as quiet, then interrupted.",
+      "properties": {
+        "leaseSeconds": {
+          "type": "integer",
+          "minimum": 30,
+          "maximum": 86400
+        },
+        "graceSeconds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 86400
+        },
+        "observeGit": {
+          "type": "boolean"
+        },
+        "captureMessages": {
+          "type": "boolean"
+        }
+      }
     }
   }
 }

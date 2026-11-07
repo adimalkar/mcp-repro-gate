@@ -174,6 +174,14 @@
         },
         "includeContext": {
           "type": "boolean"
+        },
+        "brief": {
+          "type": "boolean"
+        },
+        "briefBytes": {
+          "type": "integer",
+          "minimum": 1024,
+          "maximum": 65536
         }
       }
     },
@@ -287,6 +295,9 @@
           "items": {
             "$ref": "#/$defs/reference"
           }
+        },
+        "brief": {
+          "$ref": "#/$defs/brief"
         }
       }
     },
@@ -349,6 +360,584 @@
           "items": {
             "$ref": "#/$defs/reference"
           }
+        }
+      }
+    },
+    "join": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["handoffVersion", "agent"],
+      "properties": {
+        "handoffVersion": {
+          "const": 1
+        },
+        "agent": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+        },
+        "kind": {
+          "enum": ["agent", "subagent"]
+        },
+        "parentSessionId": {
+          "$ref": "#/$defs/uuid"
+        },
+        "task": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "pattern": "^[^\\u0000-\\u0008\\u000b\\u000c\\u000e-\\u001f\\u007f-\\u009f\\u061c\\u200e\\u200f\\u202a-\\u202e\\u2066-\\u2069]*$"
+        },
+        "briefBytes": {
+          "type": "integer",
+          "minimum": 1024,
+          "maximum": 65536
+        }
+      }
+    },
+    "note": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["handoffVersion", "sessionId", "kind", "text"],
+      "properties": {
+        "handoffVersion": {
+          "const": 1
+        },
+        "sessionId": {
+          "$ref": "#/$defs/uuid"
+        },
+        "kind": {
+          "enum": ["progress", "blocker", "decision", "next", "result"]
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048,
+          "pattern": "^[^\\u0000-\\u0008\\u000b\\u000c\\u000e-\\u001f\\u007f-\\u009f\\u061c\\u200e\\u200f\\u202a-\\u202e\\u2066-\\u2069]*$"
+        }
+      }
+    },
+    "end": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["handoffVersion", "sessionId"],
+      "properties": {
+        "handoffVersion": {
+          "const": 1
+        },
+        "sessionId": {
+          "$ref": "#/$defs/uuid"
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048,
+          "pattern": "^[^\\u0000-\\u0008\\u000b\\u000c\\u000e-\\u001f\\u007f-\\u009f\\u061c\\u200e\\u200f\\u202a-\\u202e\\u2066-\\u2069]*$"
+        }
+      }
+    },
+    "noteView": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sessionId", "kind", "text", "createdAt"],
+      "properties": {
+        "sessionId": {
+          "$ref": "#/$defs/uuid"
+        },
+        "kind": {
+          "enum": ["progress", "blocker", "decision", "next", "result"]
+        },
+        "text": {
+          "type": "string"
+        },
+        "createdAt": {
+          "type": "string",
+          "minLength": 20,
+          "maxLength": 30
+        }
+      }
+    },
+    "sessionView": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sessionId",
+        "agent",
+        "kind",
+        "client",
+        "parentSessionId",
+        "task",
+        "state",
+        "startedAt",
+        "lastSeenAt",
+        "endedAt",
+        "endReason",
+        "clientReason",
+        "failure",
+        "lastNote",
+        "notes",
+        "lastMessage"
+      ],
+      "properties": {
+        "sessionId": {
+          "$ref": "#/$defs/uuid"
+        },
+        "agent": {
+          "type": "string"
+        },
+        "kind": {
+          "enum": ["agent", "subagent"]
+        },
+        "client": {
+          "enum": ["mcp", "claude-code", "codex"]
+        },
+        "parentSessionId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "task": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "state": {
+          "enum": ["active", "idle", "quiet", "interrupted", "failed", "ended"]
+        },
+        "startedAt": {
+          "type": "string",
+          "minLength": 20,
+          "maxLength": 30
+        },
+        "lastSeenAt": {
+          "type": "string",
+          "minLength": 20,
+          "maxLength": 30
+        },
+        "endedAt": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 20,
+              "maxLength": 30
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "endReason": {
+          "anyOf": [
+            {
+              "enum": [
+                "completed",
+                "disconnected",
+                "client_ended",
+                "subagent_stopped"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "clientReason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "failure": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "lastNote": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["kind", "text", "createdAt"],
+              "properties": {
+                "kind": {
+                  "enum": ["progress", "blocker", "decision", "next", "result"]
+                },
+                "text": {
+                  "type": "string"
+                },
+                "createdAt": {
+                  "type": "string",
+                  "minLength": 20,
+                  "maxLength": 30
+                }
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "notes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "lastMessage": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "gitObservation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state",
+        "branch",
+        "head",
+        "detached",
+        "upstream",
+        "ahead",
+        "behind",
+        "operation",
+        "changes",
+        "paths",
+        "omittedPaths",
+        "commitsSince"
+      ],
+      "properties": {
+        "state": {
+          "enum": ["observed", "disabled", "unavailable"]
+        },
+        "branch": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "head": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "detached": {
+          "type": "boolean"
+        },
+        "upstream": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "ahead": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "behind": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "operation": {
+          "anyOf": [
+            {
+              "enum": ["merge", "rebase", "cherry_pick", "revert", "bisect"]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "changes": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["staged", "unstaged", "untracked", "conflicted"],
+          "properties": {
+            "staged": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "unstaged": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "untracked": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "conflicted": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "paths": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["status", "path"],
+            "properties": {
+              "status": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "omittedPaths": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "commitsSince": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["base", "count", "subjects"],
+              "properties": {
+                "base": {
+                  "type": "string"
+                },
+                "count": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "subjects": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "brief": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "briefVersion",
+        "generatedAt",
+        "handoff",
+        "sessions",
+        "omittedSessions",
+        "notes",
+        "omittedNotes",
+        "git",
+        "truncated",
+        "provenance"
+      ],
+      "properties": {
+        "briefVersion": {
+          "const": 1
+        },
+        "generatedAt": {
+          "type": "string",
+          "minLength": 20,
+          "maxLength": 30
+        },
+        "handoff": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "revision",
+            "activeAgent",
+            "updatedAt",
+            "goal",
+            "nextSteps",
+            "blockers"
+          ],
+          "properties": {
+            "revision": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "activeAgent": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "updatedAt": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 20,
+                  "maxLength": 30
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "goal": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "nextSteps": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "blockers": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "sessions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/sessionView"
+          }
+        },
+        "omittedSessions": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/noteView"
+          }
+        },
+        "omittedNotes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "git": {
+          "$ref": "#/$defs/gitObservation"
+        },
+        "truncated": {
+          "type": "boolean"
+        },
+        "provenance": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["handoff", "notes", "sessions", "git"],
+          "properties": {
+            "handoff": {
+              "const": "caller_asserted"
+            },
+            "notes": {
+              "const": "caller_asserted"
+            },
+            "sessions": {
+              "const": "observed"
+            },
+            "git": {
+              "const": "observed"
+            }
+          }
+        }
+      }
+    },
+    "joinResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["handoffVersion", "sessionId", "leaseSeconds", "brief"],
+      "properties": {
+        "handoffVersion": {
+          "const": 1
+        },
+        "sessionId": {
+          "$ref": "#/$defs/uuid"
+        },
+        "leaseSeconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "brief": {
+          "$ref": "#/$defs/brief"
+        }
+      }
+    },
+    "sessionResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["handoffVersion", "session", "redactions"],
+      "properties": {
+        "handoffVersion": {
+          "const": 1
+        },
+        "session": {
+          "$ref": "#/$defs/sessionView"
+        },
+        "redactions": {
+          "type": "integer",
+          "minimum": 0
         }
       }
     }
