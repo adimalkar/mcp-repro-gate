@@ -153,14 +153,21 @@ function directory(path: string): string {
     throw new Error("Expected a physical directory");
   return physical;
 }
-function privateStats(stats: BigIntStats, kind: "file" | "directory"): void {
+// `where` names an operator-configured location, so a rejection says which
+// path to fix and how.
+function privateStats(
+  stats: BigIntStats,
+  kind: "file" | "directory",
+  where?: string,
+): void {
+  const at = where === undefined ? "" : ` (${where})`;
   if (
     !(kind === "file"
       ? stats.isFile() && stats.nlink === 1n
       : stats.isDirectory())
   )
     throw new Error(
-      "Host locations require physical directories or regular single-link files",
+      `Host locations require physical directories or regular single-link files${at}`,
     );
   if (process.platform !== "win32") {
     if (
@@ -169,7 +176,7 @@ function privateStats(stats: BigIntStats, kind: "file" | "directory"): void {
       (stats.mode & 0o7777n) !== (kind === "file" ? 0o600n : 0o700n)
     )
       throw new Error(
-        "Host locations require private current-user POSIX ownership and permissions",
+        `Host locations require private current-user POSIX ownership and permissions: directories 0700, files 0600${at}`,
       );
   }
 }
@@ -206,6 +213,7 @@ function safeState(path: string, directoryTarget = false): void {
       privateStats(
         stats,
         suffix === "" && directoryTarget ? "directory" : "file",
+        target,
       );
   }
 }
@@ -505,7 +513,7 @@ export function createGitPromotionHostControl(
     ...stateDirectories,
   ])) {
     const identity = lstatSync(path, { bigint: true });
-    privateStats(identity, "directory");
+    privateStats(identity, "directory", path);
     directoryIdentities.set(path, identity);
   }
   const initial = repositoryRoots(root);
@@ -519,7 +527,7 @@ export function createGitPromotionHostControl(
         throw new Error("Host directory alias changed");
       safeAncestors(path);
       const stats = lstatSync(path, { bigint: true });
-      privateStats(stats, "directory");
+      privateStats(stats, "directory", path);
       if (!sameIdentity(stats, identity))
         throw new Error("Host directory identity changed");
     }

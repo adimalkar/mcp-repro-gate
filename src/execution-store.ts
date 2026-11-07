@@ -30,6 +30,7 @@ import type { PlanStore, PlannedAction } from "./kernel.js";
 import { parseHeldApproval, type HeldApprovalV1 } from "./held-approval.js";
 import type { ExecutionReceiptV1 } from "./receipt.js";
 import type { Digest } from "./types.js";
+import { createPrivateDatabaseFile } from "./private-database.js";
 
 export type ExecutionState =
   "prepared" | "succeeded" | "failed" | "indeterminate";
@@ -125,6 +126,7 @@ export class SqliteExecutionStore implements PlanStore, TokenUseStore {
 
   constructor(path: string) {
     this.#openedPath = physicalOpenPath(path);
+    createPrivateDatabaseFile(this.#openedPath);
     this.#database = new DatabaseSync(this.#openedPath);
     // Wait out another process's lock (including WAL recovery) before the
     // first statement that touches the database file.
