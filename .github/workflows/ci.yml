@@ -47,7 +47,7 @@ jobs:
   test:
     name: Test (${{ matrix.os }}, Node ${{ matrix.node }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
@@ -79,13 +79,13 @@ jobs:
         run: npm run pack:check
 
   windows_test:
-    name: Windows tests (shard ${{ matrix.shard }}/2, Node 24)
+    name: Windows tests (shard ${{ matrix.shard }}/4, Node 24)
     runs-on: windows-latest
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2]
+        shard: [1, 2, 3, 4]
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -105,7 +105,7 @@ jobs:
         run: npm run build --silent
 
       - name: Test complete file shard
-        run: node --test --test-reporter=tap --test-shard=${{ matrix.shard }}/2 "dist/tests/*.test.js"
+        run: node --test --test-reporter=tap --test-shard=${{ matrix.shard }}/4 "dist/tests/*.test.js"
 
   windows_test_status:
     # Preserve the existing required branch-protection context. A failed,
