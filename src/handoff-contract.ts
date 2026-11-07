@@ -11,7 +11,9 @@ import {
   type HandoffErrorCode,
 } from "./handoff-primitives.js";
 import {
+  HANDOFF_SESSIONS_FILE_STATES,
   handoffBriefSchema,
+  handoffLaneSchema,
   handoffSessionsConfigSchema,
 } from "./handoff-session-contract.js";
 
@@ -87,6 +89,7 @@ export const handoffStatusInputSchema = z.strictObject({
   includeContext: z.boolean().optional(),
   brief: z.boolean().optional(),
   briefBytes: z.number().int().min(1024).max(65536).optional(),
+  sessionId: handoffUuidSchema.optional(),
 });
 const timestampSchema = z
   .string()
@@ -143,6 +146,8 @@ export const handoffStatusSchema = z.strictObject({
   context: handoffContextSchema.optional(),
   references: z.array(handoffReferenceSchema).max(16).optional(),
   brief: handoffBriefSchema.optional(),
+  lane: handoffLaneSchema.optional(),
+  sessionsFile: z.enum(HANDOFF_SESSIONS_FILE_STATES).optional(),
 });
 export type HandoffConfigV1 = z.infer<typeof handoffConfigSchema>;
 export type HandoffUpdateV1 = z.infer<typeof handoffUpdateSchema>;

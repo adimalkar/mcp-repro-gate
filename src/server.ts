@@ -349,7 +349,7 @@ export function createReproGateServer(
       "handoff_status",
       {
         description:
-          "Report the host-configured workspace handoff state with revision, digests and counts; set includeContext for the caller-asserted context, or brief for a bounded resume brief with session states and observed Git state. Advisory only: it never authorizes actions",
+          "Report the host-configured workspace handoff state with revision, digests and counts; set includeContext for the caller-asserted context, brief for a bounded resume brief with session states and observed Git state, or sessionId for that session's lane: its notes and subagents. Advisory only: it never authorizes actions",
         inputSchema: handoffStatusInputSchema,
         outputSchema: handoffStatusSchema,
         annotations: {

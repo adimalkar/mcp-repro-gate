@@ -1,6 +1,6 @@
 # Resilient multi-agent handoff
 
-Status: proposed plan; slice 1 implemented (see Implementation notes). It extends the opt-in handoff tools ([HANDOFF.md](../HANDOFF.md), [first slice](agent-handoff.md)) so that context survives the two situations where it fails today:
+Status: proposed plan; slices 1 and 2 implemented (see Implementation notes). It extends the opt-in handoff tools ([HANDOFF.md](../HANDOFF.md), [first slice](agent-handoff.md)) so that context survives the two situations where it fails today:
 
 - many agents working at once on one task, such as a parent with 20 subagents;
 - an agent that stops abruptly because of a rate limit, crash, closed laptop or context compaction, before it writes the handoff.
@@ -79,13 +79,30 @@ It never stages, stashes, resets or edits anything. Each read has a timeout and 
 
 **Projection.** Slice 2 adds a generated `.agent/sessions.md` next to `handoff.md`, so agents that only read files see interruptions too. Slice 1 delivers the same facts through the brief, the `SessionStart` hook context and `reprogate handoff brief`.
 
-### Slice 2: lanes for many agents
+### Slice 2: lanes, rollups and a sessions file
 
-- Notes are grouped per session into lanes; the parent's view rolls children up: counts by state, plus each child's latest note or final result in one line.
-- `handoff_status { sessionId }` returns one lane in full; the default view stays compact.
-- **Projection coalescing:** notes don't rewrite `handoff.md` one by one. The document is re-projected on revisions, session end or interruption, and checkpoints, and at most once per configured interval otherwise. With 20 agents the file is not rewritten 20 times a second, and its status still reports `pending` honestly in between.
-- **Caps that scale:** per-session note caps, a per-workspace active-session cap, and oldest-first pruning of notes from ended sessions, with counts of what was pruned.
-- **Redaction:** notes, summaries and hook payload text pass through the same secret patterns `action.run` uses before they are stored. The stored record says how many redactions were applied.
+Redaction, note caps and session caps landed in slice 1. Slice 2 adds:
+
+- **Rollups in the brief.** A subagent that needs attention (failed, interrupted, quiet) is listed one by one, so problems surface. Any other subagent, at any depth, is folded into the `subagents` counts of its nearest listed ancestor. A subagent whose parent is gone is listed as before. With 20 subagents the brief shows one parent line instead of 21 sessions.
+- **Lane view.** `handoff_status { sessionId }` returns one session in full: its newest notes (up to 64), and its subagents ordered for attention, within `briefBytes`. Omitted notes and subagents are counted. An unknown session is `unknown_session`.
+- **`.agent/sessions.md`.** A generated file beside `handoff.md`, for agents that read files rather than call tools. It holds the brief without Git state (reading Git on every event would cost too much), with every line indented as a code block, so note text can never render as headings or links. It is rewritten, never merged, and says so.
+  - **Coalescing.** Lifecycle events (start, end, failure, subagent start and stop, join) rewrite it at once. Notes and turn events rewrite it at most once per `projectionIntervalSeconds` (default 5); a skipped write marks it dirty, and the next event rewrites it, or a long-running server after the interval. Status reads never write. With 20 agents writing notes, the file is written about once every 5 seconds.
+  - **Safety.** Written like `handoff.md`: a private temporary file, then an atomic rename. A symlinked, hard-linked or non-private `sessions.md` is refused, not followed. A failed write never loses the event: the database is the record, and `handoff_status` reports the file as `pending` or `unavailable`.
+  - **Opt-out.** `sessions.projectFile: false` turns it off; read-only configurations never write it.
+
+Edge cases:
+
+| Edge case                                  | Handling                                                                                                          |
+| ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------- |
+| 20 subagents noting at once                | One parent rollup line; file writes coalesced                                                                     |
+| Two processes writing the file together    | Each writes its own temporary file and renames atomically; the last rename wins and the next event regenerates it |
+| A person edits `sessions.md`               | It is overwritten on the next write; the header says it is generated                                              |
+| `sessions.md` is a symlink or hard link    | Refused, never followed; status reports `unavailable`                                                             |
+| States go stale in the file between events | The file shows when it was generated; the brief and status are live                                               |
+| A parent with 100 subagents                | Counts by state, plus only the subagents that need attention                                                      |
+| A subagent whose parent was pruned         | Listed on its own                                                                                                 |
+| A lane with hundreds of notes              | Newest 64 kept by the ledger, then cut to the byte budget, with counts                                            |
+| Disk full or `.agent` permissions wrong    | The event is still recorded; the file stays dirty and status says so                                              |
 
 ### Slice 3: drift adoption and repository scope
 
@@ -195,6 +212,17 @@ Ranked by value for the context-switching workflow:
   - Codex's newer lifecycle hooks are supported, with `Interrupt` as `idle`.
 - **Deferred to slice 2:** `.agent/sessions.md` (see Projection), per-session views in `handoff_status`, and the parent rollup counts.
 - **Edge cases covered by tests:** a rate-limited session reported to the next session; a finished turn reading as `idle`; 20 subagents with distinct sessions and short contexts; `SessionEnd` twice, then a resume; hooks from another project, malformed and oversized payloads; read-only configuration; Codex notifications; eight processes writing notes at once; lane and session caps; brief byte and character budgets; credential redaction, including on hostile input; a merge left in progress, untracked files, commits since the last session and a detached HEAD; a workspace without Git; connection close ending only the sessions it joined.
+
+## Implementation notes (slice 2)
+
+- **Rollups fold only healthy subagents.** A subagent that is failed, interrupted or quiet stays listed beside its parent, so folding never hides a problem.
+- **The lane's note count includes notes the ledger already dropped** (beyond its 64 per session), so `omittedNotes` is the full gap between the session's total and what is shown.
+- **Coalescing state lives in the database** (`handoff_session_projection`), so separate hook processes and servers share one interval. Every claim, coalesced or not, takes a new generation. A write is renamed into place only inside the transaction that checks its generation is still the latest and marks the file current, so renames land in generation order, an overtaken write is discarded and redone from fresh state (at most three times), and a crash after the rename leaves the file `pending`. A write that fails is recorded, so status says `unavailable` rather than `pending` until a write succeeds.
+- **Rollups count each session once.** A healthy subagent folds into its nearest listed ancestor, at any depth; a listed subagent is not counted again. When a listed session is dropped for the budget, the subagents folded into it are counted as omitted too. In a lane, each count covers all of that session's descendants.
+- **Abandoned temporary files are swept** by the next write: ours, private, single-link and older than five minutes. An odd entry is skipped without stopping the sweep.
+- **Only a long-running server flushes a pending write by timer, and on close.** A hook command exits at once; flushing on its exit would defeat coalescing, so its pending write waits for the next event.
+- **`handoff_status` stays read-only:** it reports the file as `pending` but never writes it.
+- **Edge cases covered by tests:** attention subagents beside parent counts; lane budgets and counts; unknown lane session; immediate and coalesced writes; Markdown in notes kept inside the code block; the timer flush; a symlinked and a hard-linked file refused with the event still recorded; the file turned off and read-only; a one-shot hook leaving a pending write.
 
 ## Out of scope
 

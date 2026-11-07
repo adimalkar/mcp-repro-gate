@@ -77,6 +77,8 @@ export const handoffSessionsConfigSchema = z.strictObject({
   graceSeconds: z.number().int().min(0).max(86_400).optional(),
   observeGit: z.boolean().optional(),
   captureMessages: z.boolean().optional(),
+  projectFile: z.boolean().optional(),
+  projectionIntervalSeconds: z.number().int().min(0).max(3600).optional(),
 });
 export type HandoffSessionsConfig = z.infer<typeof handoffSessionsConfigSchema>;
 
@@ -127,6 +129,14 @@ export const handoffSessionViewSchema = z.strictObject({
   lastNote: handoffNoteViewSchema.omit({ sessionId: true }).nullable(),
   notes: z.number().int().min(0),
   lastMessage: z.string().nullable(),
+  /** Counts of this session's subagents by state; null without any. */
+  subagents: z
+    .strictObject(
+      Object.fromEntries(
+        HANDOFF_SESSION_STATES.map((state) => [state, z.number().int().min(0)]),
+      ) as Record<HandoffSessionState, z.ZodNumber>,
+    )
+    .nullable(),
 });
 export type HandoffNoteView = z.infer<typeof handoffNoteViewSchema>;
 export type HandoffSessionView = z.infer<typeof handoffSessionViewSchema>;
@@ -186,6 +196,26 @@ export const handoffBriefSchema = z.strictObject({
   }),
 });
 export type HandoffBriefV1 = z.infer<typeof handoffBriefSchema>;
+
+/** One session in full: its newest notes and its subagents. */
+export const handoffLaneSchema = z.strictObject({
+  session: handoffSessionViewSchema,
+  notes: z.array(handoffNoteViewSchema),
+  omittedNotes: z.number().int().min(0),
+  subagents: z.array(handoffSessionViewSchema),
+  omittedSubagents: z.number().int().min(0),
+  truncated: z.boolean(),
+});
+export type HandoffLaneV1 = z.infer<typeof handoffLaneSchema>;
+export const HANDOFF_SESSIONS_FILE_STATES = [
+  "written",
+  "pending",
+  "unavailable",
+  "disabled",
+] as const;
+export const MAX_LANE_NOTES = 64;
+export const DEFAULT_PROJECTION_INTERVAL_SECONDS = 5;
+export const MAX_SESSIONS_FILE_CHARS = 32 * 1024;
 
 export const handoffJoinResultSchema = z.strictObject({
   handoffVersion: z.literal(1),

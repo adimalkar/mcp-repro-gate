@@ -50,6 +50,14 @@
         },
         "captureMessages": {
           "type": "boolean"
+        },
+        "projectFile": {
+          "type": "boolean"
+        },
+        "projectionIntervalSeconds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3600
         }
       }
     }

@@ -256,6 +256,8 @@ export function sameHandoffDatabase(left: string, right: string): boolean {
   return a !== undefined && a === physicalDatabaseLocation(right);
 }
 export const MAX_HANDOFF_HISTORY = 32;
+const GENERATED_TEMPORARY =
+  /^\.handoff-sessions-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.tmp$/u;
 // <database instance>-<revision>-<update UUID>-<base digest hex>.md
 const HISTORY_NAME =
   /^([0-9a-f]{32})-([0-9]{16})-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}-[0-9a-f]{64}\.md$/u;
@@ -279,6 +281,11 @@ export function loadHandoffConfig(path: string): HandoffConfigV1 {
   } catch {
     throw new HandoffError("invalid_input");
   }
+}
+export interface PreparedFile {
+  target: string;
+  temporary: string;
+  identity: BigIntStats;
 }
 export interface HandoffDocument {
   digest: string | null;
@@ -424,6 +431,111 @@ export class HandoffFiles {
       }
     }
   }
+  /**
+   * Write a generated file's next version to a private temporary file in
+   * `.agent`. `commitGenerated` puts it in place, `discardGenerated` drops
+   * it. Unlike the handoff document it is never merged or archived: each
+   * write is a complete snapshot.
+   */
+  prepareGenerated(name: "sessions.md", bytes: Buffer): PreparedFile {
+    if (bytes.length > MAX_HANDOFF_DOCUMENT_BYTES)
+      throw new HandoffError("unavailable");
+    this.#verify();
+    if (this.#agent === undefined) {
+      try {
+        mkdirSync(this.#agentPath, { mode: 0o700 });
+      } catch (error) {
+        if (!(
+          error instanceof Error &&
+          "code" in error &&
+          error.code === "EEXIST"
+        ))
+          throw error;
+      }
+      this.#agent = directory(this.#agentPath, true);
+    }
+    this.#sweepTemporaries();
+    const target = join(this.#agentPath, name);
+    this.#checkGeneratedTarget(target);
+    const temporary = join(
+      this.#agentPath,
+      `.handoff-sessions-${randomUUID()}.tmp`,
+    );
+    return {
+      target,
+      temporary,
+      identity: this.#writeExclusive(temporary, bytes),
+    };
+  }
+
+  /**
+   * Rename a prepared file over its target. An existing target must be a
+   * private single-link file, so a symlink or hard link is refused rather
+   * than followed.
+   */
+  commitGenerated(prepared: PreparedFile): void {
+    this.#verify();
+    this.#checkGeneratedTarget(prepared.target);
+    if (!sameIdentity(prepared.identity, verifyPrivateFile(prepared.temporary)))
+      throw new HandoffError("unavailable");
+    renameSync(prepared.temporary, prepared.target);
+    this.#verify();
+  }
+
+  /**
+   * Make committed renames durable. Kept apart from `commitGenerated` so a
+   * slow directory flush never runs while the database's writer lock is
+   * held; until it runs, only a power loss could undo the rename.
+   */
+  syncGenerated(): void {
+    syncDirectory(this.#agentPath);
+  }
+
+  /** Remove a prepared file that will not be committed. Best effort. */
+  discardGenerated(prepared: PreparedFile): void {
+    try {
+      if (
+        sameIdentity(prepared.identity, verifyPrivateFile(prepared.temporary))
+      )
+        unlinkSync(prepared.temporary);
+    } catch {
+      // Already renamed or gone; the sweep removes anything left over.
+    }
+  }
+
+  #checkGeneratedTarget(target: string): void {
+    try {
+      verifyPrivateFile(target);
+    } catch (error) {
+      if (!missing(error)) throw error;
+    }
+  }
+
+  // A writer that crashed between writing and renaming leaves its
+  // temporary file behind. Remove ours once they are clearly abandoned:
+  // our name shape, private, single-link and older than five minutes, so a
+  // concurrent writer's file is never touched. Best effort.
+  #sweepTemporaries(): void {
+    let names: string[];
+    try {
+      names = readdirSync(this.#agentPath);
+    } catch {
+      return;
+    }
+    for (const name of names) {
+      if (!GENERATED_TEMPORARY.test(name)) continue;
+      // One odd entry must not stop the sweep of the others.
+      try {
+        const path = join(this.#agentPath, name);
+        const stats = lstatSync(path, { bigint: true });
+        privateStats(stats, false);
+        if (Date.now() - Number(stats.mtimeMs) > 5 * 60_000) unlinkSync(path);
+      } catch {
+        // Leave anything unexpected in place.
+      }
+    }
+  }
+
   // Keep this database's newest archives. Revisions restart in a new or
   // replaced database, so archives from other instances are never pruned,
   // nor is anything at or after the revision just projected. Delete only

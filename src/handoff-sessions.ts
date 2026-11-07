@@ -57,6 +57,13 @@ export const HANDOFF_SESSION_SCHEMA = `
     created_at INTEGER NOT NULL
   ) STRICT;
   CREATE INDEX IF NOT EXISTS handoff_notes_session ON handoff_notes(session_id, note_id);
+  CREATE TABLE IF NOT EXISTS handoff_session_projection (
+    workspace_id TEXT PRIMARY KEY,
+    projected_at INTEGER NOT NULL,
+    generation INTEGER NOT NULL CHECK(generation >= 0),
+    dirty INTEGER NOT NULL CHECK(dirty IN (0, 1)),
+    failed INTEGER NOT NULL CHECK(failed IN (0, 1))
+  ) STRICT;
 `;
 
 export interface HandoffSessionRow {
@@ -551,5 +558,144 @@ export class HandoffSessionLedger {
         result.set(sessionId, { sessionId, kind: parsed, text, createdAt });
     }
     return result;
+  }
+
+  /**
+   * Decide whether to rewrite the sessions file now. Every claim takes a
+   * new generation and marks the file dirty, so any write already in
+   * flight can no longer commit; the generation is returned only when the
+   * caller should write (forced, or at least `intervalMs` after the last).
+   */
+  claimProjection(
+    workspaceId: string,
+    now: number,
+    intervalMs: number,
+    force: boolean,
+  ): number | undefined {
+    return this.#transaction(() => {
+      const row = this.database
+        .prepare(
+          "SELECT projected_at, generation FROM handoff_session_projection WHERE workspace_id = ?",
+        )
+        .get(workspaceId);
+      const last =
+        typeof row?.projected_at === "number" ? row.projected_at : undefined;
+      const generation =
+        (typeof row?.generation === "number" ? row.generation : 0) + 1;
+      // A clock that stepped back makes the slot due rather than stuck.
+      const due =
+        force || last === undefined || now - last >= intervalMs || now < last;
+      this.database
+        .prepare(
+          `INSERT INTO handoff_session_projection(workspace_id, projected_at, generation, dirty, failed)
+            VALUES(?, ?, ?, 1, 0)
+            ON CONFLICT(workspace_id) DO UPDATE SET dirty = 1,
+              generation = excluded.generation,
+              projected_at = CASE WHEN ? THEN excluded.projected_at ELSE projected_at END`,
+        )
+        .run(workspaceId, now, generation, due ? 1 : 0);
+      return due ? generation : undefined;
+    });
+  }
+
+  /**
+   * Put a prepared write in place, atomically with its confirmation: under
+   * the writer lock, `rename` runs only if no later claim exists, and the
+   * file is marked current in the same transaction. Renames therefore land
+   * in generation order, and an overtaken write is never renamed. A crash
+   * after the rename and before the commit leaves the file pending.
+   */
+  commitProjection(
+    workspaceId: string,
+    generation: number,
+    rename: () => void,
+  ): boolean {
+    return this.#transaction(() => {
+      const row = this.database
+        .prepare(
+          "SELECT generation FROM handoff_session_projection WHERE workspace_id = ?",
+        )
+        .get(workspaceId);
+      if (row?.generation !== generation) return false;
+      rename();
+      this.database
+        .prepare(
+          "UPDATE handoff_session_projection SET dirty = 0, failed = 0 WHERE workspace_id = ?",
+        )
+        .run(workspaceId);
+      return true;
+    });
+  }
+
+  /** A write failed: the file is stale until a later write succeeds. */
+  failProjection(workspaceId: string): void {
+    this.#transaction(() => {
+      this.database
+        .prepare(
+          `INSERT INTO handoff_session_projection(workspace_id, projected_at, generation, dirty, failed)
+            VALUES(?, 0, 0, 1, 1)
+            ON CONFLICT(workspace_id) DO UPDATE SET dirty = 1, failed = 1`,
+        )
+        .run(workspaceId);
+    });
+  }
+
+  /** Whether the sessions file is current, waiting, or failing to write. */
+  projectionState(
+    workspaceId: string,
+  ): "written" | "pending" | "unavailable" | undefined {
+    this.verify();
+    const row = this.database
+      .prepare(
+        "SELECT dirty, failed FROM handoff_session_projection WHERE workspace_id = ?",
+      )
+      .get(workspaceId);
+    if (row === undefined) return undefined;
+    if (row.failed === 1) return "unavailable";
+    return row.dirty === 0 ? "written" : "pending";
+  }
+
+  /** One session's notes, newest first. */
+  sessionNotes(
+    workspaceId: string,
+    sessionId: string,
+    limit: number,
+  ): HandoffNoteRow[] {
+    this.verify();
+    this.#get(workspaceId, sessionId);
+    return this.database
+      .prepare(
+        `SELECT session_id, kind, text, created_at FROM handoff_notes
+          WHERE session_id = ? ORDER BY note_id DESC LIMIT ?`,
+      )
+      .all(sessionId, limit)
+      .flatMap((row) => {
+        const { session_id: id, kind, text, created_at: createdAt } = row;
+        if (
+          typeof id !== "string" ||
+          typeof kind !== "string" ||
+          typeof text !== "string" ||
+          typeof createdAt !== "number"
+        )
+          throw new HandoffError("unavailable");
+        return known(() => ({
+          sessionId: id,
+          kind: noteKind(kind),
+          text,
+          createdAt,
+        }));
+      });
+  }
+
+  /** A session's direct subagents. */
+  subagentsOf(workspaceId: string, sessionId: string): HandoffSessionRow[] {
+    this.verify();
+    return this.database
+      .prepare(
+        `SELECT ${SESSION_COLUMNS} FROM handoff_sessions
+          WHERE workspace_id = ? AND parent_session_id = ? ORDER BY last_seen_at DESC LIMIT ?`,
+      )
+      .all(workspaceId, sessionId, MAX_SESSIONS_PER_WORKSPACE)
+      .flatMap((row) => known(() => sessionRow(row)));
   }
 }

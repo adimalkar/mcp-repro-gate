@@ -3,8 +3,10 @@ import {
   MAX_BRIEF_NOTES,
   MAX_BRIEF_SESSIONS,
   truncateBytes,
+  HANDOFF_SESSION_STATES,
   type HandoffBriefV1,
   type HandoffGitObservation,
+  type HandoffLaneV1,
   type HandoffSessionState,
   type HandoffSessionView,
 } from "./handoff-session-contract.js";
@@ -49,10 +51,13 @@ const PRIORITY: Record<HandoffSessionState, number> = {
 
 const iso = (time: number) => new Date(time).toISOString();
 
+export type HandoffSubagentCounts = Record<HandoffSessionState, number>;
+
 export function sessionView(
   session: HandoffSessionRow,
   state: HandoffSessionState,
   lastNote: HandoffNoteRow | undefined,
+  subagents: HandoffSubagentCounts | null = null,
 ): HandoffSessionView {
   return {
     sessionId: session.sessionId,
@@ -78,7 +83,56 @@ export function sessionView(
           },
     notes: session.noteCount,
     lastMessage: session.lastMessage,
+    subagents,
   };
+}
+
+// Subagents a resuming agent must look at even when their parent is shown.
+const ATTENTION: ReadonlySet<HandoffSessionState> = new Set([
+  "failed",
+  "interrupted",
+  "quiet",
+]);
+
+function emptyCounts(): HandoffSubagentCounts {
+  return Object.fromEntries(
+    HANDOFF_SESSION_STATES.map((state) => [state, 0]),
+  ) as HandoffSubagentCounts;
+}
+
+/** Each session's parent, when that parent is among `sessions`. */
+function parentsWithin(
+  sessions: readonly HandoffSessionRow[],
+): Map<string, string> {
+  const ids = new Set(sessions.map((session) => session.sessionId));
+  const parents = new Map<string, string>();
+  for (const session of sessions)
+    if (session.parentSessionId !== null && ids.has(session.parentSessionId))
+      parents.set(session.sessionId, session.parentSessionId);
+  return parents;
+}
+
+/** Sessions a dropped view stands for: itself and those folded into it. */
+export function representedSessions(view: HandoffSessionView): number {
+  const counts = view.subagents;
+  return (
+    1 +
+    (counts === null
+      ? 0
+      : HANDOFF_SESSION_STATES.reduce((sum, state) => sum + counts[state], 0))
+  );
+}
+
+function byAttention(
+  rows: readonly {
+    view: HandoffSessionView;
+    state: HandoffSessionState;
+    seen: number;
+  }[],
+): HandoffSessionView[] {
+  return [...rows]
+    .sort((a, b) => PRIORITY[a.state] - PRIORITY[b.state] || b.seen - a.seen)
+    .map(({ view }) => view);
 }
 
 export interface BriefInput {
@@ -92,25 +146,205 @@ export interface BriefInput {
   git: HandoffGitObservation;
 }
 
-/** Sessions ordered for a resuming agent: problems first, then newest. */
+/**
+ * Sessions ordered for a resuming agent: problems first, then newest. A
+ * subagent that does not need attention is folded into the counts of its
+ * nearest listed ancestor, so twenty healthy subagents cost one line and
+ * every session is either listed or counted exactly once. A session whose
+ * parent is not in `sessions` is listed on its own.
+ */
 export function orderedSessions(
   input: Pick<BriefInput, "now" | "liveness" | "sessions" | "lastNotes">,
 ): HandoffSessionView[] {
-  return input.sessions
-    .map((session) => {
-      const state = sessionState(session, input.now, input.liveness);
-      return {
-        view: sessionView(
-          session,
+  const states = new Map(
+    input.sessions.map((session) => [
+      session.sessionId,
+      sessionState(session, input.now, input.liveness),
+    ]),
+  );
+  const parents = parentsWithin(input.sessions);
+  const listed = (id: string) =>
+    !parents.has(id) || ATTENTION.has(states.get(id) ?? "ended");
+  const counts = new Map<string, HandoffSubagentCounts>();
+  const folded = new Set<string>();
+  for (const session of input.sessions) {
+    const id = session.sessionId;
+    if (listed(id)) continue;
+    // Walk up to the nearest listed ancestor; a cycle lists the session.
+    const seen = new Set([id]);
+    let ancestor = parents.get(id);
+    while (ancestor !== undefined && !listed(ancestor) && !seen.has(ancestor)) {
+      seen.add(ancestor);
+      ancestor = parents.get(ancestor);
+    }
+    if (ancestor === undefined || seen.has(ancestor)) continue;
+    let entry = counts.get(ancestor);
+    if (entry === undefined) counts.set(ancestor, (entry = emptyCounts()));
+    entry[states.get(id) ?? "ended"]++;
+    folded.add(id);
+  }
+  return byAttention(
+    input.sessions
+      .filter((session) => !folded.has(session.sessionId))
+      .map((session) => {
+        const state = states.get(session.sessionId) ?? "ended";
+        return {
+          view: sessionView(
+            session,
+            state,
+            input.lastNotes.get(session.sessionId),
+            counts.get(session.sessionId) ?? null,
+          ),
           state,
-          input.lastNotes.get(session.sessionId),
-        ),
-        rank: PRIORITY[state],
+          seen: session.lastSeenAt,
+        };
+      }),
+  );
+}
+
+export interface LaneInput {
+  now: number;
+  liveness: HandoffLiveness;
+  session: HandoffSessionRow;
+  /** The session's notes, newest first. */
+  notes: readonly HandoffNoteRow[];
+  subagents: readonly HandoffSessionRow[];
+  /** Every session in the workspace, for the subagents' own counts. */
+  workspace: readonly HandoffSessionRow[];
+  lastNotes: ReadonlyMap<string, HandoffNoteRow>;
+}
+
+/** One session in full: its newest notes and all its subagents. */
+export function buildLane(input: LaneInput): HandoffLaneV1 {
+  const all = [input.session, ...input.subagents, ...input.workspace];
+  const states = new Map(
+    all.map((session) => [
+      session.sessionId,
+      sessionState(session, input.now, input.liveness),
+    ]),
+  );
+  const children = new Map<string, string[]>();
+  for (const session of input.workspace) {
+    const parent = session.parentSessionId;
+    if (parent === null) continue;
+    const list = children.get(parent) ?? [];
+    list.push(session.sessionId);
+    children.set(parent, list);
+  }
+  // In a lane every count covers all descendants: none of them is listed
+  // except the lane session's direct subagents.
+  const descendants = (id: string): HandoffSubagentCounts | null => {
+    const counts = emptyCounts();
+    const seen = new Set([id]);
+    const stack = [...(children.get(id) ?? [])];
+    while (stack.length > 0) {
+      const next = stack.pop() ?? "";
+      if (seen.has(next)) continue;
+      seen.add(next);
+      counts[states.get(next) ?? "ended"]++;
+      stack.push(...(children.get(next) ?? []));
+    }
+    return seen.size === 1 ? null : counts;
+  };
+  const view = (session: HandoffSessionRow) =>
+    sessionView(
+      session,
+      states.get(session.sessionId) ?? "ended",
+      input.lastNotes.get(session.sessionId),
+      descendants(session.sessionId),
+    );
+  return {
+    session: view(input.session),
+    notes: input.notes.map((note) => ({
+      sessionId: note.sessionId,
+      kind: note.kind,
+      text: note.text,
+      createdAt: iso(note.createdAt),
+    })),
+    // Notes past the ledger's per-session cap are already gone.
+    omittedNotes: Math.max(0, input.session.noteCount - input.notes.length),
+    subagents: byAttention(
+      input.subagents.map((session) => ({
+        view: view(session),
+        state: states.get(session.sessionId) ?? "ended",
         seen: session.lastSeenAt,
-      };
-    })
-    .sort((a, b) => a.rank - b.rank || b.seen - a.seen)
-    .map(({ view }) => view);
+      })),
+    ),
+    omittedSubagents: 0,
+    truncated: false,
+  };
+}
+
+/**
+ * Shrink a lane until `measure` fits the budget: oldest notes first, then
+ * the subagents least in need of attention, then long texts, then the
+ * session's free text. Dropped entries are counted; anything else sets
+ * `truncated`.
+ */
+export function fitLane(
+  lane: HandoffLaneV1,
+  budget: number,
+  measure: (lane: HandoffLaneV1) => number,
+): HandoffLaneV1 {
+  const fitted = structuredClone(lane);
+  const fits = () => measure(fitted) <= budget;
+  const views = () => [fitted.session, ...fitted.subagents];
+  const steps: (() => boolean)[] = [
+    () => {
+      if (fitted.notes.length === 0) return false;
+      fitted.notes.pop();
+      fitted.omittedNotes++;
+      return true;
+    },
+    () => {
+      if (fitted.subagents.length === 0) return false;
+      fitted.subagents.pop();
+      fitted.omittedSubagents++;
+      return true;
+    },
+    () => {
+      let changed = false;
+      for (const view of views()) {
+        for (const key of ["task", "lastMessage"] as const) {
+          const value = view[key];
+          if (value !== null && Buffer.byteLength(value) > 256) {
+            view[key] = truncateBytes(value, 256);
+            changed = true;
+          }
+        }
+        if (
+          view.lastNote !== null &&
+          Buffer.byteLength(view.lastNote.text) > 256
+        ) {
+          view.lastNote.text = truncateBytes(view.lastNote.text, 256);
+          changed = true;
+        }
+      }
+      if (changed) fitted.truncated = true;
+      return changed;
+    },
+    () => {
+      const view = fitted.session;
+      if (
+        view.task === null &&
+        view.lastNote === null &&
+        view.lastMessage === null &&
+        view.clientReason === null
+      )
+        return false;
+      view.task = null;
+      view.lastNote = null;
+      view.lastMessage = null;
+      view.clientReason = null;
+      fitted.truncated = true;
+      return true;
+    },
+  ];
+  for (const step of steps) {
+    while (!fits()) if (!step()) break;
+    if (fits()) break;
+  }
+  return fitted;
 }
 
 export function buildBrief(input: BriefInput): HandoffBriefV1 {
@@ -130,7 +364,9 @@ export function buildBrief(input: BriefInput): HandoffBriefV1 {
       blockers: [...(context?.blockers ?? [])],
     },
     sessions: shown,
-    omittedSessions: sessions.length - shown.length,
+    omittedSessions: sessions
+      .slice(shown.length)
+      .reduce((sum, view) => sum + representedSessions(view), 0),
     notes: notes.map((note) => ({
       sessionId: note.sessionId,
       kind: note.kind,
@@ -253,8 +489,9 @@ export function fitBrief(
       let index = fitted.sessions.length - 1;
       while (index >= 0 && fitted.sessions[index]?.state !== "ended") index--;
       if (index < 0) return false;
-      fitted.sessions.splice(index, 1);
-      fitted.omittedSessions++;
+      const [dropped] = fitted.sessions.splice(index, 1);
+      if (dropped !== undefined)
+        fitted.omittedSessions += representedSessions(dropped);
       return true;
     },
     () => {
@@ -270,8 +507,9 @@ export function fitBrief(
     () => cutAll(handoffTexts(), 256),
     () => {
       if (fitted.sessions.length <= 1) return false;
-      fitted.sessions.pop();
-      fitted.omittedSessions++;
+      const dropped = fitted.sessions.pop();
+      if (dropped !== undefined)
+        fitted.omittedSessions += representedSessions(dropped);
       return true;
     },
     () => {
@@ -295,7 +533,10 @@ export function fitBrief(
         fitted.handoff.nextSteps.length +
         fitted.handoff.blockers.length +
         (fitted.git.commitsSince === null ? 0 : 1);
-      fitted.omittedSessions += fitted.sessions.length;
+      fitted.omittedSessions += fitted.sessions.reduce(
+        (sum, view) => sum + representedSessions(view),
+        0,
+      );
       fitted.omittedNotes += fitted.notes.length;
       fitted.git.omittedPaths += fitted.git.paths.length;
       fitted.sessions = [];
@@ -403,11 +644,21 @@ function describeSession(session: HandoffSessionView, now: string): string {
     );
   if (session.lastMessage !== null)
     parts.push(`  last reply: ${line(session.lastMessage)}`);
+  const counts = session.subagents;
+  if (counts !== null) {
+    const summary = HANDOFF_SESSION_STATES.filter((state) => counts[state] > 0)
+      .map((state) => `${String(counts[state])} ${state}`)
+      .join(", ");
+    if (summary !== "") parts.push(`  subagents: ${summary}`);
+  }
   return parts.join("\n");
 }
 
 /** Plain text for hook context and terminals; it renders the same facts. */
-export function renderBriefText(brief: HandoffBriefV1): string {
+export function renderBriefText(
+  brief: HandoffBriefV1,
+  options: { includeGit?: boolean } = {},
+): string {
   const now = brief.generatedAt;
   const out: string[] = ["ReproGate handoff brief"];
   const { handoff, git } = brief;
@@ -444,6 +695,7 @@ export function renderBriefText(brief: HandoffBriefV1): string {
     if (brief.omittedNotes > 0)
       out.push(`- ${String(brief.omittedNotes)} more not shown.`);
   }
+  if (options.includeGit === false) return `${out.join("\n")}\n`;
   out.push("", "Git (observed now):");
   if (git.state !== "observed")
     out.push(
