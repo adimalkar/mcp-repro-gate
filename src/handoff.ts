@@ -60,8 +60,19 @@ import {
   type HandoffClient,
   type HandoffDocumentState,
   type HandoffSessionView,
+  DEFAULT_SEARCH_BYTES,
+  DEFAULT_SEARCH_LIMIT,
+  HANDOFF_SEARCH_KINDS,
+  parseHandoffSearch,
+  type HandoffSearchResultV1,
 } from "./handoff-session-contract.js";
 import type { HandoffSessionRow } from "./handoff-sessions.js";
+import {
+  composeSearch,
+  SEARCH_REVISIONS,
+  searchExpression,
+  type SearchSession,
+} from "./handoff-search.js";
 
 // Hook events written to the sessions file at once; others are coalesced.
 const LIFECYCLE_EVENTS: ReadonlySet<string> = new Set([
@@ -82,6 +93,7 @@ export interface HandoffSessionResult {
   handoffVersion: 1;
   session: HandoffSessionView;
   redactions: number;
+  sharedUpdate?: "expected" | "skip";
 }
 /** What a client hook prints back, if anything. */
 export interface HandoffHookResult {
@@ -108,6 +120,7 @@ export interface HandoffService {
   join(input: unknown): HandoffJoinResult;
   note(input: unknown): HandoffSessionResult;
   end(input: unknown): HandoffSessionResult;
+  search(input: unknown): HandoffSearchResultV1;
   brief(budgetBytes?: number): HandoffBriefV1;
   briefText(maxChars?: number): string;
   hook(client: "claude-code" | "codex", payload: unknown): HandoffHookResult;
@@ -544,6 +557,84 @@ export function createHandoffService(
         ledger.lastNotes(workspaceId).get(session.sessionId),
       );
 
+    const searchIndex = contextStore.handoffSearch();
+    const search = (
+      input: ReturnType<typeof parseHandoffSearch>,
+    ): HandoffSearchResultV1 => {
+      const time = now().getTime();
+      const rows = ledger.sessions(workspaceId);
+      const sessions = new Map<string, SearchSession>(
+        rows.map((session) => [
+          session.sessionId,
+          {
+            agent: session.agent,
+            kind: session.kind,
+            state: sessionState(session, time, liveness),
+            worktreePath: session.worktree,
+            worktree:
+              session.worktree === null ? null : worktreeName(session.worktree),
+          },
+        ]),
+      );
+      const caller =
+        input.sessionId === undefined
+          ? undefined
+          : ledger.get(workspaceId, input.sessionId);
+      const lane = new Set<string>();
+      if (caller !== undefined) {
+        lane.add(caller.sessionId);
+        if (caller.parentSessionId !== null) lane.add(caller.parentSessionId);
+        for (const session of rows)
+          if (session.parentSessionId === caller.sessionId)
+            lane.add(session.sessionId);
+      }
+      const nothing: HandoffSearchResultV1 = {
+        handoffVersion: 1,
+        hits: [],
+        omittedHits: 0,
+        ambiguous: null,
+        truncated: false,
+        provenance: "caller_asserted",
+      };
+      const expression = searchExpression(input.query, input.path);
+      const sessionIds =
+        input.worktree === undefined
+          ? undefined
+          : [...sessions]
+              .filter(([, session]) => session.worktree === input.worktree)
+              .map(([sessionId]) => sessionId);
+      if (expression === undefined || sessionIds?.length === 0) return nothing;
+      searchIndex.sync(workspaceId, {
+        latest: () => contextStore.handoffRevision(workspaceId),
+        records: () =>
+          contextStore.recentHandoffs(workspaceId, SEARCH_REVISIONS),
+      });
+      return composeSearch(
+        searchIndex.query(
+          workspaceId,
+          expression,
+          input.kinds ?? HANDOFF_SEARCH_KINDS,
+          sessionIds,
+        ),
+        {
+          query: input.query,
+          ...(input.worktree === undefined ? {} : { worktree: input.worktree }),
+          ...(input.path === undefined ? {} : { path: input.path }),
+          limit: input.limit ?? DEFAULT_SEARCH_LIMIT,
+          resultBytes: input.resultBytes ?? DEFAULT_SEARCH_BYTES,
+        },
+        {
+          now: time,
+          sessions,
+          lane,
+          worktreePath:
+            repository === undefined
+              ? null
+              : (caller?.worktree ?? ownWorktree()),
+        },
+      );
+    };
+
     const status = (value: unknown): HandoffStatusV1 => {
       const input = handoffStatusInputSchema.safeParse(ownHandoffValue(value));
       if (!input.success) throw new HandoffError("invalid_input");
@@ -738,7 +829,7 @@ export function createHandoffService(
       switch (event) {
         case "SessionStart": {
           const session = main(true);
-          const footer = `\nYour ReproGate handoff session is ${session.sessionId}. Record progress, blockers and decisions with handoff_note, and finish with handoff_end.\n`;
+          const footer = `\nYour ReproGate handoff session is ${session.sessionId}. Search earlier work with handoff_search, record progress, blockers and decisions with handoff_note, and finish with handoff_end.\n`;
           return {
             recorded: true,
             hookEventName: event,
@@ -761,7 +852,7 @@ export function createHandoffService(
           return {
             recorded: true,
             hookEventName: event,
-            additionalContext: `Your ReproGate handoff session is ${session.sessionId} (a subagent of ${session.parentSessionId ?? "an unknown session"}). Record progress and blockers with handoff_note; your final reply is recorded when you stop.${goal === undefined ? "" : `\nOverall goal: ${printableText(goal, 1024)}`}\n`,
+            additionalContext: `Your ReproGate handoff session is ${session.sessionId} (a subagent of ${session.parentSessionId ?? "an unknown session"}). Record progress and blockers with handoff_note; your final reply is recorded when you stop. Do not call handoff_update.${goal === undefined ? "" : `\nOverall goal: ${printableText(goal, 1024)}`}\n`,
           };
         }
         case "UserPromptSubmit": {
@@ -992,12 +1083,31 @@ export function createHandoffService(
             input.summary === undefined
               ? undefined
               : redacted(input.summary, MAX_NOTE_BYTES);
+          // One writer for the shared summary: the last top-level agent
+          // still running. Decided in the ending transaction, so two agents
+          // ending together are never both told to write it.
+          let sharedUpdate: "expected" | "skip" = "skip";
           const session = ledger.end(
             workspaceId,
             input.sessionId,
             "completed",
             now().getTime(),
-            summary === undefined ? {} : { result: summary },
+            {
+              ...(summary === undefined ? {} : { result: summary }),
+              inside: (ended) => {
+                if (ended.kind !== "agent") return;
+                const time = now().getTime();
+                const running = ledger
+                  .sessions(workspaceId)
+                  .some(
+                    (other) =>
+                      other.sessionId !== ended.sessionId &&
+                      other.kind === "agent" &&
+                      sessionState(other, time, liveness) === "active",
+                  );
+                sharedUpdate = running ? "skip" : "expected";
+              },
+            },
           );
           joined.delete(input.sessionId);
           projectSessions(true);
@@ -1005,8 +1115,14 @@ export function createHandoffService(
             handoffVersion: 1 as const,
             session: view(session),
             redactions: summary?.redactions ?? 0,
+            sharedUpdate,
           };
         });
+      },
+      search: (value: unknown) => {
+        const input = parseHandoffSearch(value);
+        live();
+        return guard(() => search(input));
       },
       brief: (budgetBytes = DEFAULT_BRIEF_BYTES) => {
         live();
