@@ -10,6 +10,7 @@ import {
   type HandoffBriefV1,
   type HandoffDocumentState,
   type HandoffGitObservation,
+  type HandoffRecordedV1,
   type HandoffLaneV1,
   type HandoffSessionState,
   type HandoffSessionView,
@@ -157,6 +158,8 @@ export interface BriefInput {
   /** Recent blocker and decision notes, newest first. */
   notes: readonly HandoffNoteRow[];
   git: HandoffGitObservation;
+  /** Events read from client transcripts; omitted when capture is off. */
+  recorded?: HandoffRecordedV1;
 }
 
 /**
@@ -390,6 +393,7 @@ export function buildBrief(input: BriefInput): HandoffBriefV1 {
     })),
     omittedNotes: input.notes.length - notes.length,
     git: input.git,
+    ...(input.recorded === undefined ? {} : { recorded: input.recorded }),
     truncated: false,
     provenance: {
       handoff: input.latest?.provenance ?? "caller_asserted",
@@ -479,7 +483,53 @@ export function fitBrief(
       },
     })),
   ];
+  const recorded = fitted.recorded;
+  const dropRecorded = (list: unknown[] | undefined) => {
+    if (recorded === undefined || list === undefined || list.length === 0)
+      return false;
+    list.pop();
+    recorded.omitted++;
+    return true;
+  };
+  const recordedTexts = (bytes: number) =>
+    recorded === undefined
+      ? false
+      : cutAll(
+          [
+            ...recorded.failures.flatMap((failure) => [
+              {
+                get: () => failure.command,
+                set: (value: string) => {
+                  failure.command = value;
+                },
+              },
+              {
+                get: () => failure.tail,
+                set: (value: string) => {
+                  failure.tail = value;
+                },
+              },
+            ]),
+            ...recorded.requests.map((request) => ({
+              get: () => request.text,
+              set: (value: string) => {
+                request.text = value;
+              },
+            })),
+          ],
+          bytes,
+        );
   const steps: (() => boolean)[] = [
+    () => dropRecorded(recorded?.files),
+    () => {
+      const failure = recorded?.failures.find((entry) => entry.tail !== null);
+      if (failure === undefined) return false;
+      failure.tail = null;
+      fitted.truncated = true;
+      return true;
+    },
+    () => recordedTexts(512),
+    () => dropRecorded(recorded?.failures),
     () => {
       const subjects = fitted.git.commitsSince?.subjects;
       if (subjects === undefined || subjects.length === 0) return false;
@@ -520,6 +570,12 @@ export function fitBrief(
     },
     () => cutAll([...sessionTexts(), ...noteTexts()], 256),
     () => cutAll(handoffTexts(), 256),
+    () => recordedTexts(256),
+    // What the user asked for cannot be re-derived, so it goes last.
+    () =>
+      recorded !== undefined && recorded.requests.length > 1
+        ? dropRecorded(recorded.requests)
+        : false,
     () => {
       if (fitted.sessions.length <= 1) return false;
       const dropped = fitted.sessions.pop();
@@ -541,7 +597,20 @@ export function fitBrief(
     },
     () => {
       // Skeleton: no entries, every remaining text cut short.
+      const recordedEntries =
+        recorded === undefined
+          ? 0
+          : recorded.requests.length +
+            recorded.failures.length +
+            recorded.files.length;
+      if (recorded !== undefined) {
+        recorded.omitted += recordedEntries;
+        recorded.requests = [];
+        recorded.failures = [];
+        recorded.files = [];
+      }
       const entries =
+        recordedEntries +
         fitted.sessions.length +
         fitted.notes.length +
         fitted.git.paths.length +
@@ -756,6 +825,30 @@ export function renderBriefText(
       );
     if (brief.omittedNotes > 0)
       out.push(`- ${String(brief.omittedNotes)} more not shown.`);
+  }
+  const recorded = brief.recorded;
+  if (
+    recorded !== undefined &&
+    recorded.requests.length +
+      recorded.failures.length +
+      recorded.files.length >
+      0
+  ) {
+    out.push("", "Recorded from client transcripts:");
+    for (const request of recorded.requests)
+      out.push(
+        `- User asked (${request.sessionId.slice(0, 8)}, ${ago(request.createdAt, now)}): ${line(request.text)}`,
+      );
+    for (const failure of recorded.failures)
+      out.push(
+        `- ${failure.status === "interrupted" ? "Interrupted" : `Failed${failure.exitCode === null ? "" : ` (exit ${String(failure.exitCode)})`}`}, ${ago(failure.createdAt, now)}: ${line(failure.command)}${failure.tail === null ? "" : `\n  ${line(failure.tail)}`}`,
+      );
+    for (const file of recorded.files)
+      out.push(
+        `- Changed ${line(file.path)}${file.blob === null ? "" : ` (blob ${file.blob.slice(0, 12)})`}, ${ago(file.createdAt, now)}`,
+      );
+    if (recorded.omitted > 0)
+      out.push(`- ${String(recorded.omitted)} more not shown.`);
   }
   if (options.includeGit === false) return `${out.join("\n")}\n`;
   out.push(

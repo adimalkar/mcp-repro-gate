@@ -1,4 +1,4 @@
-import { isAbsolute, relative, sep } from "node:path";
+import { isAbsolute, join, relative, sep } from "node:path";
 
 import { digestCanonical } from "./digest.js";
 import { SqliteExecutionStore } from "./execution-store.js";
@@ -62,11 +62,21 @@ import {
   type HandoffSessionView,
   DEFAULT_SEARCH_BYTES,
   DEFAULT_SEARCH_LIMIT,
+  MAX_BRIEF_FAILURES,
+  MAX_BRIEF_FILES,
+  MAX_BRIEF_REQUESTS,
+  type HandoffRecordedV1,
   HANDOFF_SEARCH_KINDS,
   parseHandoffSearch,
   type HandoffSearchResultV1,
 } from "./handoff-session-contract.js";
 import type { HandoffSessionRow } from "./handoff-sessions.js";
+import {
+  DEFAULT_CAPTURE_BYTES,
+  blobId,
+  extractTranscript,
+  readTranscript,
+} from "./handoff-recorder.js";
 import {
   composeSearch,
   SEARCH_REVISIONS,
@@ -98,6 +108,8 @@ export interface HandoffSessionResult {
 /** What a client hook prints back, if anything. */
 export interface HandoffHookResult {
   recorded: boolean;
+  /** A transcript that could not be read or stored; the event still was. */
+  warning?: string;
   hookEventName?: string;
   additionalContext?: string;
 }
@@ -293,6 +305,8 @@ export function createHandoffService(
   };
   const observe = sessionsConfig.observeGit ?? true;
   const capture = sessionsConfig.captureMessages ?? false;
+  const captureTranscripts = sessionsConfig.captureTranscripts ?? false;
+  const captureBytes = sessionsConfig.captureBytes ?? DEFAULT_CAPTURE_BYTES;
   const projectFile =
     config.allowUpdates && (sessionsConfig.projectFile ?? true);
   const projectionIntervalMs =
@@ -406,6 +420,57 @@ export function createHandoffService(
       }
     };
 
+    // The newest requests, failures and changed files, for the brief.
+    const recordedEvents = (): HandoffRecordedV1 => {
+      const iso = (time: number) => new Date(time).toISOString();
+      const requests = recorder.events(workspaceId, MAX_BRIEF_REQUESTS + 1, [
+        "request",
+      ]);
+      const failures = [
+        ...recorder.events(
+          workspaceId,
+          MAX_BRIEF_FAILURES + 1,
+          ["command"],
+          "failed",
+        ),
+        ...recorder.events(
+          workspaceId,
+          MAX_BRIEF_FAILURES + 1,
+          ["command"],
+          "interrupted",
+        ),
+      ].sort((a, b) => b.createdAt - a.createdAt);
+      const files = new Map<string, (typeof failures)[number]>();
+      for (const edit of recorder.events(workspaceId, 256, ["edit"], "ok"))
+        if (!files.has(edit.path ?? "")) files.set(edit.path ?? "", edit);
+      return {
+        source: "client_transcript",
+        requests: requests.slice(0, MAX_BRIEF_REQUESTS).map((event) => ({
+          sessionId: event.sessionId,
+          text: event.text,
+          createdAt: iso(event.createdAt),
+        })),
+        failures: failures.slice(0, MAX_BRIEF_FAILURES).map((event) => ({
+          sessionId: event.sessionId,
+          command: event.text,
+          status: event.status === "interrupted" ? "interrupted" : "failed",
+          exitCode: event.exitCode,
+          tail: event.tail,
+          createdAt: iso(event.createdAt),
+        })),
+        files: [...files.values()].slice(0, MAX_BRIEF_FILES).map((event) => ({
+          sessionId: event.sessionId,
+          path: event.path ?? "",
+          blob: event.blob,
+          createdAt: iso(event.createdAt),
+        })),
+        omitted:
+          Math.max(0, requests.length - MAX_BRIEF_REQUESTS) +
+          Math.max(0, failures.length - MAX_BRIEF_FAILURES) +
+          Math.max(0, files.size - MAX_BRIEF_FILES),
+      };
+    };
+
     const composeBrief = (
       exclude?: string,
       withGit = observe,
@@ -451,6 +516,7 @@ export function createHandoffService(
           "blocker",
           "decision",
         ]),
+        ...(captureTranscripts ? { recorded: recordedEvents() } : {}),
         git:
           worktree === undefined
             ? emptyGitObservation("disabled")
@@ -769,6 +835,101 @@ export function createHandoffService(
       }).session;
     };
 
+    const recorder = contextStore.handoffRecorder();
+    // Set when this hook's own transcript could not be read or stored; the
+    // hook still succeeds, and the CLI reports it without blocking.
+    let captureProblem: string | undefined;
+    // Object format per worktree, from its HEAD; null without Git.
+    const formats = new Map<string, "sha1" | "sha256" | null>();
+    const objectFormat = (root: string) => {
+      if (!formats.has(root)) {
+        const id = observe ? observeHead(root) : null;
+        formats.set(
+          root,
+          id === null ? null : id.length === 64 ? "sha256" : "sha1",
+        );
+      }
+      return formats.get(root) ?? null;
+    };
+    /**
+     * Read a session's transcript from where the last read stopped and keep
+     * its structured events. Best effort: a transcript that cannot be read
+     * never fails the hook that asked. Returns the bytes left unread.
+     */
+    const recordTranscript = (
+      session: HandoffSessionRow,
+      path: unknown,
+    ): number => {
+      if (!captureTranscripts || typeof path !== "string" || path.length > 4096)
+        return 0;
+      try {
+        const read = readTranscript(
+          path,
+          recorder.cursor(session.sessionId, path),
+        );
+        if (read === undefined) {
+          captureProblem ??= "transcript_unreadable";
+          return 0;
+        }
+        const root = session.worktree ?? files.workspaceRoot;
+        const time = now().getTime();
+        const extracted = extractTranscript(read.lines, {
+          root,
+          now: time,
+          sidechain: session.kind === "subagent",
+        });
+        const blobs = new Map<string, string | null>();
+        const format = objectFormat(root);
+        for (const edit of [
+          ...extracted.events.flatMap((event) =>
+            event.path === null ? [] : [event.path],
+          ),
+          ...recorder.pendingEditPaths(session.sessionId),
+        ])
+          if (!blobs.has(edit))
+            blobs.set(
+              edit,
+              format === null ? null : blobId(join(root, edit), format),
+            );
+        recorder.record(
+          workspaceId,
+          session.sessionId,
+          path,
+          read,
+          extracted,
+          blobs,
+          time,
+          captureBytes,
+        );
+        return read.remaining;
+      } catch {
+        captureProblem = "transcript_unrecorded";
+        return 0;
+      }
+    };
+    // Transcripts left unread, such as a session killed before its hooks
+    // ran, are caught up when the next session starts; bounded per start.
+    const catchUp = () => {
+      if (!captureTranscripts) return;
+      try {
+        for (const { sessionId, path } of recorder
+          .transcripts(workspaceId)
+          .slice(0, 16)) {
+          let session: HandoffSessionRow;
+          try {
+            session = ledger.get(workspaceId, sessionId);
+          } catch {
+            continue;
+          }
+          recordTranscript(session, path);
+        }
+      } catch {
+        // Catching up is best effort.
+      }
+      // Another session's transcript may be gone; that is not this hook's.
+      captureProblem = undefined;
+    };
+
     const lifecycleHook = (
       client: "claude-code" | "codex",
       payload: Record<string, unknown>,
@@ -829,6 +990,8 @@ export function createHandoffService(
       switch (event) {
         case "SessionStart": {
           const session = main(true);
+          catchUp();
+          recordTranscript(session, payload.transcript_path);
           const footer = `\nYour ReproGate handoff session is ${session.sessionId}. Search earlier work with handoff_search, record progress, blockers and decisions with handoff_note, and finish with handoff_end.\n`;
           return {
             recorded: true,
@@ -875,6 +1038,8 @@ export function createHandoffService(
               ? message("last_assistant_message")?.text
               : undefined,
           );
+          if (agentKey === "")
+            recordTranscript(session, payload.transcript_path);
           return { recorded: true };
         }
         case "StopFailure": {
@@ -885,6 +1050,13 @@ export function createHandoffService(
             session.sessionId,
             shortToken(payload.error) ?? "unknown",
             time(),
+          );
+          // The case the recorder exists for: a turn cut off by a rate limit.
+          recordTranscript(
+            session,
+            agentKey === ""
+              ? payload.transcript_path
+              : payload.agent_transcript_path,
           );
           return { recorded: true };
         }
@@ -899,6 +1071,7 @@ export function createHandoffService(
             time(),
             result === undefined ? {} : { result },
           );
+          recordTranscript(session, payload.agent_transcript_path);
           return { recorded: true };
         }
         case "SessionEnd": {
@@ -908,13 +1081,17 @@ export function createHandoffService(
           ledger.end(workspaceId, session.sessionId, "client_ended", time(), {
             ...(reason === undefined ? {} : { clientReason: reason }),
           });
+          recordTranscript(session, payload.transcript_path);
           return { recorded: true };
         }
         default: {
-          // PreCompact and any other event: activity only.
+          // PreCompact and any other event: activity only. Before a
+          // compaction, the transcript is read while it is all there.
           const session = target(false);
           if (session === undefined) return { recorded: false };
           ledger.touch(workspaceId, session.sessionId, time());
+          if (event === "PreCompact" && agentKey === "")
+            recordTranscript(session, payload.transcript_path);
           return { recorded: true };
         }
       }
@@ -1144,10 +1321,14 @@ export function createHandoffService(
         const worktree = worktreeFor(fields.cwd);
         if (worktree === undefined) return { recorded: false };
         return guard(() => {
-          const result =
+          captureProblem = undefined;
+          const result: HandoffHookResult =
             client === "codex" && fields.type === "agent-turn-complete"
               ? codexNotify(fields, worktree)
               : lifecycleHook(client, fields, worktree);
+          // Set by the hook's callbacks, which the compiler cannot see.
+          const problem = captureProblem as string | undefined;
+          if (problem !== undefined) result.warning = problem;
           // Turn and activity events are frequent, so they are coalesced;
           // starts, ends and failures are written at once.
           if (result.recorded)

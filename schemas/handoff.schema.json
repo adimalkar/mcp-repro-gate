@@ -1014,6 +1014,9 @@
               "const": "observed"
             }
           }
+        },
+        "recorded": {
+          "$ref": "#/$defs/recorded"
         }
       }
     },
@@ -1117,7 +1120,7 @@
         "kinds": {
           "type": "array",
           "minItems": 1,
-          "maxItems": 7,
+          "maxItems": 12,
           "uniqueItems": true,
           "items": {
             "enum": [
@@ -1127,7 +1130,12 @@
               "next",
               "result",
               "task",
-              "revision"
+              "revision",
+              "request",
+              "reply",
+              "command",
+              "edit",
+              "api_error"
             ]
           }
         },
@@ -1174,7 +1182,7 @@
       ],
       "properties": {
         "source": {
-          "enum": ["note", "task", "revision"]
+          "enum": ["note", "task", "revision", "event"]
         },
         "kind": {
           "anyOf": [
@@ -1189,7 +1197,12 @@
                 "completed",
                 "touchedFile",
                 "blocker",
-                "nextStep"
+                "nextStep",
+                "request",
+                "reply",
+                "command",
+                "edit",
+                "api_error"
               ]
             },
             {
@@ -1365,6 +1378,122 @@
         },
         "provenance": {
           "const": "caller_asserted"
+        }
+      }
+    },
+    "recorded": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "requests", "failures", "files", "omitted"],
+      "properties": {
+        "source": {
+          "const": "client_transcript"
+        },
+        "requests": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["sessionId", "text", "createdAt"],
+            "properties": {
+              "sessionId": {
+                "$ref": "#/$defs/uuid"
+              },
+              "text": {
+                "type": "string"
+              },
+              "createdAt": {
+                "type": "string",
+                "minLength": 20,
+                "maxLength": 30
+              }
+            }
+          }
+        },
+        "failures": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "sessionId",
+              "command",
+              "status",
+              "exitCode",
+              "tail",
+              "createdAt"
+            ],
+            "properties": {
+              "sessionId": {
+                "$ref": "#/$defs/uuid"
+              },
+              "command": {
+                "type": "string"
+              },
+              "status": {
+                "enum": ["failed", "interrupted"]
+              },
+              "exitCode": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "tail": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "createdAt": {
+                "type": "string",
+                "minLength": 20,
+                "maxLength": 30
+              }
+            }
+          }
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["sessionId", "path", "blob", "createdAt"],
+            "properties": {
+              "sessionId": {
+                "$ref": "#/$defs/uuid"
+              },
+              "path": {
+                "type": "string"
+              },
+              "blob": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "createdAt": {
+                "type": "string",
+                "minLength": 20,
+                "maxLength": 30
+              }
+            }
+          }
+        },
+        "omitted": {
+          "$ref": "#/$defs/count"
         }
       }
     }

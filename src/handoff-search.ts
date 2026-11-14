@@ -4,6 +4,10 @@ import type { DatabaseSync } from "node:sqlite";
 import type { HandoffRecordV1 } from "./handoff-contract.js";
 import { HandoffError } from "./handoff-primitives.js";
 import {
+  HANDOFF_EVENT_KINDS,
+  type HandoffEventKind,
+} from "./handoff-recorder.js";
+import {
   HANDOFF_NOTE_KINDS,
   MAX_SEARCH_CANDIDATES,
   MAX_SEARCH_HIT_BYTES,
@@ -170,11 +174,31 @@ interface Document {
 }
 
 const REVISION_KIND = "r.";
+const EVENT_KIND = "e.";
+const EVENT_KINDS: ReadonlySet<string> = new Set(HANDOFF_EVENT_KINDS);
+const PREFIXES = { notes: "n:", revisions: "r:", events: "e:" } as const;
+const eventKey = (id: number, status: unknown, bytes: number) =>
+  `e:${String(id)}:${typeof status === "string" ? status : "-"}:${String(bytes)}`;
+/** What is searched for an event: its text, and a command's outcome. */
+function eventBody(row: Record<string, unknown>): string {
+  const text = typeof row.text === "string" ? row.text : "";
+  if (
+    row.kind !== "command" ||
+    (row.status !== "failed" && row.status !== "interrupted")
+  )
+    return text;
+  const exit =
+    typeof row.exit_code === "number" ? ` exit ${String(row.exit_code)}` : "";
+  const tail = typeof row.tail === "string" ? ` ${row.tail}` : "";
+  return `${text}\n[${row.status}${exit}]${tail}`;
+}
 function kindCondition(kinds: readonly HandoffSearchKind[]): {
   sql: string;
   values: string[];
 } {
-  const exact = kinds.filter((kind) => kind !== "revision");
+  const exact = kinds
+    .filter((kind) => kind !== "revision")
+    .map((kind) => (EVENT_KINDS.has(kind) ? EVENT_KIND + kind : kind));
   const clauses: string[] = [];
   if (exact.length > 0)
     clauses.push(`kind IN (${exact.map(() => "?").join(", ")})`);
@@ -215,6 +239,7 @@ export class HandoffSearchIndex {
       this.database.exec(HANDOFF_SEARCH_SCHEMA);
       this.#syncNotes(workspaceId);
       this.#syncTasks(workspaceId);
+      this.#syncEvents(workspaceId);
       const latest = revisions.latest();
       this.#syncSource(workspaceId, "revisions", String(latest), () => {
         const documents = new Map<string, Document>();
@@ -325,6 +350,74 @@ export class HandoffSearchIndex {
     });
   }
 
+  // Recorded events change once: a command or edit gets its outcome, and
+  // a failure tail may be dropped later. Both are part of the key.
+  #syncEvents(workspaceId: string): void {
+    const totals = this.database
+      .prepare(
+        `SELECT count(*) AS count, coalesce(max(e.event_id), 0) AS last,
+          coalesce(total(e.event_id), 0) AS ids, coalesce(total(e.bytes), 0) AS bytes,
+          coalesce(total(e.status = 'pending'), 0) AS pending
+          FROM handoff_events e JOIN handoff_sessions s ON s.session_id = e.session_id
+          WHERE s.workspace_id = ?`,
+      )
+      .get(workspaceId);
+    const fingerprint = [
+      totals?.count,
+      totals?.last,
+      totals?.ids,
+      totals?.bytes,
+      totals?.pending,
+    ]
+      .map(String)
+      .join(":");
+    this.#syncSource(workspaceId, "events", fingerprint, () => {
+      const ids = new Map<string, number>();
+      for (const row of this.database
+        .prepare(
+          `SELECT e.event_id, e.status, e.bytes FROM handoff_events e
+            JOIN handoff_sessions s ON s.session_id = e.session_id WHERE s.workspace_id = ?`,
+        )
+        .all(workspaceId)) {
+        if (typeof row.event_id !== "number" || typeof row.bytes !== "number")
+          throw new HandoffError("unavailable");
+        ids.set(eventKey(row.event_id, row.status, row.bytes), row.event_id);
+      }
+      return {
+        keys: [...ids.keys()],
+        load: (keys) => {
+          const loaded = new Map<number, Document>();
+          const wanted = keys.map((key) => ids.get(key) ?? -1);
+          for (let start = 0; start < wanted.length; start += ID_CHUNK) {
+            const chunk = wanted.slice(start, start + ID_CHUNK);
+            for (const row of this.database
+              .prepare(
+                `SELECT event_id, session_id, kind, text, path, status, exit_code, tail, created_at
+                  FROM handoff_events WHERE event_id IN (${chunk.map(() => "?").join(", ")})`,
+              )
+              .all(...chunk)) {
+              if (
+                typeof row.event_id !== "number" ||
+                typeof row.session_id !== "string" ||
+                typeof row.kind !== "string" ||
+                typeof row.text !== "string" ||
+                typeof row.created_at !== "number"
+              )
+                throw new HandoffError("unavailable");
+              loaded.set(row.event_id, {
+                body: eventBody(row),
+                kind: EVENT_KIND + row.kind,
+                sessionId: row.session_id,
+                createdAt: row.created_at,
+              });
+            }
+          }
+          return wanted.map((id) => loaded.get(id));
+        },
+      };
+    });
+  }
+
   // At most one task per session and a bounded number of sessions: always
   // compared in full, so an edited task is never missed.
   #syncTasks(workspaceId: string): void {
@@ -354,7 +447,7 @@ export class HandoffSearchIndex {
 
   #syncSource(
     workspaceId: string,
-    source: "notes" | "revisions",
+    source: "notes" | "revisions" | "events",
     fingerprint: string,
     documents: () => {
       keys: string[];
@@ -369,7 +462,7 @@ export class HandoffSearchIndex {
       .get(workspaceId, source);
     if (stored?.fingerprint === value) return;
     const { keys, load } = documents();
-    this.#apply(workspaceId, source === "notes" ? "n:" : "r:", keys, load);
+    this.#apply(workspaceId, PREFIXES[source], keys, load);
     this.database
       .prepare(
         `INSERT INTO handoff_search_state(workspace_id, source, fingerprint) VALUES(?, ?, ?)
@@ -491,9 +584,23 @@ export class HandoffSearchIndex {
           );
       }
     }
-    return rows.filter(
-      (row) =>
-        !row.doc.startsWith("n:") || current.has(`${row.doc}\n${row.body}`),
+    // So does an event that changed or was dropped by retention.
+    const events = rows.filter((row) => row.doc.startsWith("e:"));
+    for (let start = 0; start < events.length; start += ID_CHUNK) {
+      const chunk = events.slice(start, start + ID_CHUNK);
+      for (const row of this.database
+        .prepare(
+          `SELECT event_id, status, bytes FROM handoff_events
+            WHERE event_id IN (${chunk.map(() => "?").join(", ")})`,
+        )
+        .all(...chunk.map((event) => Number(event.doc.split(":")[1]))))
+        if (typeof row.event_id === "number" && typeof row.bytes === "number")
+          current.add(eventKey(row.event_id, row.status, row.bytes));
+    }
+    return rows.filter((row) =>
+      row.doc.startsWith("n:")
+        ? current.has(`${row.doc}\n${row.body}`)
+        : !row.doc.startsWith("e:") || current.has(row.doc),
     );
   }
 }
@@ -582,15 +689,20 @@ export function composeSearch(
       : null;
     const kind = row.kind.startsWith(REVISION_KIND)
       ? (row.kind.slice(REVISION_KIND.length) as HandoffRevisionField)
-      : NOTE_KINDS.has(row.kind)
-        ? (row.kind as HandoffNoteKind)
-        : null;
+      : row.kind.startsWith(EVENT_KIND) &&
+          EVENT_KINDS.has(row.kind.slice(EVENT_KIND.length))
+        ? (row.kind.slice(EVENT_KIND.length) as HandoffEventKind)
+        : NOTE_KINDS.has(row.kind)
+          ? (row.kind as HandoffNoteKind)
+          : null;
     return {
       source: row.doc.startsWith("n:")
         ? "note"
         : row.doc.startsWith("t:")
           ? "task"
-          : "revision",
+          : row.doc.startsWith("e:")
+            ? "event"
+            : "revision",
       kind,
       text: printableText(whole ? row.body : row.snippet, MAX_SEARCH_HIT_BYTES),
       cut: !whole,

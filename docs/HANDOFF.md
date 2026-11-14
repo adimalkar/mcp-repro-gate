@@ -306,7 +306,29 @@ Each completed turn then marks the thread's session `idle`; a notification never
 
 ### Messages from the model
 
-By default nothing the model writes is collected automatically. With `"sessions": { "captureMessages": true }`, the last reply of each turn (`Stop`, Codex notifications) and each subagent's final reply (`SubagentStop`) are stored, up to 1 KiB, after redaction. They help the next agent see what a session said last, but they are model output, so they may contain anything the model saw.
+By default nothing the model writes is collected automatically; see also [Recording transcripts](#recording-transcripts). With `"sessions": { "captureMessages": true }`, the last reply of each turn (`Stop`, Codex notifications) and each subagent's final reply (`SubagentStop`) are stored, up to 1 KiB, after redaction. They help the next agent see what a session said last, but they are model output, so they may contain anything the model saw.
+
+### Recording transcripts
+
+With `"sessions": { "captureTranscripts": true }`, the client hooks also read the Claude Code transcript the hook payload names, and keep a few kinds of structured event from it. This needs no model call and no quota, so a turn cut off by a rate limit is still recorded up to where the transcript stops. It is off by default.
+
+- **When.** `Stop`, `StopFailure`, `PreCompact` and `SessionEnd` read the session's transcript; `SubagentStop` reads the subagent's own (`agent_transcript_path`). `SessionStart` also catches up on transcripts left unread, so a session killed before its hooks ran is recorded when the next one starts. Each read continues from where the last one stopped, takes only complete lines, and reads at most 8 MiB per transcript; the rest is read by later hooks. A single line longer than that is skipped.
+- **Kept**, each through the same redactor as notes:
+
+  | Event       | Contents                                                                                                                                                                                                                                        |
+  | ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+  | `request`   | What the user typed, verbatim, up to 4 KiB. Client wrappers such as task notifications and local command output are skipped                                                                                                                     |
+  | `reply`     | The start of each assistant text block, up to 512 bytes                                                                                                                                                                                         |
+  | `command`   | Each shell command, up to 1 KiB; whether it succeeded, failed or was interrupted; its exit code when the client reported one; for a failure, the last 1 KiB of its output                                                                       |
+  | `edit`      | Each file changed through an edit tool, as a path inside the session's worktree, and the Git blob ID of the file's bytes when the transcript was read, without Git filters, when Git observation is on. Paths outside the worktree are not kept |
+  | `api_error` | An error the client recorded, such as a rate limit, up to 512 bytes                                                                                                                                                                             |
+
+- **Never kept:** the output of other tools (file reads, searches, fetched pages), thinking, images, and tool inputs other than the command or path. Text fetched from the web therefore never reaches a brief through the recorder.
+- **Trust.** The transcript path must be an absolute `.jsonl` path to a regular file, not a symlink, owned by the current user. Records that are not valid JSON or have an unknown shape are skipped. Records are deduplicated by their IDs, so reading a transcript twice records nothing twice. A transcript that cannot be read or stored never fails the hook: `reprogate handoff hook` exits 0 and prints `transcript_unreadable` or `transcript_unrecorded` on standard error.
+- **Retention.** At most `captureBytes` per workspace (default 64 MiB, 1 MiB to 1 GiB). Past it, failure tails go first, then replies, then commands, edits and errors, and user requests last, oldest first in each. Sessions pruned from the workspace take their events with them.
+- **Where it shows.** Briefs gain `recorded`: the three newest user requests, the three newest failed or interrupted commands with exit codes and tails, and the ten most recently changed files with their blob IDs, newest first. It is fitted to the budget with everything else, and user requests are the last entries dropped. `handoff_search` finds recorded events too, with `source: "event"` and the event kind; a failed command is searchable by its output tail.
+- On 62 local transcripts (906 MB), the recorder kept 10.2 MB (1.1%) and read them all in 3.4 seconds.
+- Codex rollout files are not read yet.
 
 ### Subagents, lanes and the sessions file
 
@@ -334,6 +356,6 @@ With `observeGit` (on by default), ReproGate reads the workspace's Git state thr
 
 - SQLite and the Markdown file are not one atomic transaction. A revision can be durable while its projection is `pending`. The status reports this honestly. External drift fails closed and keeps both the stored snapshot and the actual file.
 - An adopted revision records a file's digest and a best-effort extract of it. It does not check that the file's claims are true, or who wrote it.
-- Agent identity, completed work and touched paths are declarations. Nothing collects source, diffs, environment variables or command output automatically; model replies are collected only with `captureMessages`.
+- Agent identity, completed work and touched paths are declarations. Nothing collects source, diffs or environment variables. Model replies are collected only with `captureMessages`, and requests, replies, commands with failure output, and edited paths only with `captureTranscripts`.
 - Session states other than `failed`, `idle` and `ended` are inferred from silence. Hooks must be configured for client events to be recorded; without them, only MCP calls are seen.
 - Identity and permission checks narrow, but cannot remove, races with a hostile writer running as the same user.
