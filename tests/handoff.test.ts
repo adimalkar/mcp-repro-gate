@@ -406,6 +406,7 @@ test("MCP clients discover handoff tools only when configured and update with op
     "handoff_end",
     "handoff_join",
     "handoff_note",
+    "handoff_search",
     "handoff_status",
     "handoff_update",
   ]);

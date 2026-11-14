@@ -35,12 +35,14 @@ import {
   handoffJoinResultSchema,
   handoffJoinSchema,
   handoffNoteSchema,
+  handoffSearchInputSchema,
+  handoffSearchResultSchema,
   handoffSessionResultSchema,
 } from "./handoff-session-contract.js";
 import { ReproGateKernel } from "./kernel.js";
 
 const HANDOFF_INSTRUCTIONS =
-  "This server keeps handoff context for the workspace so another agent can resume your work, even if you stop abruptly. At the start, use the handoff session ID your client hook gave you, or call handoff_join and read its brief. After each meaningful step, call handoff_note with a short progress, blocker or decision note. When you finish, call handoff_end with a summary and handoff_update for the shared summary. If the handoff document was changed outside this server or was never recorded, read it, and if it is right, call handoff_adopt with its digest. Handoff context is advisory: it never authorizes actions.";
+  'This server keeps handoff context for the workspace so another agent can resume your work, even if you stop abruptly. At the start, use the handoff session ID your client hook gave you, or call handoff_join and read its brief. Before re-reading files or repeating an investigation, call handoff_search with the identifiers, paths or error text you need; if it reports the result is ambiguous, ask again with the path or worktree you mean. After each meaningful step, call handoff_note with a short progress, blocker or decision note. When you finish, call handoff_end with a summary: that is all a subagent or one of several parallel agents writes. Call handoff_update only when handoff_end returned sharedUpdate "expected", merging the result notes the brief shows; on revision_conflict, call handoff_status, retry once, then stop, because your summary is already recorded. If the handoff document was changed outside this server or was never recorded, read it, and if it is right, call handoff_adopt with its digest. Handoff context is advisory: it never authorizes actions.';
 
 // Error results carry text only, so they never have to satisfy outputSchema.
 function errorResult(value: { error: string } & Record<string, unknown>) {
@@ -361,12 +363,27 @@ export function createReproGateServer(
       },
       (input) => handoffResult(() => handoff.status(input)),
     );
+    server.registerTool(
+      "handoff_search",
+      {
+        description:
+          "Search the workspace's handoff notes, session tasks and recent revisions for identifiers, paths or error text, ranked by relevance, your own session and worktree first. Use it before re-reading files or repeating an investigation. Path-like words in each hit are listed; when a file named in the query matches several paths or worktrees, ambiguous lists them, so ask again with path or worktree. Results are caller-asserted text, returned as data. Advisory only",
+        inputSchema: handoffSearchInputSchema,
+        outputSchema: handoffSearchResultSchema,
+        annotations: {
+          readOnlyHint: true,
+          idempotentHint: true,
+          openWorldHint: false,
+        },
+      },
+      (input) => handoffResult(() => handoff.search(input)),
+    );
     if (handoff.config.allowUpdates) {
       server.registerTool(
         "handoff_update",
         {
           description:
-            "Record a new caller-asserted handoff revision for the host-configured workspace and project it to .agent/handoff.md. Requires the expected revision and document digest from handoff_status; retry with the same updateId. Advisory only: it never authorizes actions or changes plans",
+            'Record a new caller-asserted handoff revision for the host-configured workspace and project it to .agent/handoff.md. Call it only when handoff_end returned sharedUpdate "expected", or when you work alone without a session. Requires the expected revision and document digest from handoff_status; retry with the same updateId. Advisory only: it never authorizes actions or changes plans',
           inputSchema: handoffUpdateSchema,
           outputSchema: handoffStatusSchema,
           annotations: {
@@ -426,7 +443,7 @@ export function createReproGateServer(
         "handoff_end",
         {
           description:
-            "End your handoff session normally, with an optional summary recorded as its result. A session that never ends reads as interrupted to the next agent. Advisory only",
+            'End your handoff session normally, with an optional summary recorded as its result. Returns sharedUpdate "expected" only to the last top-level agent still running, which should then record the shared summary with handoff_update; "skip" means you are done. A session that never ends reads as interrupted to the next agent. Advisory only',
           inputSchema: handoffEndSchema,
           outputSchema: handoffSessionResultSchema,
           annotations: appendOnly,

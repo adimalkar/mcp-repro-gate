@@ -476,6 +476,8 @@ export class HandoffSessionLedger {
       clientReason?: string;
       result?: { text: string; redactions: number };
       lastMessage?: string;
+      /** Runs in the ending transaction, so concurrent ends serialize. */
+      inside?: (ended: HandoffSessionRow) => void;
     } = {},
   ): HandoffSessionRow {
     return this.#transaction(() => {
@@ -507,7 +509,9 @@ export class HandoffSessionLedger {
           options.lastMessage ?? null,
           sessionId,
         );
-      return this.#get(workspaceId, sessionId);
+      const ended = this.#get(workspaceId, sessionId);
+      options.inside?.(ended);
+      return ended;
     });
   }
 
