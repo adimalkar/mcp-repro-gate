@@ -1,6 +1,6 @@
 # Flight recorder: handoff without summaries of summaries
 
-Status: slice 1 is being implemented (see [Slice 1 in detail](#slice-1-in-detail)). Slices 2 to 5 are proposals.
+Status: slices 1 and 2 are implemented (see [Slice 1 in detail](#slice-1-in-detail) and [Slice 2 in detail](#slice-2-in-detail)). Slices 3 to 5 are proposals.
 
 ## The problem
 
@@ -145,3 +145,20 @@ Read-only for callers; registered whenever handoff is configured, like `handoff_
 - **Filters.** `kinds` (note kinds, `task`, `revision`), `worktree`, `path`.
 - **Provenance.** Every hit is `caller_asserted` text, returned as data.
 - `reprogate handoff search --config <path> [--json] <query...>` runs the same search from a shell.
+
+## Slice 2 in detail
+
+The recorder reads Claude Code transcripts from client hooks and keeps a few kinds of structured events. It is off unless the host sets `"sessions": { "captureTranscripts": true }`.
+
+- **When.** On `Stop`, `StopFailure`, `PreCompact` and `SessionEnd` for the main session, and on `SubagentStop` for a subagent's own transcript (`agent_transcript_path`). `SessionStart` also catches up on every transcript left unread, so a session killed before its hooks ran is recorded when the next one starts. Each read starts at the byte offset where the last one stopped and takes only complete lines, at most 8 MiB per transcript per hook. A line longer than that is skipped. No model call is involved, so a rate limit loses nothing that reached the transcript.
+- **What is kept.** Only these, each redacted with the same redactor as notes:
+  - `request`: what the user typed, verbatim, up to 4 KiB. Client wrappers such as task notifications and local command output are skipped.
+  - `reply`: the start of each assistant text block, up to 512 bytes.
+  - `command`: each shell command, up to 1 KiB, its outcome (`ok`, `failed` or `interrupted`) and exit code, and for a failure the last 1 KiB of its output.
+  - `edit`: each file changed through an edit tool, as a path inside the session's worktree, its outcome, and the Git blob ID of the file's bytes when the transcript was read (no Git filters applied). Paths outside the worktree are not kept.
+  - `api_error`: an error the client recorded, such as a rate limit, up to 512 bytes.
+- **What is never kept.** Other tool output (file reads, searches, fetched pages), thinking, images and the assistant's tool inputs beyond the command or path. This keeps fetched text out of briefs and limits stored prompt injection.
+- **Trust.** The transcript path comes from the hook payload. It must be an absolute `.jsonl` path to a regular file, not a symlink, owned by the current user. A record that is not valid JSON or of an unknown shape is ignored. Records are deduplicated by their ID, so a transcript read twice records nothing twice.
+- **Retention.** A byte cap per workspace, 64 MiB by default (`captureBytes`). When it is passed, failure tails go first, then replies, then commands, edits and errors, and user requests last, oldest first in each.
+- **Where it shows.** The brief gains `recorded`, built from these events: the newest user requests, the newest failed commands with exit codes and tails, and the files changed most recently with their blob IDs. It is fitted to the brief's budget like everything else, and requests are the last thing dropped. `handoff_search` also searches recorded requests, replies, commands and edits.
+- **Not yet.** Codex rollout files (slice 5), checking blob IDs against the current files (slice 4), and capture for clients without hooks.
