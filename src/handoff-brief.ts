@@ -510,10 +510,10 @@ export function fitBrief(
                 },
               },
             ]),
-            ...recorded.requests.map((request) => ({
-              get: () => request.text,
+            ...[...recorded.requests, ...recorded.replies].map((entry) => ({
+              get: () => entry.text,
               set: (value: string) => {
-                request.text = value;
+                entry.text = value;
               },
             })),
           ],
@@ -529,6 +529,7 @@ export function fitBrief(
       return true;
     },
     () => recordedTexts(512),
+    () => dropRecorded(recorded?.replies),
     () => dropRecorded(recorded?.failures),
     () => {
       const subjects = fitted.git.commitsSince?.subjects;
@@ -601,11 +602,13 @@ export function fitBrief(
         recorded === undefined
           ? 0
           : recorded.requests.length +
+            recorded.replies.length +
             recorded.failures.length +
             recorded.files.length;
       if (recorded !== undefined) {
         recorded.omitted += recordedEntries;
         recorded.requests = [];
+        recorded.replies = [];
         recorded.failures = [];
         recorded.files = [];
       }
@@ -830,6 +833,7 @@ export function renderBriefText(
   if (
     recorded !== undefined &&
     recorded.requests.length +
+      recorded.replies.length +
       recorded.failures.length +
       recorded.files.length >
       0
@@ -838,6 +842,10 @@ export function renderBriefText(
     for (const request of recorded.requests)
       out.push(
         `- User asked (${request.sessionId.slice(0, 8)}, ${ago(request.createdAt, now)}): ${line(request.text)}`,
+      );
+    for (const reply of recorded.replies)
+      out.push(
+        `- Agent said (${reply.sessionId.slice(0, 8)}, ${ago(reply.createdAt, now)}): ${line(reply.text)}`,
       );
     for (const failure of recorded.failures)
       out.push(

@@ -1,6 +1,6 @@
 # Flight recorder: handoff without summaries of summaries
 
-Status: slices 1 and 2 are implemented (see [Slice 1 in detail](#slice-1-in-detail) and [Slice 2 in detail](#slice-2-in-detail)). Slices 3 to 5 are proposals.
+Status: slices 1 and 2 are implemented, and slice 3, the A/B gate, is built (see the detail sections below). Slices 4 and 5 wait on the gate.
 
 ## The problem
 
@@ -160,5 +160,24 @@ The recorder reads Claude Code transcripts from client hooks and keeps a few kin
 - **What is never kept.** Other tool output (file reads, searches, fetched pages), thinking, images and the assistant's tool inputs beyond the command or path. This keeps fetched text out of briefs and limits stored prompt injection.
 - **Trust.** The transcript path comes from the hook payload. It must be an absolute `.jsonl` path to a regular file, not a symlink, owned by the current user. A record that is not valid JSON or of an unknown shape is ignored. Records are deduplicated by their ID, so a transcript read twice records nothing twice.
 - **Retention.** A byte cap per workspace, 64 MiB by default (`captureBytes`). When it is passed, failure tails go first, then replies, then commands, edits and errors, and user requests last, oldest first in each.
-- **Where it shows.** The brief gains `recorded`, built from these events: the newest user requests, the newest failed commands with exit codes and tails, and the files changed most recently with their blob IDs. It is fitted to the brief's budget like everything else, and requests are the last thing dropped. `handoff_search` also searches recorded requests, replies, commands and edits.
+- **Where it shows.** The brief gains `recorded`, built from these events: the newest user requests, the start of the newest replies, the newest failed commands with exit codes and tails, and the files changed most recently with their blob IDs. It is fitted to the brief's budget like everything else, and requests are the last thing dropped. `handoff_search` also searches recorded requests, replies, commands and edits.
 - **Not yet.** Codex rollout files (slice 5), checking blob IDs against the current files (slice 4), and capture for clients without hooks.
+
+## Slice 3 in detail: the gate
+
+`benchmarks/handoff-resume.ts` with the tasks in `benchmarks/handoff-resume-tasks.ts`.
+
+- **Tasks.** Six small Node projects. In each, a scripted first session works on the user's request, written as a real Claude Code transcript, and stops part way: killed with no hook, or, in one task, by a rate limit. What the next agent needs is in that session: the user's exact rules (`retry-rules`, `csv-rate-limit`), a frozen look-alike file it must not touch (`frozen-decoy`), a failed approach and the user's correction (`dead-end`), half-done work and an extra requirement (`rename-alias`), and steps already done that must not be redone (`ordered-plan`).
+- **Conditions.** The same resume prompt, tools and model, with one difference: the handoff context is either a summary Claude wrote from the whole transcript (asked for what was asked, done, tried and left, in at most 600 words; generated once per task and kept in `docs/benchmarks/handoff-resume-summaries-v1.json`), or the brief ReproGate's hooks produce from the same transcript.
+- **Isolation.** `claude -p` with project settings only (no user hooks), no MCP servers, no saved session, no web or subagent tools, a fixed allowlist of commands, a fresh copy of the repository, and 15 minutes per run. The user's global `CLAUDE.md` is still loaded, equally in both conditions, because the account has no API key for `--bare`.
+- **Scoring.** Hidden tests added after the run, and checks of the user's constraints (signature kept, legacy file untouched, no local-time date code, alias marked deprecated, exactly one new migration). A run succeeds only if every test and check passes. Also measured: tokens, and tokens and tool calls until the first edit of a file the task needs. The scoring was validated before any run: for each task, the state the first session left fails and a reference finish passes.
+- **Size.** 6 tasks × 2 conditions × 3 repeats = 36 runs, interleaved with alternating order, on Claude Code only. The recorder reads only Claude Code transcripts so far, and a second client would add a variable.
+
+**Decision rule, fixed before any run (2026-11-14):**
+
+1. The recorder **passes** if it succeeds at least as often as the summary, and either succeeds at least 2 more times out of 18, or reaches its first target edit with at least 15% fewer median tokens.
+2. It **fails** if it succeeds at least 2 fewer times out of 18. Slices 4 and 5 then stop as specified.
+3. Anything else is **inconclusive**: report it, and decide with the user whether to run more repeats.
+4. A task the recorder loses in all three repeats while the summary wins at least two is reported, whatever the totals.
+
+**What it cannot show.** Eighteen runs per condition cannot separate small differences from chance. The tasks are synthetic and were written by the author of the recorder, around the kinds of information the recorder keeps; the summarizer sees all of that information too, so the test is whether summaries keep it, but task choice still favours the recorder. One model, one client, short sessions: long sessions, where summaries are thought to lose most, are not tested.

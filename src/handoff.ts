@@ -64,6 +64,7 @@ import {
   DEFAULT_SEARCH_LIMIT,
   MAX_BRIEF_FAILURES,
   MAX_BRIEF_FILES,
+  MAX_BRIEF_REPLIES,
   MAX_BRIEF_REQUESTS,
   type HandoffRecordedV1,
   HANDOFF_SEARCH_KINDS,
@@ -426,6 +427,9 @@ export function createHandoffService(
       const requests = recorder.events(workspaceId, MAX_BRIEF_REQUESTS + 1, [
         "request",
       ]);
+      const replies = recorder.events(workspaceId, MAX_BRIEF_REPLIES + 1, [
+        "reply",
+      ]);
       const failures = [
         ...recorder.events(
           workspaceId,
@@ -450,6 +454,11 @@ export function createHandoffService(
           text: event.text,
           createdAt: iso(event.createdAt),
         })),
+        replies: replies.slice(0, MAX_BRIEF_REPLIES).map((event) => ({
+          sessionId: event.sessionId,
+          text: event.text,
+          createdAt: iso(event.createdAt),
+        })),
         failures: failures.slice(0, MAX_BRIEF_FAILURES).map((event) => ({
           sessionId: event.sessionId,
           command: event.text,
@@ -466,6 +475,7 @@ export function createHandoffService(
         })),
         omitted:
           Math.max(0, requests.length - MAX_BRIEF_REQUESTS) +
+          Math.max(0, replies.length - MAX_BRIEF_REPLIES) +
           Math.max(0, failures.length - MAX_BRIEF_FAILURES) +
           Math.max(0, files.size - MAX_BRIEF_FILES),
       };
