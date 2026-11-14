@@ -94,6 +94,7 @@ function fixture(t: TestContext, scope?: "repository") {
     scratch,
     workspaceRoot,
     config,
+    now,
     service,
     advance: (seconds: number) => {
       time += seconds * 1000;
@@ -562,6 +563,8 @@ test("reprogate handoff search prints hits and the ambiguity, or JSON", (t) => {
       stderr: (text) => {
         stderr += text;
       },
+      // The fixture's clock: session states must not depend on today.
+      now: f.now,
     });
     return { code, stdout, stderr };
   };
