@@ -273,9 +273,9 @@ export function renderTranscript(task: ResumeTask): string {
   return out.join("\n\n");
 }
 
-export const SUMMARY_PROMPT_VERSION = 1;
+export const SUMMARY_PROMPT_VERSION = 2;
 export function summaryPrompt(task: ResumeTask): string {
-  return `The following is the transcript of a coding session that stopped before its task was finished. Another agent will continue the work in the same repository, and will receive your handoff note instead of this transcript. Write that handoff note: what the user asked for, what was done, what failed or was tried, and what remains. Be concise: at most 600 words. Reply with the note only.\n\n<transcript>\n${renderTranscript(task)}\n</transcript>`;
+  return `The following is the transcript of a coding session that stopped before its task was finished. Another agent will continue the work in the same repository, and will receive your handoff note instead of this transcript. Write that handoff note: what the user asked for, what was done, what failed or was tried, and what remains. Refer to files by their paths relative to the repository root. Be concise: at most 600 words. Reply with the note only.\n\n<transcript>\n${renderTranscript(task)}\n</transcript>`;
 }
 
 /** ReproGate's brief for the resuming agent, from the real hooks. */
@@ -620,13 +620,16 @@ interface Summaries {
 }
 
 async function makeSummaries(model: string): Promise<void> {
-  const empty = mkdtempSync(join(tmpdir(), "reprogate-bench-summary-"));
+  // The summarizer runs in the repository the session left, as a client
+  // compacting that session would, so what it sees of its environment is true.
+  const dir = mkdtempSync(join(tmpdir(), "reprogate-bench-summary-"));
   const summaries: Record<string, string> = {};
   try {
     for (const task of TASKS) {
+      const prepared = prepare(task, dir);
       const run = await runClaude(
         summaryPrompt(task),
-        empty,
+        prepared.repo,
         claudeArgs(model, "none"),
         RUN_TIMEOUT_MS,
       );
@@ -637,7 +640,12 @@ async function makeSummaries(model: string): Promise<void> {
       process.stdout.write(`${task.id}: ${String(text.length)} chars\n`);
     }
   } finally {
-    rmSync(empty, { recursive: true, force: true });
+    rmSync(dir, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100,
+    });
   }
   mkdirSync(DOCS, { recursive: true });
   const value: Summaries = {
@@ -662,6 +670,10 @@ async function runAll(options: {
   out: string;
 }): Promise<RunResult[]> {
   const summaries = loadSummaries();
+  if (summaries.promptVersion !== SUMMARY_PROMPT_VERSION)
+    throw new Error(
+      "Summaries are from another prompt version; run `summaries`.",
+    );
   const fixtures = join(options.out, "fixtures");
   const contexts = new Map<
     string,
