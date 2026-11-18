@@ -15,6 +15,9 @@ import test, { type TestContext } from "node:test";
 import {
   assertSuccessfulRun,
   claudeArgs,
+  compactionChunks,
+  compactionPrompt,
+  recorderHandoff,
   parseStream,
   prepare,
   recorderBrief,
@@ -24,7 +27,9 @@ import {
   summarize,
   type RunResult,
 } from "../benchmarks/handoff-resume.js";
+import { LONG_TASKS } from "../benchmarks/handoff-resume-long.js";
 import { TASKS } from "../benchmarks/handoff-resume-tasks.js";
+import { createHandoffService } from "../src/handoff.js";
 import { extractTranscript } from "../src/handoff-recorder.js";
 
 const posix = { skip: process.platform === "win32" };
@@ -322,3 +327,118 @@ test(
     assert.equal(result.success, true);
   },
 );
+
+// ---------------------------------------------------------------- long suite
+
+for (const task of LONG_TASKS)
+  test(
+    `${task.id}: unfinished work fails and the reference passes every check`,
+    posix,
+    (t) => {
+      const dir = scratch(t);
+      const prepared = prepare(task, dir);
+      const unfinished = join(dir, "unfinished");
+      cpSync(prepared.repo, unfinished, { recursive: true });
+      assert.equal(score(task, unfinished).success, false);
+      const finished = join(dir, "finished");
+      cpSync(prepared.repo, finished, { recursive: true });
+      for (const [path, content] of Object.entries(task.reference)) {
+        mkdirSync(dirname(join(finished, path)), { recursive: true });
+        writeFileSync(join(finished, path), content);
+      }
+      // frozen-decoy-long asks for a test of the loader.
+      if (task.id === "frozen-decoy-long")
+        writeFileSync(
+          join(finished, "test", "config.test.js"),
+          'import test from "node:test";\nimport { loadConfig } from "../src/config/load.js";\ntest("loader", () => loadConfig({}));\n',
+        );
+      const result = score(task, finished);
+      assert.deepEqual(
+        result.checks.filter((check) => !check.pass),
+        [],
+      );
+      assert.equal(result.testsFailed, 0);
+      assert.ok(result.testsPassed >= 40, String(result.testsPassed));
+      assert.equal(result.success, true);
+    },
+  );
+
+test(
+  "long sessions are long, compacted several times, and the task's request has aged out of the brief",
+  posix,
+  (t) => {
+    const dir = scratch(t);
+    for (const task of LONG_TASKS) {
+      const own = prompts(task);
+      assert.ok(own.length >= 20, task.id);
+      assert.ok(task.session.length >= 400, task.id);
+      assert.ok(compactionChunks(task).length >= 3, task.id);
+      const prepared = prepare(task, dir);
+      const state = join(dir, task.id, "state");
+      const handoff = recorderHandoff(prepared, state);
+      assert.ok(handoff.text.length <= 9000, task.id);
+      assert.match(handoff.text, /handoff_search/u);
+      const first = own[0] ?? "";
+      assert.ok(!handoff.text.includes(first), task.id);
+      // The read-only server's search finds it, word for word.
+      const configPath = join(state, "serve.json");
+      writeFileSync(
+        configPath,
+        handoff.serveConfig(join(state, "context.sqlite")),
+        { mode: 0o600 },
+      );
+      const service = createHandoffService(
+        JSON.parse(readFileSync(configPath, "utf8")) as unknown,
+      );
+      try {
+        const query = first.split(/\s+/u).slice(0, 8).join(" ");
+        const found = service.search({
+          handoffVersion: 1,
+          query,
+          kinds: ["request"],
+        });
+        assert.ok(
+          found.hits.some((hit) => hit.text === first),
+          `${task.id}: ${query}`,
+        );
+      } finally {
+        service.close();
+      }
+    }
+  },
+);
+
+test("the long suite's recorder runs get only the read-only handoff tools", () => {
+  const args = claudeArgs("sonnet", "agent", "/state/serve.json");
+  const config = JSON.parse(args[args.indexOf("--mcp-config") + 1] ?? "{}") as {
+    mcpServers: Record<string, { args: string[] }>;
+  };
+  assert.deepEqual(Object.keys(config.mcpServers), ["reprogate"]);
+  assert.deepEqual(config.mcpServers.reprogate?.args.slice(1), [
+    "serve",
+    "--handoff-config",
+    "/state/serve.json",
+  ]);
+  const allowed = args[args.indexOf("--allowedTools") + 1] ?? "";
+  assert.match(
+    allowed,
+    /mcp__reprogate__handoff_search mcp__reprogate__handoff_status$/u,
+  );
+  assert.doesNotMatch(allowed, /handoff_update|handoff_note/u);
+  const plain = claudeArgs("sonnet", "agent");
+  assert.equal(plain[plain.indexOf("--mcp-config") + 1], '{"mcpServers":{}}');
+});
+
+test("compaction chains carry the previous summary into the next prompt", () => {
+  const task = LONG_TASKS[0];
+  assert.ok(task);
+  const chunks = compactionChunks(task);
+  assert.equal(chunks.join("\n\n"), renderTranscript(task));
+  assert.ok(chunks.every((chunk) => chunk.length <= 240_000 + 60_000));
+  assert.doesNotMatch(compactionPrompt(undefined, "c1"), /previous-summary/u);
+  assert.match(
+    compactionPrompt("S1", "c2"),
+    /<previous-summary>\nS1\n<\/previous-summary>[\s\S]*<conversation>\nc2/u,
+  );
+  assert.match(compactionPrompt(undefined, "x"), /All user messages/u);
+});

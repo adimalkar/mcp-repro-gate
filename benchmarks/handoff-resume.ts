@@ -14,6 +14,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+  chmodSync,
   cpSync,
   existsSync,
   mkdirSync,
@@ -29,6 +30,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { createHandoffService } from "../src/handoff.js";
+import { LONG_TASKS } from "./handoff-resume-long.js";
 import { TASKS, type ResumeTask } from "./handoff-resume-tasks.js";
 
 export const BENCHMARK_VERSION = 1;
@@ -37,9 +39,40 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const DOCS = resolve(HERE, "..", "..", "docs", "benchmarks");
 export const SUMMARIES_PATH = join(DOCS, "handoff-resume-summaries-v1.json");
 export const RESULTS_PATH = join(DOCS, "handoff-resume-v1.json");
+export const LONG_SUMMARIES_PATH = join(
+  DOCS,
+  "handoff-resume-long-summaries-v1.json",
+);
+
+export type SuiteId = "short" | "long";
+export interface Suite {
+  id: SuiteId;
+  tasks: ResumeTask[];
+  summariesPath: string;
+  summaryPromptVersion: number;
+}
+export function suiteOf(id: string): Suite {
+  if (id === "short")
+    return {
+      id,
+      tasks: TASKS,
+      summariesPath: SUMMARIES_PATH,
+      summaryPromptVersion: SUMMARY_PROMPT_VERSION,
+    };
+  if (id === "long")
+    return {
+      id,
+      tasks: LONG_TASKS,
+      summariesPath: LONG_SUMMARIES_PATH,
+      summaryPromptVersion: COMPACTION_PROMPT_VERSION,
+    };
+  throw new Error(`Unknown suite ${id}`);
+}
 const START = Date.parse("2026-11-14T09:00:00.000Z");
 const SESSION_ID = "6f1c0d3e-2b7a-4c55-9d1e-0a8b7c6d5e4f";
 export const BRIEF_CHARS = 9000;
+// The compiled CLI, for the long suite's MCP server.
+const CLI = resolve(HERE, "..", "src", "cli.js");
 const RUN_TIMEOUT_MS = 15 * 60 * 1000;
 
 // ---------------------------------------------------------------- fixture
@@ -239,6 +272,11 @@ export function prepare(task: ResumeTask, dir: string): Prepared {
  * call with its full output. Paths are relative to the repository.
  */
 export function renderTranscript(task: ResumeTask): string {
+  return renderBlocks(task).join("\n\n");
+}
+
+/** The transcript as text blocks, one per message or tool call. */
+export function renderBlocks(task: ResumeTask): string[] {
   const files = { ...task.base };
   const out: string[] = [];
   for (const step of task.session) {
@@ -272,7 +310,38 @@ export function renderTranscript(task: ResumeTask): string {
       ? "[The session stopped here: API rate limit reached.]"
       : "[The session stopped here: the process was killed.]",
   );
-  return out.join("\n\n");
+  return out;
+}
+
+/**
+ * Compaction as a client does it in a long session: when the context
+ * fills, a summary replaces it, and the next compaction summarizes that
+ * summary with what came after. The last summary is the handoff.
+ */
+export const COMPACTION_PROMPT_VERSION = 1;
+/** About 60,000 tokens of transcript per compaction. */
+export const COMPACTION_CHUNK_CHARS = 240_000;
+export function compactionChunks(task: ResumeTask): string[] {
+  const chunks: string[] = [];
+  let current: string[] = [];
+  let size = 0;
+  for (const block of renderBlocks(task)) {
+    if (size > 0 && size + block.length > COMPACTION_CHUNK_CHARS) {
+      chunks.push(current.join("\n\n"));
+      current = [];
+      size = 0;
+    }
+    current.push(block);
+    size += block.length + 2;
+  }
+  if (current.length > 0) chunks.push(current.join("\n\n"));
+  return chunks;
+}
+export function compactionPrompt(
+  previous: string | undefined,
+  chunk: string,
+): string {
+  return `You are compacting a long coding session so that it can continue in a fresh context. ${previous === undefined ? "Below is the conversation so far." : "Below is the summary written at the previous compaction, followed by the conversation since then."} Write a detailed summary that will replace all of it: the session continues from your summary alone. Use these sections: 1. Primary request and intent: every explicit request the user made, in detail. 2. Key technical concepts. 3. Files and code sections read or changed, and what matters about each. 4. Errors and how they were fixed, or that they were not. 5. Problem solving: what was tried and decided. 6. All user messages other than tool results, in order. 7. Pending tasks. 8. Current work: what was being done right before this summary. 9. Next step. Refer to files by their paths relative to the repository root. Reply with the summary only.\n\n${previous === undefined ? "" : `<previous-summary>\n${previous}\n</previous-summary>\n\n`}<conversation>\n${chunk}\n</conversation>`;
 }
 
 export const SUMMARY_PROMPT_VERSION = 2;
@@ -287,37 +356,7 @@ export function recorderBrief(
 ): string {
   const state = mkdtempSync(join(tmpdir(), "reprogate-bench-state-"));
   try {
-    let time = START;
-    const service = createHandoffService(
-      {
-        configVersion: 1,
-        workspaceRoot: prepared.repo,
-        databasePath: join(state, "context.sqlite"),
-        allowUpdates: true,
-        sessions: {
-          observeGit: true,
-          captureTranscripts: true,
-          projectFile: false,
-        },
-      },
-      { now: () => new Date(time), deferProjection: false, cwd: prepared.repo },
-    );
-    try {
-      const hook = (payload: Record<string, unknown>) =>
-        service.hook("claude-code", {
-          session_id: "first-session",
-          cwd: prepared.repo,
-          transcript_path: prepared.transcript,
-          ...payload,
-        });
-      hook({ hook_event_name: "SessionStart", source: "startup" });
-      if (prepared.task.stop === "rate_limit")
-        hook({ hook_event_name: "StopFailure", error: "rate_limit" });
-      time += 2 * 3600_000;
-      return service.briefText(maxChars);
-    } finally {
-      service.close();
-    }
+    return recordFirstSession(prepared, state, maxChars);
   } finally {
     rmSync(state, {
       recursive: true,
@@ -325,6 +364,71 @@ export function recorderBrief(
       maxRetries: 10,
       retryDelay: 100,
     });
+  }
+}
+
+export const SEARCH_HINT =
+  "Earlier sessions' requests, replies, commands and edits are recorded. Search them with the handoff_search tool before re-reading files or assuming what the user asked.";
+
+/**
+ * The long suite's recorder context: the brief, a line about search, and a
+ * read-only handoff configuration for the MCP server, over the database the
+ * hooks recorded into. `state` is kept.
+ */
+export function recorderHandoff(
+  prepared: Prepared,
+  state: string,
+): { text: string; serveConfig: (database: string) => string } {
+  mkdirSync(state, { recursive: true, mode: 0o700 });
+  const text = `${recordFirstSession(prepared, state, BRIEF_CHARS - SEARCH_HINT.length - 2).trimEnd()}\n\n${SEARCH_HINT}\n`;
+  return {
+    text,
+    serveConfig: (database: string) =>
+      JSON.stringify({
+        configVersion: 1,
+        workspaceRoot: prepared.repo,
+        databasePath: database,
+        allowUpdates: false,
+        sessions: { observeGit: false },
+      }),
+  };
+}
+
+function recordFirstSession(
+  prepared: Prepared,
+  state: string,
+  maxChars: number,
+): string {
+  let time = START;
+  const service = createHandoffService(
+    {
+      configVersion: 1,
+      workspaceRoot: prepared.repo,
+      databasePath: join(state, "context.sqlite"),
+      allowUpdates: true,
+      sessions: {
+        observeGit: true,
+        captureTranscripts: true,
+        projectFile: false,
+      },
+    },
+    { now: () => new Date(time), deferProjection: false, cwd: prepared.repo },
+  );
+  try {
+    const hook = (payload: Record<string, unknown>) =>
+      service.hook("claude-code", {
+        session_id: "first-session",
+        cwd: prepared.repo,
+        transcript_path: prepared.transcript,
+        ...payload,
+      });
+    hook({ hook_event_name: "SessionStart", source: "startup" });
+    if (prepared.task.stop === "rate_limit")
+      hook({ hook_event_name: "StopFailure", error: "rate_limit" });
+    time += 2 * 3600_000;
+    return service.briefText(maxChars);
+  } finally {
+    service.close();
   }
 }
 
@@ -450,7 +554,20 @@ export function parseStream(
 }
 
 /** Isolation for every model call: no user hooks, MCP servers or saved session. */
-export function claudeArgs(model: string, tools: "agent" | "none"): string[] {
+export function claudeArgs(
+  model: string,
+  tools: "agent" | "none",
+  handoffConfig?: string,
+): string[] {
+  const servers =
+    handoffConfig === undefined
+      ? {}
+      : {
+          reprogate: {
+            command: process.execPath,
+            args: [CLI, "serve", "--handoff-config", handoffConfig],
+          },
+        };
   return [
     "-p",
     "--model",
@@ -462,12 +579,12 @@ export function claudeArgs(model: string, tools: "agent" | "none"): string[] {
     "project",
     "--strict-mcp-config",
     "--mcp-config",
-    '{"mcpServers":{}}',
+    JSON.stringify({ mcpServers: servers }),
     "--no-session-persistence",
     ...(tools === "agent"
       ? [
           "--allowedTools",
-          "Read Edit Write Glob Grep Bash(npm test:*) Bash(npm run:*) Bash(node:*) Bash(ls:*) Bash(cat:*) Bash(grep:*) Bash(git status:*) Bash(git diff:*) Bash(git log:*)",
+          `Read Edit Write Glob Grep Bash(npm test:*) Bash(npm run:*) Bash(node:*) Bash(ls:*) Bash(cat:*) Bash(grep:*) Bash(git status:*) Bash(git diff:*) Bash(git log:*)${handoffConfig === undefined ? "" : " mcp__reprogate__handoff_search mcp__reprogate__handoff_status"}`,
           "--disallowedTools",
           "WebFetch WebSearch Agent Task",
         ]
@@ -659,26 +776,44 @@ interface Summaries {
   summaries: Record<string, string>;
 }
 
-async function makeSummaries(model: string): Promise<void> {
+async function makeSummaries(model: string, suite: Suite): Promise<void> {
   // The summarizer runs in the repository the session left, as a client
   // compacting that session would, so what it sees of its environment is true.
   const dir = mkdtempSync(join(tmpdir(), "reprogate-bench-summary-"));
   const summaries: Record<string, string> = {};
   try {
-    for (const task of TASKS) {
+    for (const task of suite.tasks) {
       const prepared = prepare(task, dir);
-      const run = await runClaude(
-        summaryPrompt(task),
-        prepared.repo,
-        claudeArgs(model, "none"),
-        RUN_TIMEOUT_MS,
+      const summarize = async (prompt: string, label: string) => {
+        const run = await runClaude(
+          prompt,
+          prepared.repo,
+          claudeArgs(model, "none"),
+          RUN_TIMEOUT_MS,
+        );
+        assertSuccessfulRun(run.lines, label);
+        const text = resultText(run.lines);
+        if (text === undefined)
+          throw new Error(`${label}: no summary (${run.stderr.slice(0, 300)})`);
+        return text.trim();
+      };
+      if (suite.id === "short")
+        summaries[task.id] = await summarize(summaryPrompt(task), task.id);
+      else {
+        // Each compaction summarizes the previous summary and what followed.
+        let summary: string | undefined;
+        const chunks = compactionChunks(task);
+        for (const [index, chunk] of chunks.entries())
+          summary = await summarize(
+            compactionPrompt(summary, chunk),
+            `${task.id} compaction ${String(index + 1)}/${String(chunks.length)}`,
+          );
+        if (summary === undefined) throw new Error(`${task.id}: empty session`);
+        summaries[task.id] = summary;
+      }
+      process.stdout.write(
+        `${task.id}: ${String(summaries[task.id]?.length)} chars\n`,
       );
-      assertSuccessfulRun(run.lines, task.id);
-      const text = resultText(run.lines);
-      if (text === undefined)
-        throw new Error(`${task.id}: no summary (${run.stderr.slice(0, 300)})`);
-      summaries[task.id] = text.trim();
-      process.stdout.write(`${task.id}: ${String(text.length)} chars\n`);
     }
   } finally {
     rmSync(dir, {
@@ -691,27 +826,29 @@ async function makeSummaries(model: string): Promise<void> {
   mkdirSync(DOCS, { recursive: true });
   const value: Summaries = {
     benchmarkVersion: BENCHMARK_VERSION,
-    promptVersion: SUMMARY_PROMPT_VERSION,
+    promptVersion: suite.summaryPromptVersion,
     model,
     summaries,
   };
-  writeFileSync(SUMMARIES_PATH, `${JSON.stringify(value, null, 2)}\n`);
+  writeFileSync(suite.summariesPath, `${JSON.stringify(value, null, 2)}\n`);
 }
 
-function loadSummaries(): Summaries {
-  if (!existsSync(SUMMARIES_PATH)) throw new Error("Run `summaries` first.");
-  return JSON.parse(readFileSync(SUMMARIES_PATH, "utf8")) as Summaries;
+function loadSummaries(suite: Suite): Summaries {
+  if (!existsSync(suite.summariesPath))
+    throw new Error("Run `summaries` first.");
+  return JSON.parse(readFileSync(suite.summariesPath, "utf8")) as Summaries;
 }
 
 async function runAll(options: {
+  suite: Suite;
   model: string;
   repeats: number;
   tasks: ResumeTask[];
   parallel: number;
   out: string;
 }): Promise<RunResult[]> {
-  const summaries = loadSummaries();
-  if (summaries.promptVersion !== SUMMARY_PROMPT_VERSION)
+  const summaries = loadSummaries(options.suite);
+  if (summaries.promptVersion !== options.suite.summaryPromptVersion)
     throw new Error(
       "Summaries are from another prompt version; run `summaries`.",
     );
@@ -721,17 +858,33 @@ async function runAll(options: {
   rmSync(fixtures, { recursive: true, force: true });
   const contexts = new Map<
     string,
-    { prepared: Prepared; summary: string; recorder: string }
+    {
+      prepared: Prepared;
+      summary: string;
+      recorder: string;
+      /** Long suite: recorded state and a read-only config for the server. */
+      search?: { state: string; config: (database: string) => string };
+    }
   >();
   for (const task of options.tasks) {
     const prepared = prepare(task, fixtures);
     const summary = summaries.summaries[task.id];
     if (summary === undefined) throw new Error(`${task.id}: no summary`);
-    contexts.set(task.id, {
-      prepared,
-      summary,
-      recorder: recorderBrief(prepared),
-    });
+    if (options.suite.id === "long") {
+      const state = join(fixtures, task.id, "state");
+      const handoff = recorderHandoff(prepared, state);
+      contexts.set(task.id, {
+        prepared,
+        summary,
+        recorder: handoff.text,
+        search: { state, config: handoff.serveConfig },
+      });
+    } else
+      contexts.set(task.id, {
+        prepared,
+        summary,
+        recorder: recorderBrief(prepared),
+      });
   }
   // Interleaved, alternating which condition goes first, so drift over time
   // (load, rate limits) does not favour one condition.
@@ -782,10 +935,24 @@ async function runAll(options: {
       try {
         const repo = join(runDir, "repo");
         cpSync(context.prepared.repo, repo, { recursive: true });
+        // The recorder's database is copied per run, beside the repository,
+        // and served read-only, so runs cannot affect each other.
+        let handoffConfig: string | undefined;
+        if (job.condition === "recorder" && context.search !== undefined) {
+          const state = join(runDir, "state");
+          cpSync(context.search.state, state, { recursive: true });
+          chmodSync(state, 0o700);
+          handoffConfig = join(state, "serve.json");
+          writeFileSync(
+            handoffConfig,
+            context.search.config(join(state, "context.sqlite")),
+            { mode: 0o600, flag: "wx" },
+          );
+        }
         const run = await runClaude(
           resumePrompt(text),
           repo,
-          claudeArgs(options.model, "agent"),
+          claudeArgs(options.model, "agent", handoffConfig),
           RUN_TIMEOUT_MS,
         );
         const name = `${job.task.id}-${job.condition}-${String(job.repeat)}`;
@@ -922,16 +1089,20 @@ async function main(): Promise<void> {
     option(args, "--out") ??
       mkdtempSync(join(tmpdir(), "reprogate-handoff-bench-")),
   );
+  const suite = suiteOf(option(args, "--suite") ?? "short");
   const wanted = option(args, "--tasks")?.split(",");
   const tasks =
     wanted === undefined
-      ? TASKS
-      : TASKS.filter((task) => wanted.includes(task.id));
+      ? suite.tasks
+      : suite.tasks.filter((task) => wanted.includes(task.id));
   switch (command) {
     case "prepare": {
       for (const task of tasks) {
         const prepared = prepare(task, out);
-        const brief = recorderBrief(prepared);
+        const brief =
+          suite.id === "long"
+            ? recorderHandoff(prepared, join(out, task.id, "state")).text
+            : recorderBrief(prepared);
         writeFileSync(join(out, task.id, "recorder-brief.txt"), brief);
         writeFileSync(
           join(out, task.id, "summary-prompt.txt"),
@@ -944,18 +1115,19 @@ async function main(): Promise<void> {
       return;
     }
     case "summaries":
-      await makeSummaries(model);
+      await makeSummaries(model, suite);
       return;
     case "run": {
       mkdirSync(out, { recursive: true });
-      const summaries = loadSummaries();
+      const summaries = loadSummaries(suite);
       const manifest = {
         benchmarkVersion: BENCHMARK_VERSION,
+        suite: suite.id,
         resumePromptVersion: RESUME_PROMPT_VERSION,
-        summaryPromptVersion: SUMMARY_PROMPT_VERSION,
+        summaryPromptVersion: suite.summaryPromptVersion,
         summaryModel: summaries.model,
         summariesSha256: createHash("sha256")
-          .update(readFileSync(SUMMARIES_PATH))
+          .update(readFileSync(suite.summariesPath))
           .digest("hex"),
         sourceHead: git(resolve(HERE, "..", ".."), "rev-parse", "HEAD").trim(),
         model,
@@ -985,6 +1157,7 @@ async function main(): Promise<void> {
         });
       }
       const results = await runAll({
+        suite,
         model,
         repeats: Number(option(args, "--repeats") ?? 3),
         tasks,
@@ -994,7 +1167,8 @@ async function main(): Promise<void> {
       const value = {
         benchmarkVersion: BENCHMARK_VERSION,
         resumePromptVersion: RESUME_PROMPT_VERSION,
-        summaryModel: loadSummaries().model,
+        suite: suite.id,
+        summaryModel: loadSummaries(suite).model,
         model,
         claudeCode: spawnSync("claude", ["--version"], {
           encoding: "utf8",

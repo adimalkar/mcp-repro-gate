@@ -1,6 +1,6 @@
 # Flight recorder: handoff without summaries of summaries
 
-Status: slices 1 and 2 are implemented. Slice 3, the A/B gate, ran on 2026-11-17 and was **inconclusive** (see [Slice 3 result](#slice-3-result)). Slices 4 and 5 wait on a decision.
+Status: slices 1 and 2 are implemented. Slice 3, the A/B gate, ran on 2026-11-17 and was **inconclusive** (see [Slice 3 result](#slice-3-result)); the user chose a harder gate on long sessions, [slice 3b](#slice-3b-long-sessions). Slices 4 and 5 wait on it.
 
 ## The problem
 
@@ -202,3 +202,22 @@ Options, for the user to decide:
 1. **Accept slices 1 and 2 as they are**, since the recorder matched an ideal summary at no model cost, and stop before slices 4 and 5.
 2. **Run a harder gate** before slices 4 and 5: long sessions with several compactions, where summaries are expected to lose detail, built from real transcripts.
 3. **Improve the brief first**, for example by adding the newest edits' intent and the session's last plan, then rerun this gate with a new version number.
+
+## Slice 3b: long sessions
+
+Chosen by the user after the inconclusive short gate: test the case the recorder was built for. `--suite long` in the same harness; tasks in `benchmarks/handoff-resume-long.ts`.
+
+- **Sessions.** Each task's first session is spread through a long session in a larger codebase (ten service modules with tests and docs). About 21 user requests, ~395 tool calls and ~620,000 characters of transcript per session, three compactions. The author's own Claude Code sessions with two or more compactions have a median of 23 requests, ~1,000 tool calls and 3 compactions (aggregate counts only). The task's request opens the session; its later steps are spread through the first two thirds; its last two steps end it. Nineteen ordinary requests and one look-alike request come in between. The look-alike is easy to confuse with the task's rules (retry five times on any error, for another module; use LF in another export; remove a deprecated alias elsewhere; use `Date.parse` in another file; a port fallback in another module; a third migration).
+- **Summary condition.** Compaction as a long session does it: the transcript is cut into chunks of about 60,000 tokens; each chunk is summarized together with the previous summary, with a prompt modelled on Claude Code's compaction prompt (it asks for every user message). The last summary is the handoff. Generated once per task, kept in `docs/benchmarks/handoff-resume-long-summaries-v1.json`.
+- **Recorder condition.** The brief the hooks produce, which by then shows only the three newest requests, so the task's own request is not in it, plus one line pointing to `handoff_search`. The agent gets ReproGate's MCP server, read-only, over a copy of the recorded database, with `handoff_search` and `handoff_status` allowed. This is the shipped design, not the brief alone.
+- **Scoring.** As before, with two changes for the larger repository: a check that the look-alike request's file is left as the user asked, and checks rewritten for the larger repository (a test for the loader; exactly one archived migration). Validated before any run: for each task the unfinished state fails and a reference finish passes, including the codebase's 40 tests; the task's request is not in the brief, and `handoff_search` finds it word for word.
+- **Size.** 6 tasks × 2 conditions × 3 repeats = 36 runs, Sonnet, Claude Code only.
+
+**Decision rule, fixed before any run (2026-11-17)**, the same as slice 3:
+
+1. The recorder **passes** if it succeeds at least as often as the summary, and either succeeds at least 2 more times out of 18, or reaches its first target edit with at least 15% fewer median tokens.
+2. It **fails** if it succeeds at least 2 fewer times out of 18. Slices 4 and 5 then stop.
+3. Anything else is **inconclusive**.
+4. A task the recorder loses in all three repeats while the summary wins at least two is reported, whatever the totals.
+
+**What it cannot show.** The sessions are generated, not real; the ordinary requests are simple, and the look-alikes were written by the recorder's author. Two things differ between conditions (the context and the search tool), so a difference cannot be split between them. Eighteen runs per condition cannot separate small differences.
