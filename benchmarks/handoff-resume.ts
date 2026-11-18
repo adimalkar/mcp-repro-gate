@@ -952,10 +952,13 @@ async function main(): Promise<void> {
         tasks: tasks.map((task) => task.id),
       };
       const manifestPath = join(out, "manifest.json");
-      if (existsSync(manifestPath)) {
-        const previous = JSON.parse(
-          readFileSync(manifestPath, "utf8"),
-        ) as unknown;
+      let previous: unknown;
+      try {
+        previous = JSON.parse(readFileSync(manifestPath, "utf8")) as unknown;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+      if (previous !== undefined) {
         if (JSON.stringify(previous) !== JSON.stringify(manifest))
           throw new Error(
             "Benchmark configuration changed; choose a new --out directory.",
@@ -965,7 +968,10 @@ async function main(): Promise<void> {
           "Partial results have no manifest; choose a new --out directory.",
         );
       } else {
-        writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+        writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, {
+          flag: "wx",
+          mode: 0o600,
+        });
       }
       const results = await runAll({
         model,
