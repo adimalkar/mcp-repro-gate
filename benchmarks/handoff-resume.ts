@@ -12,6 +12,7 @@
  * `run` calls real agents and spends model quota; nothing else does.
  */
 import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   cpSync,
   existsSync,
@@ -19,6 +20,7 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -675,6 +677,9 @@ async function runAll(options: {
       "Summaries are from another prompt version; run `summaries`.",
     );
   const fixtures = join(options.out, "fixtures");
+  // Recreate the synthetic starting repositories on resume. The completed
+  // agent runs are kept separately in results.partial.json and logs/.
+  rmSync(fixtures, { recursive: true, force: true });
   const contexts = new Map<
     string,
     { prepared: Prepared; summary: string; recorder: string }
@@ -700,7 +705,26 @@ async function runAll(options: {
           : ["recorder", "summary"];
       for (const condition of order) jobs.push({ task, condition, repeat });
     });
-  const results: RunResult[] = [];
+  const partialPath = join(options.out, "results.partial.json");
+  const results: RunResult[] = existsSync(partialPath)
+    ? (JSON.parse(readFileSync(partialPath, "utf8")) as RunResult[])
+    : [];
+  const key = (task: string, condition: Condition, repeat: number) =>
+    `${task}/${condition}/${String(repeat)}`;
+  const expected = new Set(
+    jobs.map((job) => key(job.task.id, job.condition, job.repeat)),
+  );
+  const completed = new Set<string>();
+  for (const result of results) {
+    const id = key(result.task, result.condition, result.repeat);
+    if (!expected.has(id) || completed.has(id))
+      throw new Error(`Invalid or duplicate partial result: ${id}`);
+    completed.add(id);
+  }
+  if (completed.size > 0)
+    process.stdout.write(
+      `Resuming ${String(completed.size)}/${String(jobs.length)} runs.\n`,
+    );
   const logs = join(options.out, "logs");
   mkdirSync(logs, { recursive: true });
   let next = 0;
@@ -708,6 +732,7 @@ async function runAll(options: {
     for (;;) {
       const job = jobs[next++];
       if (job === undefined) return;
+      if (completed.has(key(job.task.id, job.condition, job.repeat))) continue;
       const context = contexts.get(job.task.id);
       if (context === undefined) throw new Error("missing context");
       const text =
@@ -740,10 +765,9 @@ async function runAll(options: {
         process.stdout.write(
           `${name}: ${result.success ? "PASS" : "FAIL"} hidden ${String(result.hiddenPassed)}/${String(result.hiddenTotal)} checks ${String(result.checks.filter((c) => c.pass).length)}/${String(result.checks.length)} tokens ${String(result.tokens)} first-edit ${String(result.tokensToFirstEdit)}\n`,
         );
-        writeFileSync(
-          join(options.out, "results.partial.json"),
-          `${JSON.stringify(results, null, 2)}\n`,
-        );
+        const nextPartial = `${partialPath}.tmp`;
+        writeFileSync(nextPartial, `${JSON.stringify(results, null, 2)}\n`);
+        renameSync(nextPartial, partialPath);
       } finally {
         rmSync(runDir, {
           recursive: true,
@@ -881,6 +905,37 @@ async function main(): Promise<void> {
       await makeSummaries(model);
       return;
     case "run": {
+      mkdirSync(out, { recursive: true });
+      const summaries = loadSummaries();
+      const manifest = {
+        benchmarkVersion: BENCHMARK_VERSION,
+        resumePromptVersion: RESUME_PROMPT_VERSION,
+        summaryPromptVersion: SUMMARY_PROMPT_VERSION,
+        summaryModel: summaries.model,
+        summariesSha256: createHash("sha256")
+          .update(readFileSync(SUMMARIES_PATH))
+          .digest("hex"),
+        sourceHead: git(resolve(HERE, "..", ".."), "rev-parse", "HEAD").trim(),
+        model,
+        repeats: Number(option(args, "--repeats") ?? 3),
+        tasks: tasks.map((task) => task.id),
+      };
+      const manifestPath = join(out, "manifest.json");
+      if (existsSync(manifestPath)) {
+        const previous = JSON.parse(
+          readFileSync(manifestPath, "utf8"),
+        ) as unknown;
+        if (JSON.stringify(previous) !== JSON.stringify(manifest))
+          throw new Error(
+            "Benchmark configuration changed; choose a new --out directory.",
+          );
+      } else if (existsSync(join(out, "results.partial.json"))) {
+        throw new Error(
+          "Partial results have no manifest; choose a new --out directory.",
+        );
+      } else {
+        writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+      }
       const results = await runAll({
         model,
         repeats: Number(option(args, "--repeats") ?? 3),
