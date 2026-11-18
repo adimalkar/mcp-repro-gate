@@ -5,14 +5,14 @@
  * handoff context differs. See docs/proposals/handoff-flight-recorder.md.
  *
  *   node dist/benchmarks/handoff-resume.js prepare [--out <dir>]
- *   node dist/benchmarks/handoff-resume.js summaries [--model <m>]
- *   node dist/benchmarks/handoff-resume.js run [--model <m>] [--repeats <n>] [--tasks a,b] [--parallel <n>] [--out <dir>]
+ *   node dist/benchmarks/handoff-resume.js summaries [--suite short|long] [--model <m>]
+ *   node dist/benchmarks/handoff-resume.js run [--suite short|long] [--model <m>] [--repeats <n>] [--tasks a,b] [--parallel <n>] [--out <dir>]
  *   node dist/benchmarks/handoff-resume.js report <results.json>
  *
- * `run` calls real agents and spends model quota; nothing else does.
+ * `summaries` and `run` call real agents and spend model quota.
  */
 import { spawn, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   chmodSync,
   cpSync,
@@ -776,43 +776,153 @@ interface Summaries {
   summaries: Record<string, string>;
 }
 
-async function makeSummaries(model: string, suite: Suite): Promise<void> {
+interface SummaryCheckpoint {
+  version: 1;
+  fingerprint: string;
+  stages: Record<string, string[]>;
+}
+
+export interface SummaryRunOptions {
+  checkpointPath?: string;
+  summarize?: (prompt: string, label: string, repo: string) => Promise<string>;
+}
+
+function writeSummaryJson(path: string, value: unknown): void {
+  mkdirSync(dirname(path), { recursive: true });
+  const temporary = `${path}.${randomUUID()}.tmp`;
+  try {
+    writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, {
+      flag: "wx",
+      mode: 0o600,
+    });
+    renameSync(temporary, path);
+  } finally {
+    rmSync(temporary, { force: true });
+  }
+}
+
+export async function makeSummaries(
+  model: string,
+  suite: Suite,
+  options: SummaryRunOptions = {},
+): Promise<void> {
   // The summarizer runs in the repository the session left, as a client
   // compacting that session would, so what it sees of its environment is true.
-  const dir = mkdtempSync(join(tmpdir(), "reprogate-bench-summary-"));
   const summaries: Record<string, string> = {};
+  const tasksWithStages = suite.tasks.map((task) => ({
+    task,
+    stages:
+      suite.id === "short" ? [summaryPrompt(task)] : compactionChunks(task),
+  }));
+  const fingerprint = createHash("sha256")
+    .update(
+      JSON.stringify({
+        benchmarkVersion: BENCHMARK_VERSION,
+        suite: suite.id,
+        promptVersion: suite.summaryPromptVersion,
+        model,
+        promptTemplate: compactionPrompt("previous", "chunk"),
+        inputs: tasksWithStages.map(({ task, stages }) => ({
+          id: task.id,
+          base: task.base,
+          stages,
+        })),
+      }),
+    )
+    .digest("hex");
+  const checkpointPath =
+    options.checkpointPath ??
+    resolve(
+      HERE,
+      "..",
+      "..",
+      ".agent",
+      "benchmark-runs",
+      `summaries-${suite.id}.partial.json`,
+    );
+  let checkpoint: SummaryCheckpoint = {
+    version: 1,
+    fingerprint,
+    stages: {},
+  };
   try {
-    for (const task of suite.tasks) {
-      const prepared = prepare(task, dir);
-      const summarize = async (prompt: string, label: string) => {
-        const run = await runClaude(
-          prompt,
-          prepared.repo,
-          claudeArgs(model, "none"),
-          RUN_TIMEOUT_MS,
-        );
-        assertSuccessfulRun(run.lines, label);
-        const text = resultText(run.lines);
-        if (text === undefined)
-          throw new Error(`${label}: no summary (${run.stderr.slice(0, 300)})`);
-        return text.trim();
-      };
-      if (suite.id === "short")
-        summaries[task.id] = await summarize(summaryPrompt(task), task.id);
-      else {
-        // Each compaction summarizes the previous summary and what followed.
-        let summary: string | undefined;
-        const chunks = compactionChunks(task);
-        for (const [index, chunk] of chunks.entries())
-          summary = await summarize(
-            compactionPrompt(summary, chunk),
-            `${task.id} compaction ${String(index + 1)}/${String(chunks.length)}`,
+    const parsed = JSON.parse(readFileSync(checkpointPath, "utf8")) as unknown;
+    const candidate = record(parsed);
+    if (
+      candidate.version !== 1 ||
+      candidate.fingerprint !== fingerprint ||
+      candidate.stages === null ||
+      typeof candidate.stages !== "object" ||
+      Array.isArray(candidate.stages)
+    )
+      throw new Error(
+        "Summary checkpoint does not match this suite, model, or input.",
+      );
+    const stages = candidate.stages as Record<string, unknown>;
+    for (const [id, value] of Object.entries(stages)) {
+      const expected = tasksWithStages.find(({ task }) => task.id === id)
+        ?.stages.length;
+      if (
+        expected === undefined ||
+        !Array.isArray(value) ||
+        value.length > expected ||
+        !value.every((part) => typeof part === "string" && part.length > 0)
+      )
+        throw new Error(`Invalid summary checkpoint stages for ${id}.`);
+    }
+    checkpoint = parsed as SummaryCheckpoint;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  const summarize =
+    options.summarize ??
+    (async (prompt: string, label: string, repo: string) => {
+      const run = await runClaude(
+        prompt,
+        repo,
+        claudeArgs(model, "none"),
+        RUN_TIMEOUT_MS,
+      );
+      assertSuccessfulRun(run.lines, label);
+      const text = resultText(run.lines);
+      if (text === undefined)
+        throw new Error(`${label}: no summary (${run.stderr.slice(0, 300)})`);
+      return text;
+    });
+  const dir = mkdtempSync(join(tmpdir(), "reprogate-bench-summary-"));
+  try {
+    for (const { task, stages: inputs } of tasksWithStages) {
+      const completed = checkpoint.stages[task.id] ?? [];
+      const resumed = completed.length === inputs.length;
+      if (completed.length < inputs.length) {
+        const prepared = prepare(task, dir);
+        for (let index = completed.length; index < inputs.length; index++) {
+          const input = inputs[index];
+          if (input === undefined) throw new Error(`${task.id}: missing input`);
+          const previous = completed[index - 1];
+          const prompt =
+            suite.id === "short" ? input : compactionPrompt(previous, input);
+          const label =
+            suite.id === "short"
+              ? task.id
+              : `${task.id} compaction ${String(index + 1)}/${String(inputs.length)}`;
+          const summary = (
+            await summarize(prompt, label, prepared.repo)
+          ).trim();
+          if (summary.length === 0) throw new Error(`${label}: empty summary`);
+          completed.push(summary);
+          checkpoint.stages[task.id] = completed;
+          writeSummaryJson(checkpointPath, checkpoint);
+          process.stdout.write(
+            `${label}: checkpointed ${String(summary.length)} chars\n`,
           );
-        if (summary === undefined) throw new Error(`${task.id}: empty session`);
-        summaries[task.id] = summary;
+        }
       }
+      const summary = completed.at(-1);
+      if (summary === undefined) throw new Error(`${task.id}: empty session`);
+      summaries[task.id] = summary;
       process.stdout.write(
-        `${task.id}: ${String(summaries[task.id]?.length)} chars\n`,
+        `${task.id}: ${String(summary.length)} chars${resumed ? " (resumed)" : ""}\n`,
       );
     }
   } finally {
@@ -823,14 +933,13 @@ async function makeSummaries(model: string, suite: Suite): Promise<void> {
       retryDelay: 100,
     });
   }
-  mkdirSync(DOCS, { recursive: true });
   const value: Summaries = {
     benchmarkVersion: BENCHMARK_VERSION,
     promptVersion: suite.summaryPromptVersion,
     model,
     summaries,
   };
-  writeFileSync(suite.summariesPath, `${JSON.stringify(value, null, 2)}\n`);
+  writeSummaryJson(suite.summariesPath, value);
 }
 
 function loadSummaries(suite: Suite): Summaries {

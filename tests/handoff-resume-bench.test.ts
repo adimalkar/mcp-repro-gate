@@ -17,6 +17,7 @@ import {
   claudeArgs,
   compactionChunks,
   compactionPrompt,
+  makeSummaries,
   recorderHandoff,
   parseStream,
   prepare,
@@ -24,6 +25,7 @@ import {
   renderTranscript,
   resumePrompt,
   score,
+  suiteOf,
   summarize,
   type RunResult,
 } from "../benchmarks/handoff-resume.js";
@@ -441,4 +443,73 @@ test("compaction chains carry the previous summary into the next prompt", () => 
     /<previous-summary>\nS1\n<\/previous-summary>[\s\S]*<conversation>\nc2/u,
   );
   assert.match(compactionPrompt(undefined, "x"), /All user messages/u);
+});
+
+test("long summaries checkpoint each compaction and resume without repeating calls", async (t) => {
+  const dir = scratch(t);
+  const tasks = LONG_TASKS.slice(0, 2);
+  const first = tasks[0];
+  const second = tasks[1];
+  assert.ok(first && second);
+  const firstStages = compactionChunks(first).length;
+  const secondStages = compactionChunks(second).length;
+  assert.ok(firstStages >= 3 && secondStages >= 3);
+  const suite = {
+    ...suiteOf("long"),
+    tasks,
+    summariesPath: join(dir, "summaries.json"),
+  };
+  const checkpointPath = join(dir, "checkpoint.json");
+  let calls = 0;
+  await assert.rejects(
+    makeSummaries("sonnet", suite, {
+      checkpointPath,
+      summarize: () => {
+        calls++;
+        if (calls === firstStages + 2)
+          return Promise.reject(new Error("usage_limit_reached"));
+        return Promise.resolve(`S${String(calls)}`);
+      },
+    }),
+    /usage_limit_reached/u,
+  );
+  const checkpoint = JSON.parse(readFileSync(checkpointPath, "utf8")) as {
+    stages: Record<string, string[]>;
+  };
+  assert.equal(checkpoint.stages[first.id]?.length, firstStages);
+  assert.equal(checkpoint.stages[second.id]?.length, 1);
+  assert.equal(
+    checkpoint.stages[second.id]?.[0],
+    `S${String(firstStages + 1)}`,
+  );
+  assert.throws(() => readFileSync(suite.summariesPath), /ENOENT/u);
+
+  const resumed: { label: string; prompt: string }[] = [];
+  await makeSummaries("sonnet", suite, {
+    checkpointPath,
+    summarize: (prompt, label) => {
+      resumed.push({ label, prompt });
+      return Promise.resolve(`R${String(resumed.length)}`);
+    },
+  });
+  assert.equal(resumed.length, secondStages - 1);
+  assert.ok(resumed.every(({ label }) => label.startsWith(second.id)));
+  assert.match(
+    resumed[0]?.prompt ?? "",
+    new RegExp(`<previous-summary>\\nS${String(firstStages + 1)}\\n`, "u"),
+  );
+  const final = JSON.parse(readFileSync(suite.summariesPath, "utf8")) as {
+    summaries: Record<string, string>;
+  };
+  assert.equal(final.summaries[first.id], `S${String(firstStages)}`);
+  assert.equal(final.summaries[second.id], `R${String(secondStages - 1)}`);
+  await makeSummaries("sonnet", suite, {
+    checkpointPath,
+    summarize: () =>
+      Promise.reject(new Error("completed stages must not call the model")),
+  });
+  await assert.rejects(
+    makeSummaries("opus", suite, { checkpointPath }),
+    /checkpoint does not match/u,
+  );
 });
