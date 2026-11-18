@@ -97,3 +97,20 @@ This protocol measures the Phase 4 exit criteria in real hosts. Run it in at lea
 |      |      |               |                 |       |      |               |           |
 
 An exit criterion counts as met only when the measured medians across hosts and tasks clear it. Publish the raw records next to the summary.
+
+## Handoff resume (A/B gate for the flight recorder)
+
+`npm run bench:handoff-resume -- run --model sonnet --repeats 3` resumes six scripted tasks whose first session stopped part way, from either a summary Claude wrote from the whole transcript or ReproGate's recorder brief. Design and decision rule: [slice 3 of the flight-recorder proposal](proposals/handoff-flight-recorder.md#slice-3-in-detail-the-gate). Data: [`benchmarks/handoff-resume-v1.json`](benchmarks/handoff-resume-v1.json).
+
+Measured 2026-11-17, Claude Code 2.1.327, Sonnet, 36 runs, all completed with model output, no timeouts:
+
+| Condition | Success as scored | Success, check corrected | Median tokens | Median tokens to first needed edit | Median context |
+| --------- | ----------------- | ------------------------ | ------------- | ---------------------------------- | -------------- |
+| Summary   | 16/18             | 18/18                    | 72,784        | 32,315                             | 2,435 chars    |
+| Recorder  | 15/18             | 18/18                    | 65,606        | 46,724                             | 1,176 chars    |
+
+- All five failures were one scoring bug: the `frozen-decoy` check for an added test looked only in `test/`, and those runs added `src/config/load.test.js`. Their hidden tests and other checks passed. The check is corrected; the run was not repeated.
+- **Decision: inconclusive** under the rule fixed before the run, with either count. The recorder did not succeed more often, and it reached its first needed edit with 45% more tokens, not 15% fewer. It did not lose by two runs.
+- Both conditions solved every task. On sessions this short, the summaries kept every rule the tasks test, so these tasks cannot separate the conditions.
+- The summary condition received a summary written after the session from the full transcript. An agent stopped by a rate limit or a crash does not write one; producing it costs a model call. The recorder brief costs none.
+- Summaries told the next agent exactly what to change, which got it to its first edit sooner. The recorder brief held the user's words and the last replies, so the agent read files first.

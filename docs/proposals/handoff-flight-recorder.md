@@ -1,6 +1,6 @@
 # Flight recorder: handoff without summaries of summaries
 
-Status: slices 1 and 2 are implemented, and slice 3, the A/B gate, is built (see the detail sections below). Slices 4 and 5 wait on the gate.
+Status: slices 1 and 2 are implemented. Slice 3, the A/B gate, ran on 2026-11-17 and was **inconclusive** (see [Slice 3 result](#slice-3-result)). Slices 4 and 5 wait on a decision.
 
 ## The problem
 
@@ -182,3 +182,23 @@ The recorder reads Claude Code transcripts from client hooks and keeps a few kin
 4. A task the recorder loses in all three repeats while the summary wins at least two is reported, whatever the totals.
 
 **What it cannot show.** Eighteen runs per condition cannot separate small differences from chance. The tasks are synthetic and were written by the author of the recorder, around the kinds of information the recorder keeps; the summarizer sees all of that information too, so the test is whether summaries keep it, but task choice still favours the recorder. One model, one client, short sessions: long sessions, where summaries are thought to lose most, are not tested.
+
+## Slice 3 result
+
+Run on 2026-11-17: 36 runs, Sonnet, all valid. Full numbers in [BENCHMARKS.md](../BENCHMARKS.md#handoff-resume-ab-gate-for-the-flight-recorder).
+
+- Success: summary 16/18, recorder 15/18 as scored. All five failures came from one scoring bug, a check that looked for an added test only in `test/`. Corrected: 18/18 each.
+- Median tokens to the first needed edit: summary 32,315, recorder 46,724 (45% more). Median tokens per run: 72,784 and 65,606 (10% fewer). Median context: 2,435 and 1,176 characters.
+- **Rule outcome: inconclusive** (rule 3), with either count. Rule 4 is not triggered: on `frozen-decoy` the summary won once, not twice.
+
+What it means:
+
+- On short sessions, a summary written from the full transcript keeps what these tasks test. The tasks do not separate the conditions, so more repeats of them would not settle the question.
+- The comparison favoured the summary: in practice, an agent stopped by a rate limit or killed does not write one. The recorder matched a summary nobody had to write, at no model cost and with half the context.
+- The recorder brief made agents read before editing. Summaries gave them the next change directly.
+
+Options, for the user to decide:
+
+1. **Accept slices 1 and 2 as they are**, since the recorder matched an ideal summary at no model cost, and stop before slices 4 and 5.
+2. **Run a harder gate** before slices 4 and 5: long sessions with several compactions, where summaries are expected to lose detail, built from real transcripts.
+3. **Improve the brief first**, for example by adding the newest edits' intent and the session's last plan, then rerun this gate with a new version number.

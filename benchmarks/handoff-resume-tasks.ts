@@ -495,11 +495,12 @@ export const TASKS: ResumeTask[] = [
           LOADER("Config loader for the v1 branch."),
       },
       {
+        // Anywhere: the user did not say where. Before 2026-11-17's measured
+        // run was scored, this looked only in test/, and failed five runs
+        // that added src/config/load.test.js.
         name: "a test was added",
-        pass: (read, list) =>
-          list("test").some(
-            (file) => !file.startsWith("hidden-") && file.endsWith(".test.js"),
-          ),
+        pass: (_read, list) =>
+          list("**").some((file) => file.endsWith(".test.js")),
       },
     ],
     reference: {

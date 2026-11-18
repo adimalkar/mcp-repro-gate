@@ -575,6 +575,15 @@ function listFiles(root: string, dir: string): string[] {
     return [];
   }
 }
+function allFiles(root: string, dir = ""): string[] {
+  return readdirSync(join(root, dir), { withFileTypes: true }).flatMap(
+    (entry) => {
+      const path = dir === "" ? entry.name : `${dir}/${entry.name}`;
+      if (entry.name === ".git" || entry.name === "node_modules") return [];
+      return entry.isDirectory() ? allFiles(root, path) : [path];
+    },
+  );
+}
 /** Add the hidden tests, run the suite, and run the task's checks. */
 export function score(task: ResumeTask, repo: string): Score {
   const read = (path: string) => {
@@ -584,7 +593,9 @@ export function score(task: ResumeTask, repo: string): Score {
       return undefined;
     }
   };
-  const list = (dir: string) => listFiles(repo, dir);
+  // "**" lists every file, recursively, except Git and dependencies.
+  const list = (dir: string) =>
+    dir === "**" ? allFiles(repo) : listFiles(repo, dir);
   // Checks see the agent's files, before the hidden tests are added.
   const checks = task.checks.map((check) => ({
     name: check.name,

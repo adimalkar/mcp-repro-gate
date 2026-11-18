@@ -297,3 +297,28 @@ test("totals count successes, checks and medians per condition", () => {
     [2, 2, 30, 1],
   );
 });
+
+test(
+  "frozen-decoy accepts a test added anywhere in the repository",
+  posix,
+  (t) => {
+    const dir = scratch(t);
+    const task = TASKS.find((entry) => entry.id === "frozen-decoy");
+    assert.ok(task);
+    const prepared = prepare(task, dir);
+    writeFileSync(
+      join(prepared.repo, "src", "config", "load.js"),
+      task.reference["src/config/load.js"] ?? "",
+    );
+    writeFileSync(
+      join(prepared.repo, "src", "config", "load.test.js"),
+      'import test from "node:test";\ntest("placeholder", () => {});\n',
+    );
+    const result = score(task, prepared.repo);
+    assert.deepEqual(
+      result.checks.filter((check) => !check.pass),
+      [],
+    );
+    assert.equal(result.success, true);
+  },
+);

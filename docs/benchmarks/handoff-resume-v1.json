@@ -1,0 +1,1107 @@
+{
+  "runDate": "2026-11-17",
+  "manifest": {
+    "benchmarkVersion": 1,
+    "resumePromptVersion": 1,
+    "summaryPromptVersion": 2,
+    "summaryModel": "sonnet",
+    "summariesSha256": "910f3d804abf67e71e55622a1f636f1217617cded31b03e17e4880457a3a2614",
+    "sourceHead": "76e6d66319ef2b2993605bade85f8e0c05645c33",
+    "model": "sonnet",
+    "repeats": 3,
+    "tasks": [
+      "retry-rules",
+      "frozen-decoy",
+      "dead-end",
+      "rename-alias",
+      "csv-rate-limit",
+      "ordered-plan"
+    ]
+  },
+  "benchmarkVersion": 1,
+  "resumePromptVersion": 1,
+  "summaryModel": "sonnet",
+  "model": "sonnet",
+  "claudeCode": "2.1.327 (Claude Code)",
+  "runs": [
+    {
+      "task": "retry-rules",
+      "condition": "recorder",
+      "repeat": 1,
+      "contextChars": 1395,
+      "completed": true,
+      "timedOut": false,
+      "costUsd": 0.07784360000000001,
+      "turns": 5,
+      "durationMs": 8719,
+      "tokens": 49193,
+      "outputTokens": 731,
+      "toolCalls": 4,
+      "tokensToFirstEdit": 31661,
+      "callsToFirstEdit": 3,
+      "edited": ["src/http.js"],
+      "success": true,
+      "testsPassed": 7,
+      "testsFailed": 0,
+      "hiddenPassed": 4,
+      "hiddenTotal": 4,
+      "checks": [
+        {
+          "name": "signature kept",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "task": "retry-rules",
+      "condition": "summary",
+      "repeat": 1,
+      "contextChars": 2614,
+      "completed": true,
+      "timedOut": false,
+      "costUsd": 0.10991050000000001,
+      "turns": 8,
+      "durationMs": 18285,
+      "tokens": 72632,
+      "outputTokens": 2689,
+      "toolCalls": 7,
+      "tokensToFirstEdit": 32574,
+      "callsToFirstEdit": 3,
+      "edited": ["src/http.js", "test/http.test.js"],
+      "success": true,
+      "testsPassed": 11,
+      "testsFailed": 0,
+      "hiddenPassed": 4,
+      "hiddenTotal": 4,
+      "checks": [
+        {
+          "name": "signature kept",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "task": "frozen-decoy",
+      "condition": "summary",
+      "repeat": 1,
+      "contextChars": 2139,
+      "completed": true,
+      "timedOut": false,
+      "costUsd": 0.0521445,
+      "turns": 6,
+      "durationMs": 12655,
+      "tokens": 83105,
+      "outputTokens": 1355,
+      "toolCalls": 5,
+      "tokensToFirstEdit": 47637,
+      "callsToFirstEdit": 3,
+      "edited": ["src/config/load.js", "src/config/load.test.js"],
+      "success": false,
+      "testsPassed": 5,
+      "testsFailed": 0,
+      "hiddenPassed": 1,
+      "hiddenTotal": 1,
+      "checks": [
+        {
+          "name": "legacy loader untouched",
+          "pass": true
+        },
+        {
+          "name": "a test was added",
+          "pass": false
+        }
+      ]
+    },
+    {
+      "task": "frozen-decoy",
+      "condition": "recorder",
+      "repeat": 1,
+      "contextChars": 846,
+      "completed": true,
+      "timedOut": false,
+      "costUsd": 0.0475711,
+      "turns": 6,
+      "durationMs": 11111,
+      "tokens": 80145,
+      "outputTokens": 1166,
+      "toolCalls": 5,
+      "tokensToFirstEdit": 46091,
+      "callsToFirstEdit": 3,
+      "edited": ["src/config/load.js", "src/config/load.test.js"],
+      "success": false,
+      "testsPassed": 2,
+      "testsFailed": 0,
+      "hiddenPassed": 1,
+      "hiddenTotal": 1,
+      "checks": [
+        {
+          "name": "legacy loader untouched",
+          "pass": true
+        },
+        {
+          "name": "a test was added",
+          "pass": false
+        }
+      ]
+    },
+    {
+      "task": "dead-end",
+      "condition": "recorder",
+      "repeat": 1,
+      "contextChars": 1383,
+      "completed": true,
+      "timedOut": false,
+      "costUsd": 0.051829400000000005,
+      "turns": 5,
+      "durationMs": 13237,
+      "tokens": 66228,
+      "outputTokens": 1470,
+      "toolCalls": 4,
+      "tokensToFirstEdit": 47565,
+      "callsToFirstEdit": 3,
+      "edited": ["src/week.js"],
+      "success": true,
+      "testsPassed": 3,
+      "testsFailed": 0,
+      "hiddenPassed": 2,
+      "hiddenTotal": 2,
+      "checks": [
+        {
+          "name": "no local-time or string-parsing date code",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "task": "dead-end",
+      "condition": "summary",
+      "repeat": 1,
+      "contextChars": 2434,
+      "completed": true,
+      "timedOut": false,
+      "costUsd": 0.0524698,
+      "turns": 7,
+      "durationMs": 12263,
+      "tokens": 68021,
+      "outputTokens": 1398,
+      "toolCalls": 6,
+      "tokensToFirstEdit": 32052,
+      "callsToFirstEdit": 3,
+      "edited": ["src/week.js"],
+      "success": true,
+      "testsPassed": 3,
+      "testsFailed": 0,
+      "hiddenPassed": 2,
+      "hiddenTotal": 2,
+      "checks": [
+        {
+          "name": "no local-time or string-parsing date code",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "task": "rename-alias",
+      "condition": "summary",
+      "repeat": 1,
+      "contextChars": 2394,
+      "completed": true,
+      "timedOut": false,
+      "costUsd": 0.058790699999999994,
+      "turns": 7,
+      "durationMs": 14060,
+      "tokens": 87062,
+      "outputTokens": 1529,
+      "toolCalls": 6,
+      "tokensToFirstEdit": 49254,
+      "callsToFirstEdit": 3,
+      "edited": ["src/cart.js", "src/report.js", "test/cart.test.js"],
+      "success": true,
+      "testsPassed": 5,
+      "testsFailed": 0,
+      "hiddenPassed": 1,
+      "hiddenTotal": 1,
+      "checks": [
+        {
+          "name": "alias marked @deprecated",
+          "pass": true
+        },
+        {
+          "name": "no remaining computeTotal calls",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "task": "rename-alias",
+      "condition": "recorder",
+      "repeat": 1,
+      "contextChars": 1209,
+      "completed": true,
+      "timedOut": false,
+      "costUsd": 0.062329300000000004,
+      "turns": 11,
+      "durationMs": 16514,
+      "tokens": 118055,
+      "outputTokens": 1703,
+      "toolCalls": 10,
+      "tokensToFirstEdit": 80573,
+      "callsToFirstEdit": 5,
+      "edited": ["src/report.js", "test/cart.test.js", "src/cart.js"],
+      "success": true,
+      "testsPassed": 4,
+      "testsFailed": 0,
+      "hiddenPassed": 1,
+      "hiddenTotal": 1,
+      "checks": [
+        {
+          "name": "alias marked @deprecated",
+          "pass": true
+        },
+        {
+          "name": "no remaining computeTotal calls",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "task": "csv-rate-limit",
+      "condition": "recorder",
+      "repeat": 1,
+      "contextChars": 1142,
+      "completed": true,
+      "timedOut": false,
+      "costUsd": 0.049416999999999996,
+      "turns": 6,
+      "durationMs": 11650,
+      "tokens": 64931,
+      "outputTokens": 1358,
+      "toolCalls": 5,
+      "tokensToFirstEdit": 46718,
+      "callsToFirstEdit": 3,
+      "edited": ["src/export.js", "test/export.test.js"],
+      "success": true,
+      "testsPassed": 3,
+      "testsFailed": 0,
+      "hiddenPassed": 1,
+      "hiddenTotal": 1,
+      "checks": []
+    },
+    {
+      "task": "csv-rate-limit",
+      "condition": "summary",
+      "repeat": 1,
+      "contextChars": 2505,
+      "completed": true,
+      "timedOut": false,
+      "costUsd": 0.0499757,
+      "turns": 6,
+      "durationMs": 11993,
+      "tokens": 50645,
+      "outputTokens": 1372,
+      "toolCalls": 5,
+      "tokensToFirstEdit": 31899,
+      "callsToFirstEdit": 3,
+      "edited": ["src/export.js", "test/export.test.js"],
+      "success": true,
+      "testsPassed": 9,
+      "testsFailed": 0,
+      "hiddenPassed": 1,
+      "hiddenTotal": 1,
+      "checks": []
+    },
+    {
+      "task": "ordered-plan",
+      "condition": "summary",
+      "repeat": 1,
+      "contextChars": 2435,
+      "completed": true,
+      "timedOut": false,
+      "costUsd": 0.0516675,
+      "turns": 7,
+      "durationMs": 12263,
+      "tokens": 82901,
+      "outputTokens": 1288,
+      "toolCalls": 6,
+      "tokensToFirstEdit": 15609,
+      "callsToFirstEdit": 1,
+      "edited": ["src/api.js", "test/api.test.js"],
+      "success": true,
+      "testsPassed": 4,
+      "testsFailed": 0,
+      "hiddenPassed": 1,
+      "hiddenTotal": 1,
+      "checks": [
+        {
+          "name": "exactly one new migration, unchanged",
+          "pass": true
+        },
+        {
+          "name": "schema step kept",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "task": "ordered-plan",
+      "condition": "recorder",
+      "repeat": 1,
+      "contextChars": 1108,
+      "completed": true,
+      "timedOut": false,
+      "costUsd": 0.040105699999999994,
+      "turns": 5,
+      "durationMs": 13025,
+      "tokens": 63375,
+      "outputTokens": 731,
+      "toolCalls": 4,
+      "tokensToFirstEdit": 46516,
+      "callsToFirstEdit": 3,
+      "edited": ["src/api.js"],
+      "success": true,
+      "testsPassed": 2,
+      "testsFailed": 0,
+      "hiddenPassed": 1,
+      "hiddenTotal": 1,
+      "checks": [
+        {
+          "name": "exactly one new migration, unchanged",
+          "pass": true
+        },
+        {
+          "name": "schema step kept",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "task": "retry-rules",
+      "condition": "summary",
+      "repeat": 2,
+      "contextChars": 2614,
+      "completed": true,
+      "timedOut": false,
+      "costUsd": 0.0745447,
+      "turns": 8,
+      "durationMs": 19702,
+      "tokens": 91656,
+      "outputTokens": 2652,
+      "toolCalls": 7,
+      "tokensToFirstEdit": 32574,
+      "callsToFirstEdit": 3,
+      "edited": ["src/http.js", "test/http.test.js"],
+      "success": true,
+      "testsPassed": 11,
+      "testsFailed": 0,
+      "hiddenPassed": 4,
+      "hiddenTotal": 4,
+      "checks": [
+        {
+          "name": "signature kept",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "task": "retry-rules",
+      "condition": "recorder",
+      "repeat": 2,
+      "contextChars": 1395,
+      "completed": true,
+      "timedOut": false,
+      "costUsd": 0.041278300000000004,
+      "turns": 5,
+      "durationMs": 9548,
+      "tokens": 49174,
+      "outputTokens": 738,
+      "toolCalls": 4,
+      "tokensToFirstEdit": 31649,
+      "callsToFirstEdit": 3,
+      "edited": ["src/http.js"],
+      "success": true,
+      "testsPassed": 7,
+      "testsFailed": 0,
+      "hiddenPassed": 4,
+      "hiddenTotal": 4,
+      "checks": [
+        {
+          "name": "signature kept",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "task": "frozen-decoy",
+      "condition": "summary",
+      "repeat": 2,
+      "contextChars": 2139,
+      "completed": true,
+      "timedOut": false,
+      "costUsd": 0.0515134,
+      "turns": 6,
+      "durationMs": 12376,
+      "tokens": 82857,
+      "outputTokens": 1330,
+      "toolCalls": 5,
+      "tokensToFirstEdit": 47592,
+      "callsToFirstEdit": 3,
+      "edited": ["src/config/load.js", "test/config-load.test.js"],
+      "success": true,
+      "testsPassed": 3,
+      "testsFailed": 0,
+      "hiddenPassed": 1,
+      "hiddenTotal": 1,
+      "checks": [
+        {
+          "name": "legacy loader untouched",
+          "pass": true
+        },
+        {
+          "name": "a test was added",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "task": "frozen-decoy",
+      "condition": "recorder",
+      "repeat": 2,
+      "contextChars": 846,
+      "completed": true,
+      "timedOut": false,
+      "costUsd": 0.04996919999999999,
+      "turns": 7,
+      "durationMs": 13026,
+      "tokens": 95742,
+      "outputTokens": 1231,
+      "toolCalls": 6,
+      "tokensToFirstEdit": 61533,
+      "callsToFirstEdit": 4,
+      "edited": ["src/config/load.js", "src/config/load.test.js"],
+      "success": false,
+      "testsPassed": 2,
+      "testsFailed": 0,
+      "hiddenPassed": 1,
+      "hiddenTotal": 1,
+      "checks": [
+        {
+          "name": "legacy loader untouched",
+          "pass": true
+        },
+        {
+          "name": "a test was added",
+          "pass": false
+        }
+      ]
+    },
+    {
+      "task": "dead-end",
+      "condition": "recorder",
+      "repeat": 2,
+      "contextChars": 1383,
+      "completed": true,
+      "timedOut": false,
+      "costUsd": 0.0480062,
+      "turns": 5,
+      "durationMs": 11260,
+      "tokens": 65403,
+      "outputTokens": 1206,
+      "toolCalls": 4,
+      "tokensToFirstEdit": 47298,
+      "callsToFirstEdit": 3,
+      "edited": ["src/week.js"],
+      "success": true,
+      "testsPassed": 3,
+      "testsFailed": 0,
+      "hiddenPassed": 2,
+      "hiddenTotal": 2,
+      "checks": [
+        {
+          "name": "no local-time or string-parsing date code",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "task": "dead-end",
+      "condition": "summary",
+      "repeat": 2,
+      "contextChars": 2434,
+      "completed": true,
+      "timedOut": false,
+      "costUsd": 0.0545478,
+      "turns": 7,
+      "durationMs": 12103,
+      "tokens": 68476,
+      "outputTokens": 1506,
+      "toolCalls": 6,
+      "tokensToFirstEdit": 32057,
+      "callsToFirstEdit": 3,
+      "edited": ["src/week.js"],
+      "success": true,
+      "testsPassed": 3,
+      "testsFailed": 0,
+      "hiddenPassed": 2,
+      "hiddenTotal": 2,
+      "checks": [
+        {
+          "name": "no local-time or string-parsing date code",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "task": "rename-alias",
+      "condition": "recorder",
+      "repeat": 2,
+      "contextChars": 1209,
+      "completed": true,
+      "timedOut": false,
+      "costUsd": 0.0570642,
+      "turns": 10,
+      "durationMs": 13835,
+      "tokens": 100251,
+      "outputTokens": 1494,
+      "toolCalls": 9,
+      "tokensToFirstEdit": 63682,
+      "callsToFirstEdit": 4,
+      "edited": ["src/report.js", "test/cart.test.js", "src/cart.js"],
+      "success": true,
+      "testsPassed": 4,
+      "testsFailed": 0,
+      "hiddenPassed": 1,
+      "hiddenTotal": 1,
+      "checks": [
+        {
+          "name": "alias marked @deprecated",
+          "pass": true
+        },
+        {
+          "name": "no remaining computeTotal calls",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "task": "rename-alias",
+      "condition": "summary",
+      "repeat": 2,
+      "contextChars": 2394,
+      "completed": true,
+      "timedOut": false,
+      "costUsd": 0.05965260000000001,
+      "turns": 7,
+      "durationMs": 13571,
+      "tokens": 87401,
+      "outputTokens": 1576,
+      "toolCalls": 6,
+      "tokensToFirstEdit": 49360,
+      "callsToFirstEdit": 3,
+      "edited": ["src/cart.js", "src/report.js", "test/cart.test.js"],
+      "success": true,
+      "testsPassed": 5,
+      "testsFailed": 0,
+      "hiddenPassed": 1,
+      "hiddenTotal": 1,
+      "checks": [
+        {
+          "name": "alias marked @deprecated",
+          "pass": true
+        },
+        {
+          "name": "no remaining computeTotal calls",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "task": "csv-rate-limit",
+      "condition": "summary",
+      "repeat": 2,
+      "contextChars": 2505,
+      "completed": true,
+      "timedOut": false,
+      "costUsd": 0.0502377,
+      "turns": 6,
+      "durationMs": 11750,
+      "tokens": 50694,
+      "outputTokens": 1383,
+      "toolCalls": 5,
+      "tokensToFirstEdit": 31894,
+      "callsToFirstEdit": 3,
+      "edited": ["src/export.js", "test/export.test.js"],
+      "success": true,
+      "testsPassed": 9,
+      "testsFailed": 0,
+      "hiddenPassed": 1,
+      "hiddenTotal": 1,
+      "checks": []
+    },
+    {
+      "task": "csv-rate-limit",
+      "condition": "recorder",
+      "repeat": 2,
+      "contextChars": 1142,
+      "completed": true,
+      "timedOut": false,
+      "costUsd": 0.05266059999999999,
+      "turns": 6,
+      "durationMs": 15113,
+      "tokens": 82167,
+      "outputTokens": 1469,
+      "toolCalls": 5,
+      "tokensToFirstEdit": 46800,
+      "callsToFirstEdit": 3,
+      "edited": ["src/export.js", "test/export.test.js"],
+      "success": true,
+      "testsPassed": 5,
+      "testsFailed": 0,
+      "hiddenPassed": 1,
+      "hiddenTotal": 1,
+      "checks": []
+    },
+    {
+      "task": "ordered-plan",
+      "condition": "recorder",
+      "repeat": 2,
+      "contextChars": 1108,
+      "completed": true,
+      "timedOut": false,
+      "costUsd": 0.0399032,
+      "turns": 5,
+      "durationMs": 11424,
+      "tokens": 63453,
+      "outputTokens": 694,
+      "toolCalls": 4,
+      "tokensToFirstEdit": 46591,
+      "callsToFirstEdit": 3,
+      "edited": ["src/api.js"],
+      "success": true,
+      "testsPassed": 2,
+      "testsFailed": 0,
+      "hiddenPassed": 1,
+      "hiddenTotal": 1,
+      "checks": [
+        {
+          "name": "exactly one new migration, unchanged",
+          "pass": true
+        },
+        {
+          "name": "schema step kept",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "task": "ordered-plan",
+      "condition": "summary",
+      "repeat": 2,
+      "contextChars": 2435,
+      "completed": true,
+      "timedOut": false,
+      "costUsd": 0.0521376,
+      "turns": 7,
+      "durationMs": 17122,
+      "tokens": 82982,
+      "outputTokens": 1339,
+      "toolCalls": 6,
+      "tokensToFirstEdit": 15611,
+      "callsToFirstEdit": 1,
+      "edited": ["src/api.js", "test/api.test.js"],
+      "success": true,
+      "testsPassed": 4,
+      "testsFailed": 0,
+      "hiddenPassed": 1,
+      "hiddenTotal": 1,
+      "checks": [
+        {
+          "name": "exactly one new migration, unchanged",
+          "pass": true
+        },
+        {
+          "name": "schema step kept",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "task": "retry-rules",
+      "condition": "recorder",
+      "repeat": 3,
+      "contextChars": 1395,
+      "completed": true,
+      "timedOut": false,
+      "costUsd": 0.0414355,
+      "turns": 5,
+      "durationMs": 11483,
+      "tokens": 49210,
+      "outputTokens": 748,
+      "toolCalls": 4,
+      "tokensToFirstEdit": 31656,
+      "callsToFirstEdit": 3,
+      "edited": ["src/http.js"],
+      "success": true,
+      "testsPassed": 7,
+      "testsFailed": 0,
+      "hiddenPassed": 4,
+      "hiddenTotal": 4,
+      "checks": [
+        {
+          "name": "signature kept",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "task": "frozen-decoy",
+      "condition": "summary",
+      "repeat": 3,
+      "contextChars": 2139,
+      "completed": true,
+      "timedOut": false,
+      "costUsd": 0.050940200000000005,
+      "turns": 6,
+      "durationMs": 12712,
+      "tokens": 82813,
+      "outputTokens": 1269,
+      "toolCalls": 5,
+      "tokensToFirstEdit": 47603,
+      "callsToFirstEdit": 3,
+      "edited": ["src/config/load.js", "src/config/load.test.js"],
+      "success": false,
+      "testsPassed": 3,
+      "testsFailed": 0,
+      "hiddenPassed": 1,
+      "hiddenTotal": 1,
+      "checks": [
+        {
+          "name": "legacy loader untouched",
+          "pass": true
+        },
+        {
+          "name": "a test was added",
+          "pass": false
+        }
+      ]
+    },
+    {
+      "task": "retry-rules",
+      "condition": "summary",
+      "repeat": 3,
+      "contextChars": 2614,
+      "completed": true,
+      "timedOut": false,
+      "costUsd": 0.07558550000000001,
+      "turns": 7,
+      "durationMs": 20567,
+      "tokens": 72936,
+      "outputTokens": 2882,
+      "toolCalls": 6,
+      "tokensToFirstEdit": 32572,
+      "callsToFirstEdit": 3,
+      "edited": ["src/http.js", "test/http.test.js"],
+      "success": true,
+      "testsPassed": 11,
+      "testsFailed": 0,
+      "hiddenPassed": 4,
+      "hiddenTotal": 4,
+      "checks": [
+        {
+          "name": "signature kept",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "task": "frozen-decoy",
+      "condition": "recorder",
+      "repeat": 3,
+      "contextChars": 846,
+      "completed": true,
+      "timedOut": false,
+      "costUsd": 0.0479949,
+      "turns": 6,
+      "durationMs": 13275,
+      "tokens": 80201,
+      "outputTokens": 1198,
+      "toolCalls": 5,
+      "tokensToFirstEdit": 46077,
+      "callsToFirstEdit": 3,
+      "edited": ["src/config/load.js", "src/config/load.test.js"],
+      "success": false,
+      "testsPassed": 3,
+      "testsFailed": 0,
+      "hiddenPassed": 1,
+      "hiddenTotal": 1,
+      "checks": [
+        {
+          "name": "legacy loader untouched",
+          "pass": true
+        },
+        {
+          "name": "a test was added",
+          "pass": false
+        }
+      ]
+    },
+    {
+      "task": "dead-end",
+      "condition": "recorder",
+      "repeat": 3,
+      "contextChars": 1383,
+      "completed": true,
+      "timedOut": false,
+      "costUsd": 0.0493935,
+      "turns": 5,
+      "durationMs": 14768,
+      "tokens": 65809,
+      "outputTokens": 1292,
+      "toolCalls": 4,
+      "tokensToFirstEdit": 47509,
+      "callsToFirstEdit": 3,
+      "edited": ["src/week.js"],
+      "success": true,
+      "testsPassed": 3,
+      "testsFailed": 0,
+      "hiddenPassed": 2,
+      "hiddenTotal": 2,
+      "checks": [
+        {
+          "name": "no local-time or string-parsing date code",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "task": "dead-end",
+      "condition": "summary",
+      "repeat": 3,
+      "contextChars": 2434,
+      "completed": true,
+      "timedOut": false,
+      "costUsd": 0.053525600000000007,
+      "turns": 7,
+      "durationMs": 14806,
+      "tokens": 68283,
+      "outputTokens": 1463,
+      "toolCalls": 6,
+      "tokensToFirstEdit": 32051,
+      "callsToFirstEdit": 3,
+      "edited": ["src/week.js"],
+      "success": true,
+      "testsPassed": 3,
+      "testsFailed": 0,
+      "hiddenPassed": 2,
+      "hiddenTotal": 2,
+      "checks": [
+        {
+          "name": "no local-time or string-parsing date code",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "task": "rename-alias",
+      "condition": "summary",
+      "repeat": 3,
+      "contextChars": 2394,
+      "completed": true,
+      "timedOut": false,
+      "costUsd": 0.057183,
+      "turns": 7,
+      "durationMs": 15495,
+      "tokens": 69034,
+      "outputTokens": 1529,
+      "toolCalls": 6,
+      "tokensToFirstEdit": 49202,
+      "callsToFirstEdit": 3,
+      "edited": ["src/cart.js", "src/report.js", "test/cart.test.js"],
+      "success": true,
+      "testsPassed": 5,
+      "testsFailed": 0,
+      "hiddenPassed": 1,
+      "hiddenTotal": 1,
+      "checks": [
+        {
+          "name": "alias marked @deprecated",
+          "pass": true
+        },
+        {
+          "name": "no remaining computeTotal calls",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "task": "rename-alias",
+      "condition": "recorder",
+      "repeat": 3,
+      "contextChars": 1209,
+      "completed": true,
+      "timedOut": false,
+      "costUsd": 0.06979049999999999,
+      "turns": 13,
+      "durationMs": 18700,
+      "tokens": 137423,
+      "outputTokens": 1964,
+      "toolCalls": 12,
+      "tokensToFirstEdit": 98193,
+      "callsToFirstEdit": 8,
+      "edited": ["src/report.js", "test/cart.test.js", "src/cart.js"],
+      "success": true,
+      "testsPassed": 4,
+      "testsFailed": 0,
+      "hiddenPassed": 1,
+      "hiddenTotal": 1,
+      "checks": [
+        {
+          "name": "alias marked @deprecated",
+          "pass": true
+        },
+        {
+          "name": "no remaining computeTotal calls",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "task": "csv-rate-limit",
+      "condition": "recorder",
+      "repeat": 3,
+      "contextChars": 1142,
+      "completed": true,
+      "timedOut": false,
+      "costUsd": 0.049059,
+      "turns": 6,
+      "durationMs": 13566,
+      "tokens": 64891,
+      "outputTokens": 1338,
+      "toolCalls": 5,
+      "tokensToFirstEdit": 46729,
+      "callsToFirstEdit": 3,
+      "edited": ["src/export.js", "test/export.test.js"],
+      "success": true,
+      "testsPassed": 3,
+      "testsFailed": 0,
+      "hiddenPassed": 1,
+      "hiddenTotal": 1,
+      "checks": []
+    },
+    {
+      "task": "csv-rate-limit",
+      "condition": "summary",
+      "repeat": 3,
+      "contextChars": 2505,
+      "completed": true,
+      "timedOut": false,
+      "costUsd": 0.049008899999999994,
+      "turns": 6,
+      "durationMs": 17121,
+      "tokens": 50541,
+      "outputTokens": 1288,
+      "toolCalls": 5,
+      "tokensToFirstEdit": 31906,
+      "callsToFirstEdit": 3,
+      "edited": ["src/export.js", "test/export.test.js"],
+      "success": true,
+      "testsPassed": 9,
+      "testsFailed": 0,
+      "hiddenPassed": 1,
+      "hiddenTotal": 1,
+      "checks": []
+    },
+    {
+      "task": "ordered-plan",
+      "condition": "summary",
+      "repeat": 3,
+      "contextChars": 2435,
+      "completed": true,
+      "timedOut": false,
+      "costUsd": 0.048820999999999996,
+      "turns": 6,
+      "durationMs": 17021,
+      "tokens": 66438,
+      "outputTokens": 1216,
+      "toolCalls": 5,
+      "tokensToFirstEdit": 15611,
+      "callsToFirstEdit": 1,
+      "edited": ["src/api.js", "test/api.test.js"],
+      "success": true,
+      "testsPassed": 4,
+      "testsFailed": 0,
+      "hiddenPassed": 1,
+      "hiddenTotal": 1,
+      "checks": [
+        {
+          "name": "exactly one new migration, unchanged",
+          "pass": true
+        },
+        {
+          "name": "schema step kept",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "task": "ordered-plan",
+      "condition": "recorder",
+      "repeat": 3,
+      "contextChars": 1108,
+      "completed": true,
+      "timedOut": false,
+      "costUsd": 0.040474300000000005,
+      "turns": 5,
+      "durationMs": 16326,
+      "tokens": 63536,
+      "outputTokens": 728,
+      "toolCalls": 4,
+      "tokensToFirstEdit": 46583,
+      "callsToFirstEdit": 3,
+      "edited": ["src/api.js"],
+      "success": true,
+      "testsPassed": 2,
+      "testsFailed": 0,
+      "hiddenPassed": 1,
+      "hiddenTotal": 1,
+      "checks": [
+        {
+          "name": "exactly one new migration, unchanged",
+          "pass": true
+        },
+        {
+          "name": "schema step kept",
+          "pass": true
+        }
+      ]
+    }
+  ],
+  "totals": {
+    "summary": {
+      "runs": 18,
+      "successes": 16,
+      "checksPassed": 22,
+      "checksTotal": 24,
+      "hiddenPassed": 30,
+      "hiddenTotal": 30,
+      "medianTokens": 72784,
+      "medianTokensToFirstEdit": 32314.5,
+      "medianCallsToFirstEdit": 3,
+      "noTargetEdit": 0,
+      "costUsd": 1.0526567000000002
+    },
+    "recorder": {
+      "runs": 18,
+      "successes": 15,
+      "checksPassed": 21,
+      "checksTotal": 24,
+      "hiddenPassed": 30,
+      "hiddenTotal": 30,
+      "medianTokens": 65606,
+      "medianTokensToFirstEdit": 46723.5,
+      "medianCallsToFirstEdit": 3,
+      "noTargetEdit": 0,
+      "costUsd": 0.9161254999999997
+    }
+  },
+  "scoringNote": "Scored with source 76e6d66. The frozen-decoy check 'a test was added' then looked only in test/; the five runs it failed added src/config/load.test.js, and in each the hidden tests and every other check passed. The check now accepts a test anywhere. Corrected successes: summary 18/18, recorder 18/18."
+}
