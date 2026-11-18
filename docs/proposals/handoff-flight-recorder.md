@@ -172,6 +172,7 @@ The recorder reads Claude Code transcripts from client hooks and keeps a few kin
 - **Isolation.** `claude -p` with project settings only (no user hooks), no MCP servers, no saved session, no web or subagent tools, a fixed allowlist of commands, a fresh copy of the repository, and 15 minutes per run. The user's global `CLAUDE.md` is still loaded, equally in both conditions, because the account has no API key for `--bare`.
 - **Scoring.** Hidden tests added after the run, and checks of the user's constraints (signature kept, legacy file untouched, no local-time date code, alias marked deprecated, exactly one new migration). A run succeeds only if every test and check passes. Also measured: tokens, and tokens and tool calls until the first edit of a file the task needs. The scoring was validated before any run: for each task, the state the first session left fails and a reference finish passes.
 - **Size.** 6 tasks × 2 conditions × 3 repeats = 36 runs, interleaved with alternating order, on Claude Code only. The recorder reads only Claude Code transcripts so far, and a second client would add a variable.
+- **Run integrity.** The runner records its model, task set, summary digest, and source commit in a manifest, then checkpoints each completed run. Restarting with the same output directory skips completed runs. Provider rejections and missing model results stop the run without being scored; a 15-minute timeout counts as a failed attempt. Keep rejected-call logs separate from the measured run.
 
 **Decision rule, fixed before any run (2026-11-14):**
 

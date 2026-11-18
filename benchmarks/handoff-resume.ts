@@ -516,6 +516,33 @@ function runClaude(
   });
 }
 
+/** A provider rejection is not a failed coding attempt and must not be scored. */
+export function assertSuccessfulRun(
+  lines: readonly string[],
+  label: string,
+): void {
+  for (const line of [...lines].reverse()) {
+    let event: Record<string, unknown>;
+    try {
+      event = record(JSON.parse(line));
+    } catch {
+      continue;
+    }
+    if (event.type !== "result") continue;
+    if (event.is_error === true) {
+      const reason =
+        typeof event.api_error === "string"
+          ? event.api_error
+          : typeof event.result === "string"
+            ? event.result
+            : "unknown provider error";
+      throw new Error(`${label}: model call rejected: ${reason.slice(0, 200)}`);
+    }
+    return;
+  }
+  throw new Error(`${label}: model call returned no result`);
+}
+
 /** The final text of a stream-json run. */
 export function resultText(lines: readonly string[]): string | undefined {
   for (const line of [...lines].reverse()) {
@@ -635,6 +662,7 @@ async function makeSummaries(model: string): Promise<void> {
         claudeArgs(model, "none"),
         RUN_TIMEOUT_MS,
       );
+      assertSuccessfulRun(run.lines, task.id);
       const text = resultText(run.lines);
       if (text === undefined)
         throw new Error(`${task.id}: no summary (${run.stderr.slice(0, 300)})`);
@@ -751,15 +779,18 @@ async function runAll(options: {
         );
         const name = `${job.task.id}-${job.condition}-${String(job.repeat)}`;
         writeFileSync(join(logs, `${name}.jsonl`), `${run.lines.join("\n")}\n`);
+        if (!run.timedOut) assertSuccessfulRun(run.lines, name);
         const metrics = parseStream(run.lines, repo, job.task.targets);
         metrics.timedOut = run.timedOut;
+        const scored = score(job.task, repo);
         const result: RunResult = {
           task: job.task.id,
           condition: job.condition,
           repeat: job.repeat,
           contextChars: text.length,
           ...metrics,
-          ...score(job.task, repo),
+          ...scored,
+          success: !run.timedOut && scored.success,
         };
         results.push(result);
         process.stdout.write(

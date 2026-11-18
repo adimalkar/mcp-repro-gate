@@ -13,6 +13,7 @@ import { dirname, join } from "node:path";
 import test, { type TestContext } from "node:test";
 
 import {
+  assertSuccessfulRun,
   claudeArgs,
   parseStream,
   prepare,
@@ -220,6 +221,26 @@ test("every model call is isolated from user hooks, MCP servers and saved sessio
     ] ?? "",
     /^Bash Read Edit Write/u,
   );
+});
+
+test("provider errors and missing results cannot become benchmark failures", () => {
+  const result = (value: Record<string, unknown>) =>
+    JSON.stringify({
+      type: "result",
+      ...value,
+    });
+  assert.doesNotThrow(() => {
+    assertSuccessfulRun([result({ is_error: false })], "task");
+  });
+  assert.throws(() => {
+    assertSuccessfulRun(
+      [result({ is_error: true, api_error: "usage_limit_reached" })],
+      "task",
+    );
+  }, /task: model call rejected: usage_limit_reached/u);
+  assert.throws(() => {
+    assertSuccessfulRun([JSON.stringify({ type: "system" })], "task");
+  }, /task: model call returned no result/u);
 });
 
 test("totals count successes, checks and medians per condition", () => {

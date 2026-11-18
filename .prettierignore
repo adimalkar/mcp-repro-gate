@@ -1,3 +1,4 @@
+.agent/
 .codebase-memory/
 dist/
 node_modules/
