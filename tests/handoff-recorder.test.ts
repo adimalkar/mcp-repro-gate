@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   appendFileSync,
   readFileSync,
@@ -21,7 +22,11 @@ import { Ajv2020 } from "ajv/dist/2020.js";
 
 import { createHandoffService, type HandoffService } from "../src/handoff.js";
 import { runHandoffCli } from "../src/handoff-cli.js";
-import { extractTranscript, readTranscript } from "../src/handoff-recorder.js";
+import {
+  blobId,
+  extractTranscript,
+  readTranscript,
+} from "../src/handoff-recorder.js";
 import { handoffSearchResultSchema } from "../src/handoff-session-contract.js";
 
 const posix = { skip: process.platform === "win32" };
@@ -288,6 +293,26 @@ test("a symlinked transcript is refused", posix, (t) => {
   const link = join(f.transcripts, "link.jsonl");
   symlinkSync(target, link);
   assert.equal(readTranscript(link, undefined), undefined);
+});
+
+test("blob IDs hash only bounded regular-file bytes through the opened file", (t) => {
+  const f = fixture(t);
+  const path = join(f.workspaceRoot, "value.txt");
+  writeFileSync(path, "hello");
+  const expected = createHash("sha1").update("blob 5\0hello").digest("hex");
+  assert.equal(blobId(path, "sha1"), expected);
+  assert.equal(blobId(join(f.workspaceRoot, "missing.txt"), "sha1"), null);
+  writeFileSync(path, Buffer.alloc(8 * 1024 * 1024 + 1));
+  assert.equal(blobId(path, "sha1"), null);
+});
+
+test("blob IDs refuse symlinks", posix, (t) => {
+  const f = fixture(t);
+  const target = join(f.workspaceRoot, "target.txt");
+  writeFileSync(target, "hello");
+  const link = join(f.workspaceRoot, "link.txt");
+  symlinkSync(target, link);
+  assert.equal(blobId(link, "sha1"), null);
 });
 
 function hook(

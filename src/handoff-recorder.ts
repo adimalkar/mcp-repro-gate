@@ -5,8 +5,8 @@ import {
   fstatSync,
   lstatSync,
   openSync,
-  readFileSync,
   readSync,
+  type Stats,
 } from "node:fs";
 import { isAbsolute, join, relative, sep } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
@@ -292,6 +292,20 @@ export interface TranscriptRead {
   remaining: number;
 }
 
+function isOpenedRegularFile(path: string, opened: Stats): boolean {
+  // Check the path after opening, but read only through the held descriptor.
+  // On Windows O_NOFOLLOW is unavailable; this also rejects a symlink that
+  // was followed by openSync, or a path replaced with another file.
+  const current = lstatSync(path);
+  return (
+    opened.isFile() &&
+    current.isFile() &&
+    opened.ino !== 0 &&
+    opened.dev === current.dev &&
+    opened.ino === current.ino
+  );
+}
+
 /**
  * Read a transcript from where the last read stopped, complete lines only.
  * The path must be an absolute `.jsonl` regular file, not a symlink, owned
@@ -307,8 +321,6 @@ export function readTranscript(
     return undefined;
   let fd: number;
   try {
-    if (!lstatSync(path).isFile()) return undefined;
-    // Windows has no O_NOFOLLOW; the lstat above is the check there.
     const noFollow = (constants as { O_NOFOLLOW?: number }).O_NOFOLLOW ?? 0;
     fd = openSync(path, constants.O_RDONLY | noFollow);
   } catch {
@@ -316,7 +328,7 @@ export function readTranscript(
   }
   try {
     const stats = fstatSync(fd);
-    if (!stats.isFile()) return undefined;
+    if (!isOpenedRegularFile(path, stats)) return undefined;
     if (process.platform !== "win32" && stats.uid !== process.getuid?.())
       return undefined;
     const identity = `${String(stats.dev)}:${String(stats.ino)}`;
@@ -368,16 +380,40 @@ export function readTranscript(
  * filters applied; null for a missing, special or large file.
  */
 export function blobId(path: string, format: "sha1" | "sha256"): string | null {
+  let fd: number;
   try {
-    const stats = lstatSync(path);
-    if (!stats.isFile() || stats.size > MAX_HASHED_FILE_BYTES) return null;
-    const bytes = readFileSync(path);
+    const noFollow = (constants as { O_NOFOLLOW?: number }).O_NOFOLLOW ?? 0;
+    fd = openSync(path, constants.O_RDONLY | noFollow);
+  } catch {
+    return null;
+  }
+  try {
+    const stats = fstatSync(fd);
+    if (!isOpenedRegularFile(path, stats) || stats.size > MAX_HASHED_FILE_BYTES)
+      return null;
+    const bytes = Buffer.alloc(stats.size);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const count = readSync(fd, bytes, offset, bytes.length - offset, offset);
+      if (count === 0) return null;
+      offset += count;
+    }
+    const after = fstatSync(fd);
+    if (
+      after.size !== stats.size ||
+      after.mtimeMs !== stats.mtimeMs ||
+      after.ctimeMs !== stats.ctimeMs ||
+      !isOpenedRegularFile(path, after)
+    )
+      return null;
     return createHash(format)
       .update(`blob ${String(bytes.length)}\0`)
       .update(bytes)
       .digest("hex");
   } catch {
     return null;
+  } finally {
+    closeSync(fd);
   }
 }
 
