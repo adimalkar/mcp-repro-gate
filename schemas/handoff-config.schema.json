@@ -61,6 +61,14 @@
           "type": "integer",
           "minimum": 0,
           "maximum": 3600
+        },
+        "captureTranscripts": {
+          "type": "boolean"
+        },
+        "captureBytes": {
+          "type": "integer",
+          "minimum": 1048576,
+          "maximum": 1073741824
         }
       }
     }

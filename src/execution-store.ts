@@ -20,6 +20,10 @@ import {
   canonicalHandoffPath,
   type HandoffDatabaseBinding,
 } from "./handoff-filesystem.js";
+import {
+  HANDOFF_RECORDER_SCHEMA,
+  HandoffRecorder,
+} from "./handoff-recorder.js";
 import { HandoffSearchIndex } from "./handoff-search.js";
 import {
   HANDOFF_SESSION_SCHEMA,
@@ -274,6 +278,7 @@ export class SqliteExecutionStore implements PlanStore, TokenUseStore {
       CREATE TRIGGER IF NOT EXISTS handoff_instance_no_delete BEFORE DELETE ON handoff_instance
         BEGIN SELECT RAISE(ABORT, 'Immutable handoff instance'); END;
       ${HANDOFF_SESSION_SCHEMA}
+      ${HANDOFF_RECORDER_SCHEMA}
     `,
       () => {
         this.#database
@@ -435,6 +440,14 @@ export class SqliteExecutionStore implements PlanStore, TokenUseStore {
     if (typeof row?.revision !== "number")
       throw new HandoffError("unavailable");
     return row.revision;
+  }
+
+  /** Events recorded from client transcripts. */
+  handoffRecorder(): HandoffRecorder {
+    this.#verifyHandoff();
+    return new HandoffRecorder(this.#database, () => {
+      this.#verifyHandoff();
+    });
   }
 
   /** Full-text search over this workspace's handoff context. */

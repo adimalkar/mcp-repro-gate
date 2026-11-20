@@ -276,6 +276,8 @@ export function runHandoffCli(
             },
           })}\n`,
         );
+      if (result.warning !== undefined)
+        io.stderr(`reprogate handoff hook: ${result.warning}\n`);
       return 0;
     } catch (error) {
       io.stderr(

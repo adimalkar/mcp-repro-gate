@@ -78,6 +78,15 @@ export const handoffSessionsConfigSchema = z.strictObject({
   graceSeconds: z.number().int().min(0).max(86_400).optional(),
   observeGit: z.boolean().optional(),
   captureMessages: z.boolean().optional(),
+  /** Read client transcripts from hooks and keep structured events. */
+  captureTranscripts: z.boolean().optional(),
+  /** Byte cap for recorded events per workspace. */
+  captureBytes: z
+    .number()
+    .int()
+    .min(1024 * 1024)
+    .max(1024 * 1024 * 1024)
+    .optional(),
   projectFile: z.boolean().optional(),
   projectionIntervalSeconds: z.number().int().min(0).max(3600).optional(),
 });
@@ -190,6 +199,46 @@ export const HANDOFF_DOCUMENT_STATES = [
 ] as const;
 export type HandoffDocumentState = (typeof HANDOFF_DOCUMENT_STATES)[number];
 
+export const MAX_BRIEF_REQUESTS = 3;
+export const MAX_BRIEF_FAILURES = 3;
+export const MAX_BRIEF_FILES = 10;
+/** Structured events read from client transcripts, when capture is on. */
+export const handoffRecordedSchema = z.strictObject({
+  source: z.literal("client_transcript"),
+  /** What the user typed, newest first. */
+  requests: z.array(
+    z.strictObject({
+      sessionId: handoffUuidSchema,
+      text: z.string(),
+      createdAt: isoSchema,
+    }),
+  ),
+  /** Commands that failed or were interrupted, newest first. */
+  failures: z.array(
+    z.strictObject({
+      sessionId: handoffUuidSchema,
+      command: z.string(),
+      status: z.enum(["failed", "interrupted"]),
+      exitCode: z.number().int().nullable(),
+      tail: z.string().nullable(),
+      createdAt: isoSchema,
+    }),
+  ),
+  /** Files changed through edit tools, newest first, one entry per path. */
+  files: z.array(
+    z.strictObject({
+      sessionId: handoffUuidSchema,
+      path: z.string(),
+      /** Git blob ID of the file's bytes when the transcript was read. */
+      blob: z.string().nullable(),
+      createdAt: isoSchema,
+    }),
+  ),
+  /** Entries left out by the caps or the budget. */
+  omitted: z.number().int().min(0),
+});
+export type HandoffRecordedV1 = z.infer<typeof handoffRecordedSchema>;
+
 export const handoffBriefSchema = z.strictObject({
   briefVersion: z.literal(1),
   generatedAt: isoSchema,
@@ -209,6 +258,7 @@ export const handoffBriefSchema = z.strictObject({
   notes: z.array(handoffNoteViewSchema),
   omittedNotes: z.number().int().min(0),
   git: handoffGitObservationSchema,
+  recorded: handoffRecordedSchema.optional(),
   /** Set when anything beyond the counted omissions was removed or cut. */
   truncated: z.boolean(),
   provenance: z.strictObject({
@@ -265,10 +315,19 @@ export const HANDOFF_REVISION_FIELDS = [
   "nextStep",
 ] as const;
 export type HandoffRevisionField = (typeof HANDOFF_REVISION_FIELDS)[number];
+/** Kinds of event read from client transcripts. */
+export const HANDOFF_RECORDED_KINDS = [
+  "request",
+  "reply",
+  "command",
+  "edit",
+  "api_error",
+] as const;
 export const HANDOFF_SEARCH_KINDS = [
   ...HANDOFF_NOTE_KINDS,
   "task",
   "revision",
+  ...HANDOFF_RECORDED_KINDS,
 ] as const;
 export type HandoffSearchKind = (typeof HANDOFF_SEARCH_KINDS)[number];
 export const DEFAULT_SEARCH_LIMIT = 8;
@@ -306,9 +365,15 @@ export const handoffSearchInputSchema = z.strictObject({
 export type HandoffSearchInputV1 = z.infer<typeof handoffSearchInputSchema>;
 
 export const handoffSearchHitSchema = z.strictObject({
-  source: z.enum(["note", "task", "revision"]),
-  /** The note kind, or the revision field; null for a task. */
-  kind: z.enum([...HANDOFF_NOTE_KINDS, ...HANDOFF_REVISION_FIELDS]).nullable(),
+  source: z.enum(["note", "task", "revision", "event"]),
+  /** The note kind, revision field or event kind; null for a task. */
+  kind: z
+    .enum([
+      ...HANDOFF_NOTE_KINDS,
+      ...HANDOFF_REVISION_FIELDS,
+      ...HANDOFF_RECORDED_KINDS,
+    ])
+    .nullable(),
   text: z.string(),
   /** True when text is a window of a longer original. */
   cut: z.boolean(),
