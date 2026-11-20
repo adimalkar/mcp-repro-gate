@@ -42,8 +42,17 @@ function setup(context: test.TestContext, jti: string) {
   const directory = mkdtempSync(join(tmpdir(), "reprogate-races-"));
   const databasePath = join(directory, "reprogate.sqlite");
   const store = new SqliteExecutionStore(databasePath);
+  // `after` hooks run in registration order, so every store a test opens is
+  // closed here, before the directory goes: Windows cannot remove an open
+  // database.
+  const opened = [store];
+  const open = (options?: { leaseMs?: number }) => {
+    const another = new SqliteExecutionStore(databasePath, options);
+    opened.push(another);
+    return another;
+  };
   context.after(() => {
-    store.close();
+    for (const entry of opened) entry.close();
     rmSync(directory, {
       recursive: true,
       force: true,
@@ -71,7 +80,7 @@ function setup(context: test.TestContext, jti: string) {
     capabilitySecret,
   );
   const effects = join(directory, "effects.log");
-  return { directory, databasePath, store, plan, token, effects };
+  return { directory, databasePath, store, open, plan, token, effects };
 }
 
 type Setup = ReturnType<typeof setup>;
@@ -201,10 +210,7 @@ test("recovery leaves a live process's execution alone, and it completes", async
   // A second `serve` starting now must not declare the call indeterminate,
   // even after the lease would have lapsed without renewal.
   await new Promise((resolve) => setTimeout(resolve, 1500));
-  const restarted = new SqliteExecutionStore(fixture.databasePath);
-  context.after(() => {
-    restarted.close();
-  });
+  const restarted = fixture.open();
   assert.equal(restarted.recoverIncomplete(), 0);
   assert.equal(restarted.countIncomplete(), 1);
 
@@ -230,10 +236,7 @@ test("a hard-killed execution is recovered indeterminate and its capability stay
   victim.child.kill("SIGKILL");
   await assert.rejects(victim.result, /ended with/u);
 
-  const restarted = new SqliteExecutionStore(fixture.databasePath);
-  context.after(() => {
-    restarted.close();
-  });
+  const restarted = fixture.open();
   // The killed process cannot release its lease; recovery waits it out.
   let recovered = 0;
   await waitFor(() => {
@@ -301,7 +304,7 @@ test("leases: a closed owner's and a legacy execution are recovered, the store's
       executionId: capabilityId,
     });
 
-  const owner = new SqliteExecutionStore(fixture.databasePath);
+  const owner = fixture.open();
   // A first attempt that rolls back (spent capability) must not leave the
   // owner's later executions without a live owner.
   fixture.store.consume("spent");
@@ -332,10 +335,7 @@ test("leases: a closed owner's and a legacy execution are recovered, the store's
   assert.equal(fixture.store.recoverIncomplete(), 1);
   assert.equal(fixture.store.getExecution("legacy")?.state, "indeterminate");
   assert.equal(fixture.store.countIncomplete(), 1);
-  assert.throws(
-    () => new SqliteExecutionStore(fixture.databasePath, { leaseMs: 1 }),
-    /at least 30 ms/u,
-  );
+  assert.throws(() => fixture.open({ leaseMs: 1 }), /at least 30 ms/u);
 });
 
 test("a database from before execution ownership opens and recovers as before", (context) => {

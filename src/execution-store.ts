@@ -700,10 +700,11 @@ export class SqliteExecutionStore implements PlanStore, TokenUseStore {
   }
 
   close(): void {
+    if (!this.#database.isOpen) return;
     this.#stopHeartbeat();
     // Executions this store has not finished can no longer finish here;
     // ending the lease lets the next recovery record them indeterminate.
-    if (this.#ownerClaimed && this.#database.isOpen) {
+    if (this.#ownerClaimed) {
       try {
         this.#database
           .prepare(
