@@ -329,6 +329,7 @@ With `"sessions": { "captureTranscripts": true }`, the client hooks also read th
 - **Where it shows.** Briefs gain `recorded`: the three newest user requests, the three newest failed or interrupted commands with exit codes and tails, and the ten most recently changed files with their blob IDs, newest first. It is fitted to the budget with everything else, and user requests are the last entries dropped. `handoff_search` finds recorded events too, with `source: "event"` and the event kind; a failed command is searchable by its output tail.
 - On 62 local transcripts (906 MB), the recorder kept 10.2 MB (1.1%) and read them all in 3.4 seconds.
 - Codex rollout files are not read yet.
+- **A complement to the client's own summaries, not a replacement.** Measured on long generated sessions, agents resuming from this brief alone succeeded in 5 of 18 runs, against 18 of 18 from a compaction summary: the brief's newest requests were side requests, and agents took them for the whole task. The four runs that used `handoff_search` all succeeded. The brief's text therefore says the recorded entries are the newest only and points to search. See the [flight-recorder proposal](proposals/handoff-flight-recorder.md).
 
 ### Subagents, lanes and the sessions file
 

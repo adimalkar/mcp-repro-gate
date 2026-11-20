@@ -376,7 +376,10 @@ test("hooks record a session's transcript and the brief shows requests, failures
   // Without Git, no blob ID is computed.
   assert.equal(recorded.files[0]?.blob, null);
   const text = service.briefText();
-  assert.match(text, /Recorded from client transcripts:/u);
+  assert.match(
+    text,
+    /Recorded from client transcripts \(newest only; the request the work is for may be older, so search for it with handoff_search before acting\):/u,
+  );
   assert.match(
     text,
     /User asked \([0-9a-f]{8}, .*\): Make the importer retry on EPERM/u,
