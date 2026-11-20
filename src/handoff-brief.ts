@@ -838,7 +838,14 @@ export function renderBriefText(
       recorded.files.length >
       0
   ) {
-    out.push("", "Recorded from client transcripts:");
+    // Newest first and capped: after a long session the request the work is
+    // for is often older than all of these. Measured: agents that took the
+    // newest requests for the whole task redid side work or undid the
+    // user's changes (docs/BENCHMARKS.md, long sessions).
+    out.push(
+      "",
+      "Recorded from client transcripts (newest only; the request the work is for may be older, so search for it with handoff_search before acting):",
+    );
     for (const request of recorded.requests)
       out.push(
         `- User asked (${request.sessionId.slice(0, 8)}, ${ago(request.createdAt, now)}): ${line(request.text)}`,
