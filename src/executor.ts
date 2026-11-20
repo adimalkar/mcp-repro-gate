@@ -180,7 +180,25 @@ export class ReproGateExecutor {
         },
         this.receiptSecret,
       );
-      this.store.completeExecution(receipt);
+      try {
+        this.store.completeExecution(receipt);
+      } catch (error) {
+        // The downstream call ran, but the store did not record its outcome:
+        // another process's recovery may already have recorded it
+        // indeterminate after this process's lease lapsed. Never report
+        // success the ledger does not show.
+        try {
+          this.store.markIndeterminate(
+            prepared.executionId,
+            this.clock().toISOString(),
+          );
+        } catch {
+          // Already indeterminate, or the store is unavailable.
+        }
+        throw new ExecutionIndeterminateError(prepared.executionId, {
+          cause: error,
+        });
+      }
       return { receipt, downstreamResult };
     } finally {
       await session.close().catch(() => undefined);

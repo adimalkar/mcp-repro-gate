@@ -71,7 +71,7 @@ REPROGATE_RECEIPT_SECRET='<at-least-32-byte-secret>' \
   node dist/src/cli.js verify-receipt --config /absolute/path/reprogate.json ./receipt.json
 ```
 
-Do not treat these HMAC keys or filesystem observation as OS-level enforcement. See the threat model before enabling `action.execute`.
+Do not treat these HMAC keys or filesystem observation as OS-level enforcement. Verifying a receipt needs the same receipt secret that signs one, so it is not third-party verification, and the before/after filesystem digests do not prove that a call's effects stayed in scope. See the threat model before enabling `action.execute`.
 
 The separate host-only `git-review` CLI prepares an exact staged-effect request, signs an explicit operator-key decision, imports linked evidence, checks current authorization, and revokes ledger approval. Signing reads a protected key file only after staging and displays the full safely escaped diff; no default MCP approval tool is added. See the [operator review guide](docs/GIT_OPERATOR_REVIEW.md) for configuration, commands, limits and deployment separation.
 

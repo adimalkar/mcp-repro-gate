@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { lstatSync, realpathSync } from "node:fs";
+import { hostname } from "node:os";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
@@ -34,6 +35,17 @@ import { createPrivateDatabaseFile } from "./private-database.js";
 
 export type ExecutionState =
   "prepared" | "succeeded" | "failed" | "indeterminate";
+
+export interface ExecutionStoreOptions {
+  /**
+   * How long an execution stays owned by this process without a lease
+   * renewal. Another process's recovery leaves a prepared execution alone
+   * while its owner's lease is live. Default 30 seconds.
+   */
+  leaseMs?: number;
+}
+
+export const DEFAULT_EXECUTION_LEASE_MS = 30_000;
 
 export interface ExecutionRecord {
   executionId: string;
@@ -123,8 +135,19 @@ export class SqliteExecutionStore implements PlanStore, TokenUseStore {
   readonly #database: DatabaseSync;
   readonly #openedPath: string;
   #handoffBinding: HandoffDatabaseBinding | undefined;
+  readonly #leaseMs: number;
+  // Generated up front; recorded in `execution_owners` by every
+  // beginExecution, so a rolled-back first claim cannot leave it unowned.
+  readonly #ownerId = randomUUID();
+  #ownerClaimed = false;
+  readonly #inFlight = new Set<string>();
+  #heartbeat: ReturnType<typeof setInterval> | undefined;
 
-  constructor(path: string) {
+  constructor(path: string, options: ExecutionStoreOptions = {}) {
+    const leaseMs = options.leaseMs ?? DEFAULT_EXECUTION_LEASE_MS;
+    if (!Number.isSafeInteger(leaseMs) || leaseMs < 30)
+      throw new Error("Execution lease must be an integer of at least 30 ms");
+    this.#leaseMs = leaseMs;
     this.#openedPath = physicalOpenPath(path);
     createPrivateDatabaseFile(this.#openedPath);
     this.#database = new DatabaseSync(this.#openedPath);
@@ -174,7 +197,36 @@ export class SqliteExecutionStore implements PlanStore, TokenUseStore {
         created_at TEXT NOT NULL,
         FOREIGN KEY (action_id) REFERENCES plans(action_id)
       ) STRICT;
+
+      CREATE TABLE IF NOT EXISTS execution_owners (
+        owner_id TEXT PRIMARY KEY,
+        pid INTEGER NOT NULL,
+        host TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        lease_expires_at TEXT NOT NULL
+      ) STRICT;
     `);
+    retryBusy(() => {
+      this.#addExecutionOwnerColumn();
+    });
+  }
+
+  // Executions written before ownership existed have no owner; recovery
+  // treats them as abandoned, as it always did.
+  #addExecutionOwnerColumn(): void {
+    const hasColumn = () =>
+      this.#database
+        .prepare(
+          "SELECT 1 FROM pragma_table_info('executions') WHERE name = 'owner_id'",
+        )
+        .get() !== undefined;
+    if (hasColumn()) return;
+    try {
+      this.#database.exec("ALTER TABLE executions ADD COLUMN owner_id TEXT");
+    } catch (error) {
+      // Another process added it first.
+      if (!hasColumn()) throw error;
+    }
   }
 
   // Every schema statement is idempotent, so a deadlock-avoidance BUSY
@@ -648,7 +700,81 @@ export class SqliteExecutionStore implements PlanStore, TokenUseStore {
   }
 
   close(): void {
+    this.#stopHeartbeat();
+    // Executions this store has not finished can no longer finish here;
+    // ending the lease lets the next recovery record them indeterminate.
+    if (this.#ownerClaimed && this.#database.isOpen) {
+      try {
+        this.#database
+          .prepare(
+            "UPDATE execution_owners SET lease_expires_at = ? WHERE owner_id = ?",
+          )
+          .run(new Date().toISOString(), this.#ownerId);
+      } catch {
+        // Best effort: an unrenewed lease expires on its own.
+      }
+    }
     this.#database.close();
+  }
+
+  /** This store's owner ID once it has begun an execution. */
+  get executionOwnerId(): string | undefined {
+    return this.#ownerClaimed ? this.#ownerId : undefined;
+  }
+
+  #leaseExpiry(): string {
+    return new Date(Date.now() + this.#leaseMs).toISOString();
+  }
+
+  // Called inside the beginExecution transaction.
+  #claimOwnership(): string {
+    this.#database
+      .prepare(
+        `INSERT INTO execution_owners (owner_id, pid, host, started_at, lease_expires_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT (owner_id) DO UPDATE SET lease_expires_at = excluded.lease_expires_at`,
+      )
+      .run(
+        this.#ownerId,
+        process.pid,
+        hostname(),
+        new Date().toISOString(),
+        this.#leaseExpiry(),
+      );
+    return this.#ownerId;
+  }
+
+  // Renews the lease while an execution is in flight. The timer never keeps
+  // the process alive on its own.
+  #startHeartbeat(): void {
+    if (this.#heartbeat !== undefined) return;
+    this.#heartbeat = setInterval(
+      () => {
+        try {
+          this.#database
+            .prepare(
+              "UPDATE execution_owners SET lease_expires_at = ? WHERE owner_id = ?",
+            )
+            .run(this.#leaseExpiry(), this.#ownerId);
+        } catch {
+          // A busy database or a closing store: the next tick tries again,
+          // and a lease that lapses only makes recovery more conservative.
+        }
+      },
+      Math.max(10, Math.floor(this.#leaseMs / 3)),
+    );
+    this.#heartbeat.unref();
+  }
+
+  #stopHeartbeat(): void {
+    if (this.#heartbeat === undefined) return;
+    clearInterval(this.#heartbeat);
+    this.#heartbeat = undefined;
+  }
+
+  #settle(executionId: string): void {
+    this.#inFlight.delete(executionId);
+    if (this.#inFlight.size === 0) this.#stopHeartbeat();
   }
 
   save(plan: PlannedAction): void {
@@ -791,6 +917,7 @@ export class SqliteExecutionStore implements PlanStore, TokenUseStore {
     const executionId = input.executionId ?? randomUUID();
     this.#database.exec("BEGIN IMMEDIATE");
     try {
+      const ownerId = this.#claimOwnership();
       try {
         this.#database
           .prepare(
@@ -809,9 +936,9 @@ export class SqliteExecutionStore implements PlanStore, TokenUseStore {
         .prepare(
           `INSERT INTO executions (
             execution_id, action_id, envelope_digest, capability_id, state,
-            started_at
+            started_at, owner_id
           )
-          SELECT ?, action_id, envelope_digest, ?, 'prepared', ?
+          SELECT ?, action_id, envelope_digest, ?, 'prepared', ?, ?
           FROM plans
           WHERE action_id = ? AND envelope_digest = ?`,
         )
@@ -819,6 +946,7 @@ export class SqliteExecutionStore implements PlanStore, TokenUseStore {
           executionId,
           input.capabilityId,
           input.startedAt,
+          ownerId,
           input.actionId,
           input.envelopeDigest,
         );
@@ -830,6 +958,9 @@ export class SqliteExecutionStore implements PlanStore, TokenUseStore {
       this.#database.exec("ROLLBACK");
       throw error;
     }
+    this.#ownerClaimed = true;
+    this.#inFlight.add(executionId);
+    this.#startHeartbeat();
 
     return {
       executionId,
@@ -842,6 +973,14 @@ export class SqliteExecutionStore implements PlanStore, TokenUseStore {
   }
 
   completeExecution(receipt: ExecutionReceiptV1): ExecutionRecord {
+    try {
+      return this.#completeExecution(receipt);
+    } finally {
+      this.#settle(receipt.executionId);
+    }
+  }
+
+  #completeExecution(receipt: ExecutionReceiptV1): ExecutionRecord {
     const state = receipt.outcome;
     const changed = this.#database
       .prepare(
@@ -871,27 +1010,51 @@ export class SqliteExecutionStore implements PlanStore, TokenUseStore {
     return record;
   }
 
+  /**
+   * Record as `indeterminate` every prepared execution whose owner can no
+   * longer finish it: one written before ownership existed, or one whose
+   * owner's lease has lapsed. Executions a live process still owns, and this
+   * store's own, are left prepared; `countIncomplete` reports them.
+   */
   recoverIncomplete(completedAt = new Date().toISOString()): number {
     const changed = this.#database
       .prepare(
         `UPDATE executions
          SET state = 'indeterminate', completed_at = ?
-         WHERE state = 'prepared'`,
+         WHERE state = 'prepared'
+           AND owner_id IS NOT ?
+           AND NOT EXISTS (
+             SELECT 1 FROM execution_owners
+             WHERE execution_owners.owner_id = executions.owner_id
+               AND lease_expires_at > ?
+           )`,
       )
-      .run(completedAt);
+      .run(completedAt, this.#ownerId, new Date().toISOString());
     return Number(changed.changes);
   }
 
+  /** Prepared executions, including those a live process still owns. */
+  countIncomplete(): number {
+    const row = this.#database
+      .prepare("SELECT count(*) AS n FROM executions WHERE state = 'prepared'")
+      .get();
+    return Number(row?.n ?? 0);
+  }
+
   markIndeterminate(executionId: string, completedAt: string): void {
-    const changed = this.#database
-      .prepare(
-        `UPDATE executions
-         SET state = 'indeterminate', completed_at = ?
-         WHERE execution_id = ? AND state = 'prepared'`,
-      )
-      .run(completedAt, executionId);
-    if (Number(changed.changes) !== 1) {
-      throw new Error("Execution is missing or is no longer prepared");
+    try {
+      const changed = this.#database
+        .prepare(
+          `UPDATE executions
+           SET state = 'indeterminate', completed_at = ?
+           WHERE execution_id = ? AND state = 'prepared'`,
+        )
+        .run(completedAt, executionId);
+      if (Number(changed.changes) !== 1) {
+        throw new Error("Execution is missing or is no longer prepared");
+      }
+    } finally {
+      this.#settle(executionId);
     }
   }
 
