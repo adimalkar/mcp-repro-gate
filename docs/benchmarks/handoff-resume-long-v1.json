@@ -1,0 +1,1305 @@
+{
+  "runDate": "2026-11-18/2026-11-20",
+  "manifest": {
+    "benchmarkVersion": 1,
+    "suite": "long",
+    "resumePromptVersion": 1,
+    "summaryPromptVersion": 1,
+    "summaryModel": "sonnet",
+    "summariesSha256": "b54c4f2d10b00f5a735e11ac5c3bb1a11fec42221533bebd99ae04cecc7ecb93",
+    "sourceHead": "6e849427905fd0037bb772fcf91801fc43666e91",
+    "model": "sonnet",
+    "repeats": 3,
+    "tasks": [
+      "retry-rules-long",
+      "frozen-decoy-long",
+      "dead-end-long",
+      "rename-alias-long",
+      "csv-rate-limit-long",
+      "ordered-plan-long"
+    ]
+  },
+  "benchmarkVersion": 1,
+  "resumePromptVersion": 1,
+  "suite": "long",
+  "summaryModel": "sonnet",
+  "model": "sonnet",
+  "claudeCode": "2.1.329 (Claude Code)",
+  "runs": [
+    {
+      "task": "retry-rules-long",
+      "condition": "summary",
+      "repeat": 1,
+      "contextChars": 9873,
+      "completed": true,
+      "timedOut": false,
+      "costUsd": 0.08231730000000001,
+      "turns": 8,
+      "durationMs": 18425,
+      "tokens": 84070,
+      "outputTokens": 2404,
+      "toolCalls": 7,
+      "tokensToFirstEdit": 38614,
+      "callsToFirstEdit": 3,
+      "edited": ["src/http.js", "test/http.test.js"],
+      "success": true,
+      "testsPassed": 51,
+      "testsFailed": 0,
+      "hiddenPassed": 4,
+      "hiddenTotal": 4,
+      "checks": [
+        {
+          "name": "signature kept",
+          "pass": true
+        },
+        {
+          "name": "look-alike request left as the user asked",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "task": "retry-rules-long",
+      "condition": "recorder",
+      "repeat": 1,
+      "contextChars": 2615,
+      "completed": true,
+      "timedOut": false,
+      "costUsd": 0.08767979999999999,
+      "turns": 6,
+      "durationMs": 21137,
+      "tokens": 128259,
+      "outputTokens": 2014,
+      "toolCalls": 5,
+      "tokensToFirstEdit": null,
+      "callsToFirstEdit": null,
+      "edited": [],
+      "success": false,
+      "testsPassed": 45,
+      "testsFailed": 2,
+      "hiddenPassed": 3,
+      "hiddenTotal": 4,
+      "checks": [
+        {
+          "name": "signature kept",
+          "pass": true
+        },
+        {
+          "name": "look-alike request left as the user asked",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "task": "frozen-decoy-long",
+      "condition": "summary",
+      "repeat": 1,
+      "contextChars": 7740,
+      "completed": true,
+      "timedOut": false,
+      "costUsd": 0.06803540000000001,
+      "turns": 8,
+      "durationMs": 13712,
+      "tokens": 97288,
+      "outputTokens": 1665,
+      "toolCalls": 7,
+      "tokensToFirstEdit": 36496,
+      "callsToFirstEdit": 3,
+      "edited": ["src/config/load.js", "test/config/load.test.js"],
+      "success": true,
+      "testsPassed": 43,
+      "testsFailed": 0,
+      "hiddenPassed": 1,
+      "hiddenTotal": 1,
+      "checks": [
+        {
+          "name": "legacy loader untouched",
+          "pass": true
+        },
+        {
+          "name": "a test for the loader was added",
+          "pass": true
+        },
+        {
+          "name": "look-alike request left as the user asked",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "task": "frozen-decoy-long",
+      "condition": "recorder",
+      "repeat": 1,
+      "contextChars": 2357,
+      "completed": true,
+      "timedOut": false,
+      "costUsd": 0.08216499999999999,
+      "turns": 11,
+      "durationMs": 20356,
+      "tokens": 170863,
+      "outputTokens": 2212,
+      "toolCalls": 10,
+      "tokensToFirstEdit": null,
+      "callsToFirstEdit": null,
+      "edited": ["src/services/accounts.js", "src/services/catalog.js"],
+      "success": false,
+      "testsPassed": 40,
+      "testsFailed": 1,
+      "hiddenPassed": 0,
+      "hiddenTotal": 1,
+      "checks": [
+        {
+          "name": "legacy loader untouched",
+          "pass": true
+        },
+        {
+          "name": "a test for the loader was added",
+          "pass": false
+        },
+        {
+          "name": "look-alike request left as the user asked",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "task": "dead-end-long",
+      "condition": "summary",
+      "repeat": 1,
+      "contextChars": 5301,
+      "completed": true,
+      "timedOut": false,
+      "costUsd": 0.0622022,
+      "turns": 7,
+      "durationMs": 14698,
+      "tokens": 93031,
+      "outputTokens": 1521,
+      "toolCalls": 6,
+      "tokensToFirstEdit": 34906,
+      "callsToFirstEdit": 3,
+      "edited": ["src/week.js", "test/week.test.js"],
+      "success": true,
+      "testsPassed": 45,
+      "testsFailed": 0,
+      "hiddenPassed": 2,
+      "hiddenTotal": 2,
+      "checks": [
+        {
+          "name": "no local-time or string-parsing date code",
+          "pass": true
+        },
+        {
+          "name": "look-alike request left as the user asked",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "task": "dead-end-long",
+      "condition": "recorder",
+      "repeat": 1,
+      "contextChars": 2709,
+      "completed": true,
+      "timedOut": false,
+      "costUsd": 0.13224719999999998,
+      "turns": 16,
+      "durationMs": 36537,
+      "tokens": 240329,
+      "outputTokens": 4707,
+      "toolCalls": 15,
+      "tokensToFirstEdit": 72357,
+      "callsToFirstEdit": 4,
+      "edited": [
+        "src/week.js",
+        "src/services/notifications.js",
+        "src/services/reports.js"
+      ],
+      "success": false,
+      "testsPassed": 43,
+      "testsFailed": 0,
+      "hiddenPassed": 2,
+      "hiddenTotal": 2,
+      "checks": [
+        {
+          "name": "no local-time or string-parsing date code",
+          "pass": true
+        },
+        {
+          "name": "look-alike request left as the user asked",
+          "pass": false
+        }
+      ]
+    },
+    {
+      "task": "rename-alias-long",
+      "condition": "summary",
+      "repeat": 1,
+      "contextChars": 7344,
+      "completed": true,
+      "timedOut": false,
+      "costUsd": 0.0706285,
+      "turns": 7,
+      "durationMs": 15419,
+      "tokens": 97494,
+      "outputTokens": 1811,
+      "toolCalls": 6,
+      "tokensToFirstEdit": 55279,
+      "callsToFirstEdit": 3,
+      "edited": ["src/cart.js", "src/report.js", "test/cart.test.js"],
+      "success": true,
+      "testsPassed": 45,
+      "testsFailed": 0,
+      "hiddenPassed": 1,
+      "hiddenTotal": 1,
+      "checks": [
+        {
+          "name": "alias marked @deprecated",
+          "pass": true
+        },
+        {
+          "name": "no remaining computeTotal calls",
+          "pass": true
+        },
+        {
+          "name": "look-alike request left as the user asked",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "task": "csv-rate-limit-long",
+      "condition": "recorder",
+      "repeat": 1,
+      "contextChars": 2343,
+      "completed": true,
+      "timedOut": false,
+      "costUsd": 0.07355199999999999,
+      "turns": 8,
+      "durationMs": 18003,
+      "tokens": 114097,
+      "outputTokens": 1952,
+      "toolCalls": 7,
+      "tokensToFirstEdit": null,
+      "callsToFirstEdit": null,
+      "edited": [
+        "src/services/search.js",
+        "src/services/accounts.js",
+        "src/services/audit.js"
+      ],
+      "success": false,
+      "testsPassed": 41,
+      "testsFailed": 1,
+      "hiddenPassed": 0,
+      "hiddenTotal": 1,
+      "checks": [
+        {
+          "name": "look-alike request left as the user asked",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "task": "rename-alias-long",
+      "condition": "recorder",
+      "repeat": 1,
+      "contextChars": 2602,
+      "completed": true,
+      "timedOut": false,
+      "costUsd": 0.1079917,
+      "turns": 13,
+      "durationMs": 24898,
+      "tokens": 221424,
+      "outputTokens": 2728,
+      "toolCalls": 12,
+      "tokensToFirstEdit": 170126,
+      "callsToFirstEdit": 8,
+      "edited": ["src/report.js", "test/cart.test.js", "src/cart.js"],
+      "success": true,
+      "testsPassed": 44,
+      "testsFailed": 0,
+      "hiddenPassed": 1,
+      "hiddenTotal": 1,
+      "checks": [
+        {
+          "name": "alias marked @deprecated",
+          "pass": true
+        },
+        {
+          "name": "no remaining computeTotal calls",
+          "pass": true
+        },
+        {
+          "name": "look-alike request left as the user asked",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "task": "csv-rate-limit-long",
+      "condition": "summary",
+      "repeat": 1,
+      "contextChars": 7173,
+      "completed": true,
+      "timedOut": false,
+      "costUsd": 0.0525111,
+      "turns": 4,
+      "durationMs": 9689,
+      "tokens": 37994,
+      "outputTokens": 1124,
+      "toolCalls": 3,
+      "tokensToFirstEdit": 17870,
+      "callsToFirstEdit": 1,
+      "edited": ["src/export.js", "test/export.test.js"],
+      "success": true,
+      "testsPassed": 48,
+      "testsFailed": 0,
+      "hiddenPassed": 1,
+      "hiddenTotal": 1,
+      "checks": [
+        {
+          "name": "look-alike request left as the user asked",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "task": "ordered-plan-long",
+      "condition": "summary",
+      "repeat": 1,
+      "contextChars": 5453,
+      "completed": true,
+      "timedOut": false,
+      "costUsd": 0.0578392,
+      "turns": 7,
+      "durationMs": 11956,
+      "tokens": 90324,
+      "outputTokens": 1227,
+      "toolCalls": 6,
+      "tokensToFirstEdit": 52151,
+      "callsToFirstEdit": 3,
+      "edited": ["src/api.js", "test/api.test.js"],
+      "success": true,
+      "testsPassed": 43,
+      "testsFailed": 0,
+      "hiddenPassed": 1,
+      "hiddenTotal": 1,
+      "checks": [
+        {
+          "name": "schema step kept",
+          "pass": true
+        },
+        {
+          "name": "exactly one archived migration, unchanged",
+          "pass": true
+        },
+        {
+          "name": "look-alike request left as the user asked",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "task": "ordered-plan-long",
+      "condition": "recorder",
+      "repeat": 1,
+      "contextChars": 2411,
+      "completed": true,
+      "timedOut": false,
+      "costUsd": 0.0421159,
+      "turns": 3,
+      "durationMs": 8117,
+      "tokens": 51586,
+      "outputTokens": 463,
+      "toolCalls": 2,
+      "tokensToFirstEdit": null,
+      "callsToFirstEdit": null,
+      "edited": [],
+      "success": false,
+      "testsPassed": 41,
+      "testsFailed": 1,
+      "hiddenPassed": 0,
+      "hiddenTotal": 1,
+      "checks": [
+        {
+          "name": "schema step kept",
+          "pass": true
+        },
+        {
+          "name": "exactly one archived migration, unchanged",
+          "pass": true
+        },
+        {
+          "name": "look-alike request left as the user asked",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "task": "retry-rules-long",
+      "condition": "summary",
+      "repeat": 2,
+      "contextChars": 9873,
+      "completed": true,
+      "timedOut": false,
+      "costUsd": 0.0830929,
+      "turns": 8,
+      "durationMs": 17862,
+      "tokens": 84182,
+      "outputTokens": 2469,
+      "toolCalls": 7,
+      "tokensToFirstEdit": 38621,
+      "callsToFirstEdit": 3,
+      "edited": ["src/http.js", "test/http.test.js"],
+      "success": true,
+      "testsPassed": 51,
+      "testsFailed": 0,
+      "hiddenPassed": 4,
+      "hiddenTotal": 4,
+      "checks": [
+        {
+          "name": "signature kept",
+          "pass": true
+        },
+        {
+          "name": "look-alike request left as the user asked",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "task": "retry-rules-long",
+      "condition": "recorder",
+      "repeat": 2,
+      "contextChars": 2615,
+      "completed": true,
+      "timedOut": false,
+      "costUsd": 0.0868103,
+      "turns": 7,
+      "durationMs": 22300,
+      "tokens": 122981,
+      "outputTokens": 2401,
+      "toolCalls": 6,
+      "tokensToFirstEdit": 98260,
+      "callsToFirstEdit": 5,
+      "edited": ["src/http.js"],
+      "success": true,
+      "testsPassed": 47,
+      "testsFailed": 0,
+      "hiddenPassed": 4,
+      "hiddenTotal": 4,
+      "checks": [
+        {
+          "name": "signature kept",
+          "pass": true
+        },
+        {
+          "name": "look-alike request left as the user asked",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "task": "frozen-decoy-long",
+      "condition": "recorder",
+      "repeat": 2,
+      "contextChars": 2357,
+      "completed": true,
+      "timedOut": false,
+      "costUsd": 0.0802967,
+      "turns": 11,
+      "durationMs": 20405,
+      "tokens": 149446,
+      "outputTokens": 2175,
+      "toolCalls": 10,
+      "tokensToFirstEdit": null,
+      "callsToFirstEdit": null,
+      "edited": [
+        "src/services/accounts.js",
+        "src/services/catalog.js",
+        "src/services/audit.js"
+      ],
+      "success": false,
+      "testsPassed": 40,
+      "testsFailed": 1,
+      "hiddenPassed": 0,
+      "hiddenTotal": 1,
+      "checks": [
+        {
+          "name": "legacy loader untouched",
+          "pass": true
+        },
+        {
+          "name": "a test for the loader was added",
+          "pass": false
+        },
+        {
+          "name": "look-alike request left as the user asked",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "task": "frozen-decoy-long",
+      "condition": "summary",
+      "repeat": 2,
+      "contextChars": 7740,
+      "completed": true,
+      "timedOut": false,
+      "costUsd": 0.0632615,
+      "turns": 7,
+      "durationMs": 12188,
+      "tokens": 95509,
+      "outputTokens": 1302,
+      "toolCalls": 6,
+      "tokensToFirstEdit": 36255,
+      "callsToFirstEdit": 2,
+      "edited": ["src/config/load.js", "test/config/load.test.js"],
+      "success": true,
+      "testsPassed": 43,
+      "testsFailed": 0,
+      "hiddenPassed": 1,
+      "hiddenTotal": 1,
+      "checks": [
+        {
+          "name": "legacy loader untouched",
+          "pass": true
+        },
+        {
+          "name": "a test for the loader was added",
+          "pass": true
+        },
+        {
+          "name": "look-alike request left as the user asked",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "task": "dead-end-long",
+      "condition": "summary",
+      "repeat": 2,
+      "contextChars": 5301,
+      "completed": true,
+      "timedOut": false,
+      "costUsd": 0.06266809999999999,
+      "turns": 7,
+      "durationMs": 14973,
+      "tokens": 74781,
+      "outputTokens": 1700,
+      "toolCalls": 6,
+      "tokensToFirstEdit": 34912,
+      "callsToFirstEdit": 3,
+      "edited": ["src/week.js", "test/week.test.js"],
+      "success": true,
+      "testsPassed": 45,
+      "testsFailed": 0,
+      "hiddenPassed": 2,
+      "hiddenTotal": 2,
+      "checks": [
+        {
+          "name": "no local-time or string-parsing date code",
+          "pass": true
+        },
+        {
+          "name": "look-alike request left as the user asked",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "task": "rename-alias-long",
+      "condition": "recorder",
+      "repeat": 2,
+      "contextChars": 2602,
+      "completed": true,
+      "timedOut": false,
+      "costUsd": 0.1104763,
+      "turns": 16,
+      "durationMs": 26195,
+      "tokens": 190229,
+      "outputTokens": 3467,
+      "toolCalls": 15,
+      "tokensToFirstEdit": 139432,
+      "callsToFirstEdit": 8,
+      "edited": [
+        "src/cart.js",
+        "src/report.js",
+        "test/cart.test.js",
+        "src/services/accounts.js"
+      ],
+      "success": true,
+      "testsPassed": 44,
+      "testsFailed": 0,
+      "hiddenPassed": 1,
+      "hiddenTotal": 1,
+      "checks": [
+        {
+          "name": "alias marked @deprecated",
+          "pass": true
+        },
+        {
+          "name": "no remaining computeTotal calls",
+          "pass": true
+        },
+        {
+          "name": "look-alike request left as the user asked",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "task": "dead-end-long",
+      "condition": "recorder",
+      "repeat": 2,
+      "contextChars": 2709,
+      "completed": true,
+      "timedOut": false,
+      "costUsd": 0.17559039999999998,
+      "turns": 40,
+      "durationMs": 47440,
+      "tokens": 277609,
+      "outputTokens": 6885,
+      "toolCalls": 39,
+      "tokensToFirstEdit": 73790,
+      "callsToFirstEdit": 5,
+      "edited": [
+        "src/week.js",
+        "src/services/accounts.js",
+        "src/services/audit.js",
+        "src/services/billing.js",
+        "src/services/catalog.js",
+        "src/services/inventory.js",
+        "src/services/pricing.js",
+        "src/services/search.js",
+        "src/services/shipping.js",
+        "src/services/notifications.js",
+        "src/services/reports.js"
+      ],
+      "success": false,
+      "testsPassed": 43,
+      "testsFailed": 0,
+      "hiddenPassed": 2,
+      "hiddenTotal": 2,
+      "checks": [
+        {
+          "name": "no local-time or string-parsing date code",
+          "pass": true
+        },
+        {
+          "name": "look-alike request left as the user asked",
+          "pass": false
+        }
+      ]
+    },
+    {
+      "task": "rename-alias-long",
+      "condition": "summary",
+      "repeat": 2,
+      "contextChars": 7344,
+      "completed": true,
+      "timedOut": false,
+      "costUsd": 0.0692267,
+      "turns": 7,
+      "durationMs": 14852,
+      "tokens": 97048,
+      "outputTokens": 1720,
+      "toolCalls": 6,
+      "tokensToFirstEdit": 55129,
+      "callsToFirstEdit": 3,
+      "edited": ["src/cart.js", "src/report.js", "test/cart.test.js"],
+      "success": true,
+      "testsPassed": 45,
+      "testsFailed": 0,
+      "hiddenPassed": 1,
+      "hiddenTotal": 1,
+      "checks": [
+        {
+          "name": "alias marked @deprecated",
+          "pass": true
+        },
+        {
+          "name": "no remaining computeTotal calls",
+          "pass": true
+        },
+        {
+          "name": "look-alike request left as the user asked",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "task": "csv-rate-limit-long",
+      "condition": "summary",
+      "repeat": 2,
+      "contextChars": 7173,
+      "completed": true,
+      "timedOut": false,
+      "costUsd": 0.051943100000000006,
+      "turns": 4,
+      "durationMs": 10267,
+      "tokens": 37906,
+      "outputTokens": 1088,
+      "toolCalls": 3,
+      "tokensToFirstEdit": 17870,
+      "callsToFirstEdit": 1,
+      "edited": ["src/export.js", "test/export.test.js"],
+      "success": true,
+      "testsPassed": 47,
+      "testsFailed": 0,
+      "hiddenPassed": 1,
+      "hiddenTotal": 1,
+      "checks": [
+        {
+          "name": "look-alike request left as the user asked",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "task": "ordered-plan-long",
+      "condition": "recorder",
+      "repeat": 2,
+      "contextChars": 2411,
+      "completed": true,
+      "timedOut": false,
+      "costUsd": 0.0443548,
+      "turns": 4,
+      "durationMs": 8665,
+      "tokens": 67769,
+      "outputTokens": 545,
+      "toolCalls": 3,
+      "tokensToFirstEdit": null,
+      "callsToFirstEdit": null,
+      "edited": [],
+      "success": false,
+      "testsPassed": 41,
+      "testsFailed": 1,
+      "hiddenPassed": 0,
+      "hiddenTotal": 1,
+      "checks": [
+        {
+          "name": "schema step kept",
+          "pass": true
+        },
+        {
+          "name": "exactly one archived migration, unchanged",
+          "pass": true
+        },
+        {
+          "name": "look-alike request left as the user asked",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "task": "ordered-plan-long",
+      "condition": "summary",
+      "repeat": 2,
+      "contextChars": 5453,
+      "completed": true,
+      "timedOut": false,
+      "costUsd": 0.0559469,
+      "turns": 6,
+      "durationMs": 11218,
+      "tokens": 90055,
+      "outputTokens": 1154,
+      "toolCalls": 5,
+      "tokensToFirstEdit": 52143,
+      "callsToFirstEdit": 3,
+      "edited": ["src/api.js", "test/api.test.js"],
+      "success": true,
+      "testsPassed": 43,
+      "testsFailed": 0,
+      "hiddenPassed": 1,
+      "hiddenTotal": 1,
+      "checks": [
+        {
+          "name": "schema step kept",
+          "pass": true
+        },
+        {
+          "name": "exactly one archived migration, unchanged",
+          "pass": true
+        },
+        {
+          "name": "look-alike request left as the user asked",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "task": "retry-rules-long",
+      "condition": "recorder",
+      "repeat": 3,
+      "contextChars": 2615,
+      "completed": true,
+      "timedOut": false,
+      "costUsd": 0.07814439999999999,
+      "turns": 7,
+      "durationMs": 32318,
+      "tokens": 121223,
+      "outputTokens": 1792,
+      "toolCalls": 6,
+      "tokensToFirstEdit": 97524,
+      "callsToFirstEdit": 5,
+      "edited": ["src/http.js"],
+      "success": true,
+      "testsPassed": 47,
+      "testsFailed": 0,
+      "hiddenPassed": 4,
+      "hiddenTotal": 4,
+      "checks": [
+        {
+          "name": "signature kept",
+          "pass": true
+        },
+        {
+          "name": "look-alike request left as the user asked",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "task": "retry-rules-long",
+      "condition": "summary",
+      "repeat": 3,
+      "contextChars": 9873,
+      "completed": true,
+      "timedOut": false,
+      "costUsd": 0.0839524,
+      "turns": 8,
+      "durationMs": 27008,
+      "tokens": 85238,
+      "outputTokens": 2529,
+      "toolCalls": 7,
+      "tokensToFirstEdit": 39078,
+      "callsToFirstEdit": 3,
+      "edited": ["src/http.js", "test/http.test.js"],
+      "success": true,
+      "testsPassed": 51,
+      "testsFailed": 0,
+      "hiddenPassed": 4,
+      "hiddenTotal": 4,
+      "checks": [
+        {
+          "name": "signature kept",
+          "pass": true
+        },
+        {
+          "name": "look-alike request left as the user asked",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "task": "csv-rate-limit-long",
+      "condition": "recorder",
+      "repeat": 2,
+      "contextChars": 2343,
+      "completed": true,
+      "timedOut": false,
+      "costUsd": 0.0850188,
+      "turns": 10,
+      "durationMs": 62296,
+      "tokens": 155153,
+      "outputTokens": 2499,
+      "toolCalls": 9,
+      "tokensToFirstEdit": null,
+      "callsToFirstEdit": null,
+      "edited": ["src/services/accounts.js", "src/services/search.js"],
+      "success": false,
+      "testsPassed": 41,
+      "testsFailed": 1,
+      "hiddenPassed": 0,
+      "hiddenTotal": 1,
+      "checks": [
+        {
+          "name": "look-alike request left as the user asked",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "task": "frozen-decoy-long",
+      "condition": "summary",
+      "repeat": 3,
+      "contextChars": 7740,
+      "completed": true,
+      "timedOut": false,
+      "costUsd": 0.06571470000000001,
+      "turns": 7,
+      "durationMs": 17293,
+      "tokens": 97622,
+      "outputTokens": 1519,
+      "toolCalls": 6,
+      "tokensToFirstEdit": 56157,
+      "callsToFirstEdit": 4,
+      "edited": ["src/config/load.js", "test/config/load.test.js"],
+      "success": true,
+      "testsPassed": 43,
+      "testsFailed": 0,
+      "hiddenPassed": 1,
+      "hiddenTotal": 1,
+      "checks": [
+        {
+          "name": "legacy loader untouched",
+          "pass": true
+        },
+        {
+          "name": "a test for the loader was added",
+          "pass": true
+        },
+        {
+          "name": "look-alike request left as the user asked",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "task": "frozen-decoy-long",
+      "condition": "recorder",
+      "repeat": 3,
+      "contextChars": 2357,
+      "completed": true,
+      "timedOut": false,
+      "costUsd": 0.06878770000000001,
+      "turns": 8,
+      "durationMs": 29587,
+      "tokens": 113500,
+      "outputTokens": 1645,
+      "toolCalls": 7,
+      "tokensToFirstEdit": null,
+      "callsToFirstEdit": null,
+      "edited": [
+        "src/services/accounts.js",
+        "src/services/catalog.js",
+        "src/services/audit.js"
+      ],
+      "success": false,
+      "testsPassed": 40,
+      "testsFailed": 1,
+      "hiddenPassed": 0,
+      "hiddenTotal": 1,
+      "checks": [
+        {
+          "name": "legacy loader untouched",
+          "pass": true
+        },
+        {
+          "name": "a test for the loader was added",
+          "pass": false
+        },
+        {
+          "name": "look-alike request left as the user asked",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "task": "dead-end-long",
+      "condition": "summary",
+      "repeat": 3,
+      "contextChars": 5301,
+      "completed": true,
+      "timedOut": false,
+      "costUsd": 0.0643984,
+      "turns": 7,
+      "durationMs": 16047,
+      "tokens": 94614,
+      "outputTokens": 1678,
+      "toolCalls": 6,
+      "tokensToFirstEdit": 35362,
+      "callsToFirstEdit": 3,
+      "edited": ["src/week.js", "test/week.test.js"],
+      "success": true,
+      "testsPassed": 44,
+      "testsFailed": 0,
+      "hiddenPassed": 2,
+      "hiddenTotal": 2,
+      "checks": [
+        {
+          "name": "no local-time or string-parsing date code",
+          "pass": true
+        },
+        {
+          "name": "look-alike request left as the user asked",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "task": "rename-alias-long",
+      "condition": "summary",
+      "repeat": 3,
+      "contextChars": 7344,
+      "completed": true,
+      "timedOut": false,
+      "costUsd": 0.0687198,
+      "turns": 7,
+      "durationMs": 22219,
+      "tokens": 98261,
+      "outputTokens": 1640,
+      "toolCalls": 6,
+      "tokensToFirstEdit": 55883,
+      "callsToFirstEdit": 3,
+      "edited": ["src/cart.js", "src/report.js", "test/cart.test.js"],
+      "success": true,
+      "testsPassed": 45,
+      "testsFailed": 0,
+      "hiddenPassed": 1,
+      "hiddenTotal": 1,
+      "checks": [
+        {
+          "name": "alias marked @deprecated",
+          "pass": true
+        },
+        {
+          "name": "no remaining computeTotal calls",
+          "pass": true
+        },
+        {
+          "name": "look-alike request left as the user asked",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "task": "dead-end-long",
+      "condition": "recorder",
+      "repeat": 3,
+      "contextChars": 2709,
+      "completed": true,
+      "timedOut": false,
+      "costUsd": 0.1818723,
+      "turns": 38,
+      "durationMs": 59876,
+      "tokens": 254918,
+      "outputTokens": 7640,
+      "toolCalls": 37,
+      "tokensToFirstEdit": 137150,
+      "callsToFirstEdit": 8,
+      "edited": [
+        "src/week.js",
+        "src/services/accounts.js",
+        "src/services/audit.js",
+        "src/services/billing.js",
+        "src/services/catalog.js",
+        "src/services/inventory.js",
+        "src/services/notifications.js",
+        "src/services/pricing.js",
+        "src/services/reports.js",
+        "src/services/search.js",
+        "src/services/shipping.js"
+      ],
+      "success": false,
+      "testsPassed": 43,
+      "testsFailed": 0,
+      "hiddenPassed": 2,
+      "hiddenTotal": 2,
+      "checks": [
+        {
+          "name": "no local-time or string-parsing date code",
+          "pass": true
+        },
+        {
+          "name": "look-alike request left as the user asked",
+          "pass": false
+        }
+      ]
+    },
+    {
+      "task": "csv-rate-limit-long",
+      "condition": "recorder",
+      "repeat": 3,
+      "contextChars": 2343,
+      "completed": true,
+      "timedOut": false,
+      "costUsd": 0.040948500000000006,
+      "turns": 3,
+      "durationMs": 15758,
+      "tokens": 51294,
+      "outputTokens": 558,
+      "toolCalls": 2,
+      "tokensToFirstEdit": null,
+      "callsToFirstEdit": null,
+      "edited": [],
+      "success": false,
+      "testsPassed": 41,
+      "testsFailed": 1,
+      "hiddenPassed": 0,
+      "hiddenTotal": 1,
+      "checks": [
+        {
+          "name": "look-alike request left as the user asked",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "task": "csv-rate-limit-long",
+      "condition": "summary",
+      "repeat": 3,
+      "contextChars": 7173,
+      "completed": true,
+      "timedOut": false,
+      "costUsd": 0.05142870000000001,
+      "turns": 4,
+      "durationMs": 9303,
+      "tokens": 38288,
+      "outputTokens": 1044,
+      "toolCalls": 3,
+      "tokensToFirstEdit": 18099,
+      "callsToFirstEdit": 1,
+      "edited": ["src/export.js", "test/export.test.js"],
+      "success": true,
+      "testsPassed": 46,
+      "testsFailed": 0,
+      "hiddenPassed": 1,
+      "hiddenTotal": 1,
+      "checks": [
+        {
+          "name": "look-alike request left as the user asked",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "task": "ordered-plan-long",
+      "condition": "summary",
+      "repeat": 3,
+      "contextChars": 5453,
+      "completed": true,
+      "timedOut": false,
+      "costUsd": 0.0478159,
+      "turns": 5,
+      "durationMs": 19333,
+      "tokens": 54019,
+      "outputTokens": 831,
+      "toolCalls": 4,
+      "tokensToFirstEdit": 17200,
+      "callsToFirstEdit": 1,
+      "edited": ["src/api.js", "test/api.test.js"],
+      "success": true,
+      "testsPassed": 43,
+      "testsFailed": 0,
+      "hiddenPassed": 1,
+      "hiddenTotal": 1,
+      "checks": [
+        {
+          "name": "schema step kept",
+          "pass": true
+        },
+        {
+          "name": "exactly one archived migration, unchanged",
+          "pass": true
+        },
+        {
+          "name": "look-alike request left as the user asked",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "task": "rename-alias-long",
+      "condition": "recorder",
+      "repeat": 3,
+      "contextChars": 2602,
+      "completed": true,
+      "timedOut": false,
+      "costUsd": 0.12457009999999999,
+      "turns": 17,
+      "durationMs": 59531,
+      "tokens": 240314,
+      "outputTokens": 3041,
+      "toolCalls": 16,
+      "tokensToFirstEdit": 182842,
+      "callsToFirstEdit": 11,
+      "edited": ["src/report.js", "src/cart.js", "test/cart.test.js"],
+      "success": true,
+      "testsPassed": 45,
+      "testsFailed": 0,
+      "hiddenPassed": 1,
+      "hiddenTotal": 1,
+      "checks": [
+        {
+          "name": "alias marked @deprecated",
+          "pass": true
+        },
+        {
+          "name": "no remaining computeTotal calls",
+          "pass": true
+        },
+        {
+          "name": "look-alike request left as the user asked",
+          "pass": true
+        }
+      ]
+    },
+    {
+      "task": "ordered-plan-long",
+      "condition": "recorder",
+      "repeat": 3,
+      "contextChars": 2411,
+      "completed": true,
+      "timedOut": false,
+      "costUsd": 0.042073200000000005,
+      "turns": 4,
+      "durationMs": 14283,
+      "tokens": 67342,
+      "outputTokens": 634,
+      "toolCalls": 3,
+      "tokensToFirstEdit": null,
+      "callsToFirstEdit": null,
+      "edited": [],
+      "success": false,
+      "testsPassed": 41,
+      "testsFailed": 1,
+      "hiddenPassed": 0,
+      "hiddenTotal": 1,
+      "checks": [
+        {
+          "name": "schema step kept",
+          "pass": true
+        },
+        {
+          "name": "exactly one archived migration, unchanged",
+          "pass": true
+        },
+        {
+          "name": "look-alike request left as the user asked",
+          "pass": true
+        }
+      ]
+    }
+  ],
+  "totals": {
+    "summary": {
+      "runs": 18,
+      "successes": 18,
+      "checksPassed": 42,
+      "checksTotal": 42,
+      "hiddenPassed": 30,
+      "hiddenTotal": 30,
+      "medianTokens": 90189.5,
+      "medianTokensToFirstEdit": 37555,
+      "medianCallsToFirstEdit": 3,
+      "noTargetEdit": 0,
+      "costUsd": 1.1617028
+    },
+    "recorder": {
+      "runs": 18,
+      "successes": 5,
+      "checksPassed": 36,
+      "checksTotal": 42,
+      "hiddenPassed": 20,
+      "hiddenTotal": 30,
+      "medianTokens": 138852.5,
+      "medianTokensToFirstEdit": 117705,
+      "medianCallsToFirstEdit": 6.5,
+      "noTargetEdit": 10,
+      "costUsd": 1.6446950999999996
+    }
+  },
+  "runNote": "Runs 1-23 used one Claude account and Claude Code 2.1.327; a usage limit stopped the run, and runs 24-36 were resumed with the identical command on a second account (Claude Code 2.1.329). Same model (sonnet) and the same summaries file (digest in the manifest).",
+  "searchUse": "Recorder runs that called handoff_search: 4 of 18, all four succeeded. Runs that did not: 14, one succeeded."
+}

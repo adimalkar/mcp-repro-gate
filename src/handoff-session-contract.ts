@@ -202,11 +202,20 @@ export type HandoffDocumentState = (typeof HANDOFF_DOCUMENT_STATES)[number];
 export const MAX_BRIEF_REQUESTS = 3;
 export const MAX_BRIEF_FAILURES = 3;
 export const MAX_BRIEF_FILES = 10;
+export const MAX_BRIEF_REPLIES = 3;
 /** Structured events read from client transcripts, when capture is on. */
 export const handoffRecordedSchema = z.strictObject({
   source: z.literal("client_transcript"),
   /** What the user typed, newest first. */
   requests: z.array(
+    z.strictObject({
+      sessionId: handoffUuidSchema,
+      text: z.string(),
+      createdAt: isoSchema,
+    }),
+  ),
+  /** The start of the newest assistant replies, newest first. */
+  replies: z.array(
     z.strictObject({
       sessionId: handoffUuidSchema,
       text: z.string(),

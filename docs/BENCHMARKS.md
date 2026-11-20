@@ -97,3 +97,44 @@ This protocol measures the Phase 4 exit criteria in real hosts. Run it in at lea
 |      |      |               |                 |       |      |               |           |
 
 An exit criterion counts as met only when the measured medians across hosts and tasks clear it. Publish the raw records next to the summary.
+
+## Handoff resume (A/B gate for the flight recorder)
+
+`npm run bench:handoff-resume -- run --model sonnet --repeats 3` resumes six scripted tasks whose first session stopped part way, from either a summary Claude wrote from the whole transcript or ReproGate's recorder brief. Design and decision rule: [slice 3 of the flight-recorder proposal](proposals/handoff-flight-recorder.md#slice-3-in-detail-the-gate). Data: [`benchmarks/handoff-resume-v1.json`](benchmarks/handoff-resume-v1.json).
+
+Measured 2026-11-17, Claude Code 2.1.327, Sonnet, 36 runs, all completed with model output, no timeouts:
+
+| Condition | Success as scored | Success, check corrected | Median tokens | Median tokens to first needed edit | Median context |
+| --------- | ----------------- | ------------------------ | ------------- | ---------------------------------- | -------------- |
+| Summary   | 16/18             | 18/18                    | 72,784        | 32,315                             | 2,435 chars    |
+| Recorder  | 15/18             | 18/18                    | 65,606        | 46,724                             | 1,176 chars    |
+
+- All five failures were one scoring bug: the `frozen-decoy` check for an added test looked only in `test/`, and those runs added `src/config/load.test.js`. Their hidden tests and other checks passed. The check is corrected; the run was not repeated.
+- **Decision: inconclusive** under the rule fixed before the run, with either count. The recorder did not succeed more often, and it reached its first needed edit with 45% more tokens, not 15% fewer. It did not lose by two runs.
+- Both conditions solved every task. On sessions this short, the summaries kept every rule the tasks test, so these tasks cannot separate the conditions.
+- The summary condition received a summary written after the session from the full transcript. An agent stopped by a rate limit or a crash does not write one; producing it costs a model call. The recorder brief costs none.
+- Summaries told the next agent exactly what to change, which got it to its first edit sooner. The recorder brief held the user's words and the last replies, so the agent read files first.
+
+### Long sessions (slice 3b)
+
+`npm run bench:handoff-resume -- run --suite long --model sonnet --repeats 3`. Each task's first session is buried in a generated session of about 21 requests, ~395 tool calls and three compactions, with a look-alike request. The summary condition gets a compaction chain (each summary written from the previous one and the next ~60,000-token chunk); the recorder condition gets the hook brief and read-only `handoff_search`. Design and rule: [slice 3b](proposals/handoff-flight-recorder.md#slice-3b-long-sessions). Data: [`benchmarks/handoff-resume-long-v1.json`](benchmarks/handoff-resume-long-v1.json).
+
+Measured 2026-11-18 to 2026-11-20, Sonnet, 36 runs, all completed with model output, no timeouts. A usage limit stopped the run after 23 runs; the rest were resumed with the same command, summaries and model on a second account (Claude Code 2.1.327, then 2.1.329).
+
+| Condition | Success | Median tokens | Median tokens to first needed edit | Runs with no needed edit | Median context |
+| --------- | ------- | ------------- | ---------------------------------- | ------------------------ | -------------- |
+| Summary   | 18/18   | 90,190        | 37,555                             | 0                        | 7,259 chars    |
+| Recorder  | 5/18    | 138,853       | 117,705                            | 10                       | 2,507 chars    |
+
+| Task             | Summary | Recorder |
+| ---------------- | ------- | -------- |
+| `retry-rules`    | 3/3     | 2/3      |
+| `frozen-decoy`   | 3/3     | 0/3      |
+| `dead-end`       | 3/3     | 0/3      |
+| `rename-alias`   | 3/3     | 3/3      |
+| `csv-rate-limit` | 3/3     | 0/3      |
+| `ordered-plan`   | 3/3     | 0/3      |
+
+- **Decision: fail** under the rule fixed before the run (the recorder succeeded 13 fewer times). Rule 4 flags four tasks the recorder lost in every repeat while the summary won every repeat.
+- **Why.** By the end of a long session the brief lists only the three newest requests, which were small side requests, so the task's own request was not in it. Agents trusted the brief: they did the side requests again, or undid the user's earlier changes as unrequested. Only 4 of 18 recorder runs called `handoff_search`; all 4 succeeded. Of the 14 that did not, 1 succeeded.
+- **The summaries held up.** The compaction prompt asks for every user message, and after three rounds each summary still carried the task's rules and told the look-alike request apart.

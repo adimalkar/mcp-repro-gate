@@ -1,6 +1,6 @@
 # Flight recorder: handoff without summaries of summaries
 
-Status: slices 1 and 2 are implemented (see [Slice 1 in detail](#slice-1-in-detail) and [Slice 2 in detail](#slice-2-in-detail)). Slices 3 to 5 are proposals.
+Status: slices 1 and 2 are implemented. **Closed (2026-11-20).** Slices 1 and 2 are kept as a complement to client summaries. The A/B gate was inconclusive on short sessions and failed on long ones (see [Slice 3b result](#slice-3b-result)), so slices 4 and 5 are not built. See [Decision](#decision).
 
 ## The problem
 
@@ -160,5 +160,92 @@ The recorder reads Claude Code transcripts from client hooks and keeps a few kin
 - **What is never kept.** Other tool output (file reads, searches, fetched pages), thinking, images and the assistant's tool inputs beyond the command or path. This keeps fetched text out of briefs and limits stored prompt injection.
 - **Trust.** The transcript path comes from the hook payload. It must be an absolute `.jsonl` path to a regular file, not a symlink, owned by the current user. A record that is not valid JSON or of an unknown shape is ignored. Records are deduplicated by their ID, so a transcript read twice records nothing twice.
 - **Retention.** A byte cap per workspace, 64 MiB by default (`captureBytes`). When it is passed, failure tails go first, then replies, then commands, edits and errors, and user requests last, oldest first in each.
-- **Where it shows.** The brief gains `recorded`, built from these events: the newest user requests, the newest failed commands with exit codes and tails, and the files changed most recently with their blob IDs. It is fitted to the brief's budget like everything else, and requests are the last thing dropped. `handoff_search` also searches recorded requests, replies, commands and edits.
+- **Where it shows.** The brief gains `recorded`, built from these events: the newest user requests, the start of the newest replies, the newest failed commands with exit codes and tails, and the files changed most recently with their blob IDs. It is fitted to the brief's budget like everything else, and requests are the last thing dropped. `handoff_search` also searches recorded requests, replies, commands and edits.
 - **Not yet.** Codex rollout files (slice 5), checking blob IDs against the current files (slice 4), and capture for clients without hooks.
+
+## Slice 3 in detail: the gate
+
+`benchmarks/handoff-resume.ts` with the tasks in `benchmarks/handoff-resume-tasks.ts`.
+
+- **Tasks.** Six small Node projects. In each, a scripted first session works on the user's request, written as a real Claude Code transcript, and stops part way: killed with no hook, or, in one task, by a rate limit. What the next agent needs is in that session: the user's exact rules (`retry-rules`, `csv-rate-limit`), a frozen look-alike file it must not touch (`frozen-decoy`), a failed approach and the user's correction (`dead-end`), half-done work and an extra requirement (`rename-alias`), and steps already done that must not be redone (`ordered-plan`).
+- **Conditions.** The same resume prompt, tools and model, with one difference: the handoff context is either a summary Claude wrote from the whole transcript (asked for what was asked, done, tried and left, in at most 600 words; generated once per task and kept in `docs/benchmarks/handoff-resume-summaries-v1.json`), or the brief ReproGate's hooks produce from the same transcript.
+- **Isolation.** `claude -p` with project settings only (no user hooks), no MCP servers, no saved session, no web or subagent tools, a fixed allowlist of commands, a fresh copy of the repository, and 15 minutes per run. The user's global `CLAUDE.md` is still loaded, equally in both conditions, because the account has no API key for `--bare`.
+- **Scoring.** Hidden tests added after the run, and checks of the user's constraints (signature kept, legacy file untouched, no local-time date code, alias marked deprecated, exactly one new migration). A run succeeds only if every test and check passes. Also measured: tokens, and tokens and tool calls until the first edit of a file the task needs. The scoring was validated before any run: for each task, the state the first session left fails and a reference finish passes.
+- **Size.** 6 tasks × 2 conditions × 3 repeats = 36 runs, interleaved with alternating order, on Claude Code only. The recorder reads only Claude Code transcripts so far, and a second client would add a variable.
+- **Run integrity.** The runner records its model, task set, summary digest, and source commit in a manifest, then checkpoints each completed run. Restarting with the same output directory skips completed runs. Provider rejections and missing model results stop the run without being scored; a 15-minute timeout counts as a failed attempt. Keep rejected-call logs separate from the measured run.
+
+**Decision rule, fixed before any run (2026-11-14):**
+
+1. The recorder **passes** if it succeeds at least as often as the summary, and either succeeds at least 2 more times out of 18, or reaches its first target edit with at least 15% fewer median tokens.
+2. It **fails** if it succeeds at least 2 fewer times out of 18. Slices 4 and 5 then stop as specified.
+3. Anything else is **inconclusive**: report it, and decide with the user whether to run more repeats.
+4. A task the recorder loses in all three repeats while the summary wins at least two is reported, whatever the totals.
+
+**What it cannot show.** Eighteen runs per condition cannot separate small differences from chance. The tasks are synthetic and were written by the author of the recorder, around the kinds of information the recorder keeps; the summarizer sees all of that information too, so the test is whether summaries keep it, but task choice still favours the recorder. One model, one client, short sessions: long sessions, where summaries are thought to lose most, are not tested.
+
+## Slice 3 result
+
+Run on 2026-11-17: 36 runs, Sonnet, all valid. Full numbers in [BENCHMARKS.md](../BENCHMARKS.md#handoff-resume-ab-gate-for-the-flight-recorder).
+
+- Success: summary 16/18, recorder 15/18 as scored. All five failures came from one scoring bug, a check that looked for an added test only in `test/`. Corrected: 18/18 each.
+- Median tokens to the first needed edit: summary 32,315, recorder 46,724 (45% more). Median tokens per run: 72,784 and 65,606 (10% fewer). Median context: 2,435 and 1,176 characters.
+- **Rule outcome: inconclusive** (rule 3), with either count. Rule 4 is not triggered: on `frozen-decoy` the summary won once, not twice.
+
+What it means:
+
+- On short sessions, a summary written from the full transcript keeps what these tasks test. The tasks do not separate the conditions, so more repeats of them would not settle the question.
+- The comparison favoured the summary: in practice, an agent stopped by a rate limit or killed does not write one. The recorder matched a summary nobody had to write, at no model cost and with half the context.
+- The recorder brief made agents read before editing. Summaries gave them the next change directly.
+
+Options, for the user to decide:
+
+1. **Accept slices 1 and 2 as they are**, since the recorder matched an ideal summary at no model cost, and stop before slices 4 and 5.
+2. **Run a harder gate** before slices 4 and 5: long sessions with several compactions, where summaries are expected to lose detail, built from real transcripts.
+3. **Improve the brief first**, for example by adding the newest edits' intent and the session's last plan, then rerun this gate with a new version number.
+
+## Slice 3b: long sessions
+
+Chosen by the user after the inconclusive short gate: test the case the recorder was built for. `--suite long` in the same harness; tasks in `benchmarks/handoff-resume-long.ts`.
+
+- **Sessions.** Each task's first session is spread through a long session in a larger codebase (ten service modules with tests and docs). About 21 user requests, ~395 tool calls and ~620,000 characters of transcript per session, three compactions. The author's own Claude Code sessions with two or more compactions have a median of 23 requests, ~1,000 tool calls and 3 compactions (aggregate counts only). The task's request opens the session; its later steps are spread through the first two thirds; its last two steps end it. Nineteen ordinary requests and one look-alike request come in between. The look-alike is easy to confuse with the task's rules (retry five times on any error, for another module; use LF in another export; remove a deprecated alias elsewhere; use `Date.parse` in another file; a port fallback in another module; a third migration).
+- **Summary condition.** Compaction as a long session does it: the transcript is cut into chunks of about 60,000 tokens; each chunk is summarized together with the previous summary, with a prompt modelled on Claude Code's compaction prompt (it asks for every user message). The last summary is the handoff. Generated once per task, kept in `docs/benchmarks/handoff-resume-long-summaries-v1.json`.
+- **Interrupted summary generation.** Each successful compaction is saved to the ignored `.agent/benchmark-runs/summaries-long.partial.json` with a digest of the suite, task inputs, model, and prompt. Re-running the same `summaries --suite long --model sonnet` command skips completed compactions; changed inputs or model are rejected. The published summaries file is written only after every task finishes. A provider rejection leaves the last valid checkpoint in place.
+- **Recorder condition.** The brief the hooks produce, which by then shows only the three newest requests, so the task's own request is not in it, plus one line pointing to `handoff_search`. The agent gets ReproGate's MCP server, read-only, over a copy of the recorded database, with `handoff_search` and `handoff_status` allowed. This is the shipped design, not the brief alone.
+- **Scoring.** As before, with two changes for the larger repository: a check that the look-alike request's file is left as the user asked, and checks rewritten for the larger repository (a test for the loader; exactly one archived migration). Validated before any run: for each task the unfinished state fails and a reference finish passes, including the codebase's 40 tests; the task's request is not in the brief, and `handoff_search` finds it word for word.
+- **Size.** 6 tasks × 2 conditions × 3 repeats = 36 runs, Sonnet, Claude Code only.
+
+**Decision rule, fixed before any run (2026-11-17)**, the same as slice 3:
+
+1. The recorder **passes** if it succeeds at least as often as the summary, and either succeeds at least 2 more times out of 18, or reaches its first target edit with at least 15% fewer median tokens.
+2. It **fails** if it succeeds at least 2 fewer times out of 18. Slices 4 and 5 then stop.
+3. Anything else is **inconclusive**.
+4. A task the recorder loses in all three repeats while the summary wins at least two is reported, whatever the totals.
+
+**What it cannot show.** The sessions are generated, not real; the ordinary requests are simple, and the look-alikes were written by the recorder's author. Two things differ between conditions (the context and the search tool), so a difference cannot be split between them. Eighteen runs per condition cannot separate small differences.
+
+## Slice 3b result
+
+Run 2026-11-18 to 2026-11-20: 36 valid runs, Sonnet. Numbers in [BENCHMARKS.md](../BENCHMARKS.md#long-sessions-slice-3b).
+
+- Success: summary 18/18, recorder 5/18. Median tokens to the first needed edit: 37,555 and 117,705; ten recorder runs never edited a needed file.
+- **Rule outcome: fail** (rule 2). Rule 4 flags `frozen-decoy`, `dead-end`, `csv-rate-limit` and `ordered-plan`. Slices 4 and 5 stop as specified.
+
+What went wrong is specific:
+
+- **The brief's recency cap hides the goal.** The brief keeps the three newest requests. In a long session those are whatever the user asked last, so the request the work was for drops out. A brief that leads with the wrong goal is worse than none: agents redid side requests, or reverted the user's earlier changes as work nobody asked for.
+- **Agents do not search unless they must.** A one-line hint and an available tool led to 4 searches in 18 runs. All four of those runs succeeded; 1 of the other 14 did. The recorded data was enough; the brief did not lead agents to it.
+- **A good compaction prompt is a strong baseline.** Asking for every user message kept every rule through three rounds of summaries of summaries. The decay measured earlier in this proposal (22% of later-used identifiers kept) was about identifiers in general, not about the user's requests, which these tasks depend on.
+
+What would have to change before any recorder brief replaces summaries, as a new version with a new gate:
+
+1. Lead the brief with the open goal: the requests that started work still unfinished, not the newest ones, and mark later requests as such.
+2. Put what the user said that still constrains the work (rules, corrections, frozen files) in the brief itself, rather than relying on search.
+3. Keep slices 1 and 2 as a complement to summaries: `handoff_search` and recorded requests helped every agent that used them, and the recorder costs no model call when a session dies before it can summarize.
+
+## Decision
+
+2026-11-20, chosen by the user from the options above:
+
+- **Kept:** slice 1 (`handoff_search`, one writer for the shared summary) and slice 2 (the opt-in transcript recorder), as a complement to the summaries clients write themselves. Search and recorded requests helped every agent that used them, and the recorder keeps a record when a session dies before anything summarizes it.
+- **Changed:** briefs say that their recorded requests are the newest only and point to `handoff_search`, since the newest requests misled agents in the long-session gate.
+- **Not built:** slices 4 and 5. A recorder brief meant to replace summaries would first need to lead with the open goal and the user's standing constraints, and pass a new gate.

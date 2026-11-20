@@ -1384,12 +1384,40 @@
     "recorded": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["source", "requests", "failures", "files", "omitted"],
+      "required": [
+        "source",
+        "requests",
+        "replies",
+        "failures",
+        "files",
+        "omitted"
+      ],
       "properties": {
         "source": {
           "const": "client_transcript"
         },
         "requests": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["sessionId", "text", "createdAt"],
+            "properties": {
+              "sessionId": {
+                "$ref": "#/$defs/uuid"
+              },
+              "text": {
+                "type": "string"
+              },
+              "createdAt": {
+                "type": "string",
+                "minLength": 20,
+                "maxLength": 30
+              }
+            }
+          }
+        },
+        "replies": {
           "type": "array",
           "items": {
             "type": "object",

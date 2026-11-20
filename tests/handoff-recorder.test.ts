@@ -361,6 +361,10 @@ test("hooks record a session's transcript and the brief shows requests, failures
     ["Make the importer retry on EPERM"],
   );
   assert.deepEqual(
+    recorded.replies.map((r) => r.text),
+    ["Added a retry loop."],
+  );
+  assert.deepEqual(
     recorded.failures.map((failure) => [
       failure.command,
       failure.status,
@@ -385,6 +389,7 @@ test("hooks record a session's transcript and the brief shows requests, failures
     /User asked \([0-9a-f]{8}, .*\): Make the importer retry on EPERM/u,
   );
   assert.match(text, /Failed \(exit 1\), .*: npm test/u);
+  assert.match(text, /Agent said \([0-9a-f]{8}, .*\): Added a retry loop\./u);
   assert.match(text, /Changed src\/importer\.ts/u);
 
   // Reading again records nothing twice, even from the start.
@@ -708,6 +713,7 @@ test("briefs with recorded events still fit every budget, dropping requests last
     // What the user asked for is the last entry to go.
     const others =
       brief.sessions.length +
+      (brief.recorded?.replies.length ?? 0) +
       (brief.recorded?.failures.length ?? 0) +
       (brief.recorded?.files.length ?? 0);
     if (others > 0)
