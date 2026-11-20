@@ -162,6 +162,11 @@ async function main(): Promise<void> {
         `Recovered ${String(runtime.recoveredExecutions)} incomplete execution(s) as indeterminate\n`,
       );
     }
+    if (runtime !== undefined && runtime.ownedExecutions > 0) {
+      process.stderr.write(
+        `Left ${String(runtime.ownedExecutions)} incomplete execution(s) owned by another live process\n`,
+      );
+    }
     const handle = serveStdio(
       () =>
         createReproGateServer(

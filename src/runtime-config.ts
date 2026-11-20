@@ -139,6 +139,8 @@ export interface ConfiguredRuntime {
   mediator?: HostMediator;
   store: SqliteExecutionStore;
   recoveredExecutions: number;
+  /** Prepared executions another live process still owns, left as they are. */
+  ownedExecutions: number;
   close(): void;
 }
 
@@ -400,6 +402,7 @@ export async function createConfiguredRuntime(
   const store = new SqliteExecutionStore(config.databasePath);
   try {
     const recoveredExecutions = store.recoverIncomplete();
+    const ownedExecutions = store.countIncomplete();
     const kernel = new ReproGateKernel(
       config.catalog as CatalogTool[],
       config.policy as PolicyV1,
@@ -431,6 +434,7 @@ export async function createConfiguredRuntime(
           }),
       store,
       recoveredExecutions,
+      ownedExecutions,
       close: () => {
         if (closed) return;
         closed = true;

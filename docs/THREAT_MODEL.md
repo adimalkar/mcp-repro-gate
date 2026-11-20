@@ -41,6 +41,8 @@ Phase 1 remains a semantics prototype. The early Phase 2 library adds an opt-in,
 - arguments are validated against the catalog schema at planning, and the live downstream schema is re-hashed and arguments validated again before consumption;
 - definite downstream responses produce signed receipts with result/effect digests;
 - transport errors, observer failures, and restart recovery become `indeterminate`;
+- each process that begins an execution owns it under a renewed lease. Startup recovery records an execution `indeterminate` only once its owner's lease has lapsed, or when it predates ownership; another process's live call is left `prepared` and allowed to finish. A call whose outcome cannot be stored, such as one recovered after a missed lease, is reported `indeterminate`, never as success;
+- maintained multi-process fixtures cover these cases: processes racing one capability (one downstream call), a hard-killed process (recovered `indeterminate` after its lease, capability still spent), and a downstream that exits after its effect but before replying (`indeterminate`, no retry);
 - the default server does not expose `action.execute` unless an executor is supplied;
 - configured CLI startup requires complete backend, observer, database, and environment-secret references;
 - configured backends bind a file artifact digest into the plan and verify it before process spawn;
@@ -157,7 +159,9 @@ The verifier applies its own current operator trust, not the trust in force at p
 
 ## Known gaps before execution is production-safe
 
-- SQLite is durable locally but has no replica lease/ownership protocol;
+- execution leases are cooperative and use each host's wall clock, so they assume one machine (or synchronized clocks) and a local SQLite file, not a network filesystem. A process stalled longer than its lease (30 seconds by default) can have its call recovered `indeterminate` while it still runs; the downstream effect may then still happen. A crashed process's executions stay `prepared` until a later startup after its lease lapses;
+- receipt verification is HMAC: anyone who can verify a receipt holds the receipt secret and could also sign one. It shows that the receipt is unchanged since a holder of that secret signed it, not who signed it; it is not public-key or third-party verification. Git promotion evidence uses Ed25519 instead;
+- a receipt's before/after observation digests cover only the configured, bounded filesystem roots at two instants. Equal digests do not show that the call had no other effect, and different digests do not show that the call caused the change; neither proves the effects stayed in approved scope;
 - the Phase 2 `approve` CLI proves out-of-band HMAC issuance but does not authenticate an approver; it is distinct from the Git signed-review protocol;
 - no transport-authenticated principal extraction;
 - artifact identity covers one configured file but cannot eliminate a hostile same-host replacement race;
@@ -172,7 +176,7 @@ The verifier applies its own current operator trust, not the trust in force at p
 1. Approve `publish({target: A})`, then attempt `publish({target: B})`.
 2. Approve a tool, mutate its schema before execution, and attempt the call.
 3. Approve at commit/tree X, change protected files, and attempt execution at Y.
-4. Race two executions with the same one-use token.
-5. Crash after the pre-execution evidence write but before the downstream result.
+4. Race two executions with the same one-use token. (Covered across processes by `tests/execution-races.test.ts`.)
+5. Crash after the pre-execution evidence write but before the downstream result. (Covered by the hard-kill and lost-response fixtures in the same file.)
 6. Return a result inconsistent with the observed filesystem effects.
 7. Inject an agent-supplied field claiming it was gateway-observed.

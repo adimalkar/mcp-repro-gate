@@ -45,10 +45,10 @@ Implemented:
 - out-of-band approval and receipt-verification CLI commands;
 - strict Runtime Configuration v1, artifact digest binding, and bounded symlink-safe filesystem observation.
 
-Remaining closure work:
+Closure work done: execution ownership leases, so startup recovery no longer marks another live process's call `indeterminate`; multi-process fixtures for capability races, hard kills and lost downstream responses; and documentation of what HMAC verification and before/after hashes do **not** prove.
 
-- cross-process race, worker-ownership, and hard-kill/response-loss fixtures;
-- precise documentation and test assertions for what HMAC verification and before/after hashes do **not** prove;
+Remaining:
+
 - keep Git-specific workspace identity, effect classification, and commit-time enforcement in Phase 3;
 - defer deterministic transcript replay unless an evaluation needs it; it is not a prerequisite for authorized-change claims.
 
