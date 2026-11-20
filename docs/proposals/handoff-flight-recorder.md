@@ -1,6 +1,6 @@
 # Flight recorder: handoff without summaries of summaries
 
-Status: slices 1 and 2 are implemented. Slice 3, the A/B gate, was **inconclusive** on short sessions; on long sessions (slice 3b) the recorder **failed** (see [Slice 3b result](#slice-3b-result)). As the rule specifies, slices 4 and 5 stop.
+Status: slices 1 and 2 are implemented. **Closed (2026-11-20).** Slices 1 and 2 are kept as a complement to client summaries. The A/B gate was inconclusive on short sessions and failed on long ones (see [Slice 3b result](#slice-3b-result)), so slices 4 and 5 are not built. See [Decision](#decision).
 
 ## The problem
 
@@ -241,3 +241,11 @@ What would have to change before any recorder brief replaces summaries, as a new
 1. Lead the brief with the open goal: the requests that started work still unfinished, not the newest ones, and mark later requests as such.
 2. Put what the user said that still constrains the work (rules, corrections, frozen files) in the brief itself, rather than relying on search.
 3. Keep slices 1 and 2 as a complement to summaries: `handoff_search` and recorded requests helped every agent that used them, and the recorder costs no model call when a session dies before it can summarize.
+
+## Decision
+
+2026-11-20, chosen by the user from the options above:
+
+- **Kept:** slice 1 (`handoff_search`, one writer for the shared summary) and slice 2 (the opt-in transcript recorder), as a complement to the summaries clients write themselves. Search and recorded requests helped every agent that used them, and the recorder keeps a record when a session dies before anything summarizes it.
+- **Changed:** briefs say that their recorded requests are the newest only and point to `handoff_search`, since the newest requests misled agents in the long-session gate.
+- **Not built:** slices 4 and 5. A recorder brief meant to replace summaries would first need to lead with the open goal and the user's standing constraints, and pass a new gate.
