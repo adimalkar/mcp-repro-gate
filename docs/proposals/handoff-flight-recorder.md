@@ -1,6 +1,6 @@
 # Flight recorder: handoff without summaries of summaries
 
-Status: slices 1 and 2 are implemented. Slice 3, the A/B gate, ran on 2026-11-17 and was **inconclusive** (see [Slice 3 result](#slice-3-result)); the user chose a harder gate on long sessions, [slice 3b](#slice-3b-long-sessions). Slices 4 and 5 wait on it.
+Status: slices 1 and 2 are implemented. Slice 3, the A/B gate, was **inconclusive** on short sessions; on long sessions (slice 3b) the recorder **failed** (see [Slice 3b result](#slice-3b-result)). As the rule specifies, slices 4 and 5 stop.
 
 ## The problem
 
@@ -222,3 +222,22 @@ Chosen by the user after the inconclusive short gate: test the case the recorder
 4. A task the recorder loses in all three repeats while the summary wins at least two is reported, whatever the totals.
 
 **What it cannot show.** The sessions are generated, not real; the ordinary requests are simple, and the look-alikes were written by the recorder's author. Two things differ between conditions (the context and the search tool), so a difference cannot be split between them. Eighteen runs per condition cannot separate small differences.
+
+## Slice 3b result
+
+Run 2026-11-18 to 2026-11-20: 36 valid runs, Sonnet. Numbers in [BENCHMARKS.md](../BENCHMARKS.md#long-sessions-slice-3b).
+
+- Success: summary 18/18, recorder 5/18. Median tokens to the first needed edit: 37,555 and 117,705; ten recorder runs never edited a needed file.
+- **Rule outcome: fail** (rule 2). Rule 4 flags `frozen-decoy`, `dead-end`, `csv-rate-limit` and `ordered-plan`. Slices 4 and 5 stop as specified.
+
+What went wrong is specific:
+
+- **The brief's recency cap hides the goal.** The brief keeps the three newest requests. In a long session those are whatever the user asked last, so the request the work was for drops out. A brief that leads with the wrong goal is worse than none: agents redid side requests, or reverted the user's earlier changes as work nobody asked for.
+- **Agents do not search unless they must.** A one-line hint and an available tool led to 4 searches in 18 runs. All four of those runs succeeded; 1 of the other 14 did. The recorded data was enough; the brief did not lead agents to it.
+- **A good compaction prompt is a strong baseline.** Asking for every user message kept every rule through three rounds of summaries of summaries. The decay measured earlier in this proposal (22% of later-used identifiers kept) was about identifiers in general, not about the user's requests, which these tasks depend on.
+
+What would have to change before any recorder brief replaces summaries, as a new version with a new gate:
+
+1. Lead the brief with the open goal: the requests that started work still unfinished, not the newest ones, and mark later requests as such.
+2. Put what the user said that still constrains the work (rules, corrections, frozen files) in the brief itself, rather than relying on search.
+3. Keep slices 1 and 2 as a complement to summaries: `handoff_search` and recorded requests helped every agent that used them, and the recorder costs no model call when a session dies before it can summarize.
