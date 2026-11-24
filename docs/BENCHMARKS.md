@@ -78,7 +78,7 @@ The command requires authenticated local host CLIs and makes 12 live model calls
 - **Task pass** requires the relative path, the function name and a known source fragment, plus successful calls to both graph tools. The façade runner links plans to executions to verify which graph tool actually ran.
 - **MCP bytes** count the JSON result payload of each completed call. The report also counts tool listing bytes separately. A host can request the list more than once. The wire measurement includes both text and structured fields when present.
 - **Host usage** shows the whole-turn input, output and cache counts that each CLI reports. The pilot reports `null` for tool-result tokens because it has no per-result tokenizer or accounting from either host. Use successful pairs for byte comparisons and retain failed runs in completion counts.
-- The baseline exposes only the same two read-only graph tools. This pilot has no write approval, injected failure or session transfer task. Those remain in the broader protocol below.
+- The baseline exposes only the same two read-only graph tools. Its relay adds the missing `readOnlyHint` to those two tools for both hosts. Codex otherwise asks for approval before direct calls in a noninteractive trial. The relay enforces the two-tool allowlist, and the hint contributes to the measured tool-list bytes. Write approval, injected failures and session transfer are covered by the broader protocol below.
 
 ## Two-host protocol (manual)
 

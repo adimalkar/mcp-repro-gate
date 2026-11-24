@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { appendFileSync } from "node:fs";
+import { isAbsolute } from "node:path";
 import { createInterface } from "node:readline";
 import { pathToFileURL } from "node:url";
 import { getDefaultEnvironment } from "@modelcontextprotocol/client/stdio";
@@ -40,7 +41,12 @@ function main() {
     ? {
         ...getDefaultEnvironment(),
         ...Object.fromEntries(
-          GRAPH_ENV.map((key) => [key, process.env[ENV_PREFIX + key]]),
+          GRAPH_ENV.map((key) => {
+            const value = process.env[ENV_PREFIX + key];
+            if (!value || !isAbsolute(value))
+              throw new Error(`Missing isolated graph directory: ${key}`);
+            return [key, value];
+          }),
         ),
       }
     : process.env;
@@ -124,9 +130,18 @@ function main() {
         allowed &&
         Array.isArray(result.tools)
       )
-        result.tools = result.tools.filter((tool: unknown) => {
-          const name = object(tool).name;
-          return typeof name === "string" && allowed.has(name);
+        result.tools = result.tools.flatMap((value: unknown) => {
+          const tool = object(value);
+          if (typeof tool.name !== "string" || !allowed.has(tool.name))
+            return [];
+          // The pinned graph server does not declare these hints. Codex
+          // requires explicit read-only metadata in a noninteractive run.
+          return [
+            {
+              ...tool,
+              annotations: { ...object(tool.annotations), readOnlyHint: true },
+            },
+          ];
         });
       const sample: WireSample = {
         ...request,
