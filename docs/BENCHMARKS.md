@@ -80,6 +80,19 @@ The command requires authenticated local host CLIs and makes 12 live model calls
 - **Host usage** shows the whole-turn input, output and cache counts that each CLI reports. The pilot reports `null` for tool-result tokens because it has no per-result tokenizer or accounting from either host. Use successful pairs for byte comparisons and retain failed runs in completion counts.
 - The baseline exposes only the same two read-only graph tools. Its relay adds the missing `readOnlyHint` to those two tools for both hosts. Codex otherwise asks for approval before direct calls in a noninteractive trial. The relay enforces the two-tool allowlist, and the hint contributes to the measured tool-list bytes. Write approval, injected failures and session transfer are covered by the broader protocol below.
 
+### Pilot result
+
+All 12 runs passed on November 24, 2026. See [the run report](benchmarks/two-host-v1.json) for the pinned commit, binary digest, version information, and measurements for each call.
+
+| Host        | Direct pass | Façade pass | Direct calls per task | Façade calls per task | Median direct result bytes | Median façade result bytes | Median paired size ratio |
+| ----------- | ----------: | ----------: | --------------------: | --------------------: | -------------------------: | -------------------------: | -----------------------: |
+| Codex CLI   |         3/3 |         3/3 |                     2 |                     8 |                      8,241 |                     22,282 |                    2.70× |
+| Claude Code |         3/3 |         3/3 |                     2 |                   7–8 |                      8,241 |                     23,202 |                    2.82× |
+
+The paired ratio divides façade bytes by direct bytes for each task in the same host, then takes the median. It excludes tool listings. Across list requests in one run, direct mode returned 3,570 bytes in both hosts. The façade returned 9,990 bytes in Codex CLI and 10,138 in Claude Code.
+
+For these short sessions with two downstream tools, catalog discovery, planning and mediated execution added calls and bytes. The measured surface includes ReproGate's policy and receipt flow. A larger catalog, reuse within a session, or smaller graph views could change the comparison. The runs measure wire payloads and whole-turn usage. The roadmap's tool-result token target remains unmeasured.
+
 ## Two-host protocol (manual)
 
 This protocol measures the Phase 4 exit criteria in real hosts. Run it in at least two MCP hosts, such as Claude Code and Codex CLI, with each host's own model settings fixed for the whole run.
