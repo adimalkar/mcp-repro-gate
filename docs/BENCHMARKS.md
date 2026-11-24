@@ -1,9 +1,37 @@
 # Benchmarks
 
-The Phase 4 exit criteria ask for measurements before any claim of savings. This page has two parts:
+The Phase 3 measurements cover approval usability in Git. The Phase 4 sections cover façade response size and the manual protocol for measuring performance in two hosts.
 
-- an **in-repository façade measurement**, which is deterministic and anyone can re-run;
-- a **manual two-host protocol** for the host-level metrics, which can't be measured from inside this repository.
+## Phase 3 Git approval usability
+
+Run the same fixtures used in CI:
+
+```sh
+npm run build --silent
+node --test dist/tests/git-promotion-benign.test.js
+```
+
+Each case starts with a fresh Git repository, a clean source worktree, a separate destination branch at the source commit, a persisted action plan, an Ed25519 operator review, and a SQLite approval ledger. Apply one change after review. For changes expected to block, try it both before reservation and again between reservation and promotion. The suite checks the destination ref, checks whether the journal wrote a reservation or admission, and retries with the same approval after restoring the reviewed state.
+
+| Change after review                          | Observed result | Operator action while drift is present             |
+| -------------------------------------------- | --------------- | -------------------------------------------------- |
+| No change (control)                          | Promoted        | Proceed                                            |
+| Unrelated branch moves                       | Promoted        | Proceed                                            |
+| Release tag added                            | Promoted        | Proceed                                            |
+| Unrelated linked worktree added              | Promoted        | Proceed                                            |
+| Ignored local runtime file added             | Promoted        | Proceed                                            |
+| Local Git author name updated                | Promoted        | Proceed                                            |
+| Tracked scratch edit                         | Blocked         | Restore a clean source worktree                    |
+| Untracked scratch note                       | Blocked         | Restore a clean source worktree                    |
+| Destination checked out for inspection       | Blocked         | Free the destination branch                        |
+| Both bound branches advance to the same tree | Blocked         | Get a new plan and approval to keep the new base   |
+| Policy adds a rule for a different tool      | Blocked         | Get a new plan and approval to keep the new policy |
+
+- **False denials on changes expected to preserve approval: 0/5.** All five changes and the unchanged control promoted the exact reviewed candidate.
+- **Approvals unusable while benign drift was present: 5/10** of changed scenarios. All five were blocked at both reservation and promotion. The commit and policy changes account for **2/10** cases where retaining the change requires a new approval, even though the tree or effective policy decision stayed the same.
+- **Recovery after restoring the reviewed state: 5/5.** Reservation refusals wrote no attempt. Promotion precheck refusals kept the existing attempt `prepared` with no admission or outcome. The same approval then promoted successfully in each case.
+
+These counts describe ten synthetic changes selected to cover the current contract. They do not estimate how often teams see this drift, or how often denials occur after admission. The fixtures use the host promotion APIs and exercise no MCP client. See [Promoting a reviewed Git change](GIT_PROMOTION.md) for operator guidance.
 
 ## Façade measurement
 
