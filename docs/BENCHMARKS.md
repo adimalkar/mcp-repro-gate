@@ -62,6 +62,24 @@ The façade's own tool list is about twice the 14 downstream definitions it repl
   - Planning: from 852 to 800 bytes. Its reduction fell from 72.6% to 70.9%, because the full baseline also shrank with compact JSON.
   - Façade tool list: grew from 9856 to 9990 bytes. The `detail` input, the optional digest fields and the bounded text in the `action.run` output schema account for the increase. Tool list plus finding a tool fell from 12354 to 12112 bytes per session, and break-even stayed at 35 tools.
 
+## Two-host code discovery pilot
+
+The runner launches Codex CLI and Claude Code against the same two graph tools, through ReproGate and through a direct MCP connection. It uses the public source revision pinned by the [discovery benchmark](CODE_DISCOVERY_BENCHMARK.md). The current fixtures find the definitions of `canonicalJson`, `evaluatePolicy`, and `verifyExecutionReceipt`. Each run starts in a fresh session with an empty workspace, and the graph server uses a private index and settings.
+
+```sh
+mkdir -p .agent/benchmark-runs
+npm run bench:two-host -- \
+  /absolute/path/to/codebase-memory-mcp \
+  .agent/benchmark-runs/two-host.json gpt-6.2-sol sonnet
+```
+
+The command requires authenticated local host CLIs and makes 12 live model calls, one per task, host, and connection. Append `1` for a four-call smoke run. Pick a fresh output filename. The runner writes a report after each finished run, so completed observations survive an interruption. The report contains host versions, model selectors, the graph binary digest, the pinned source identity, and per-call measurements. Tool arguments, transcripts, and credentials are omitted.
+
+- **Task pass** requires the relative path, the function name and a known source fragment, plus successful calls to both graph tools. The façade runner links plans to executions to verify which graph tool actually ran.
+- **MCP bytes** count the JSON result payload of each completed call. The report also counts tool listing bytes separately. A host can request the list more than once. The wire measurement includes both text and structured fields when present.
+- **Host usage** shows the whole-turn input, output and cache counts that each CLI reports. The pilot reports `null` for tool-result tokens because it has no per-result tokenizer or accounting from either host. Use successful pairs for byte comparisons and retain failed runs in completion counts.
+- The baseline exposes only the same two read-only graph tools. This pilot has no write approval, injected failure or session transfer task. Those remain in the broader protocol below.
+
 ## Two-host protocol (manual)
 
 This protocol measures the Phase 4 exit criteria in real hosts. Run it in at least two MCP hosts, such as Claude Code and Codex CLI, with each host's own model settings fixed for the whole run.
