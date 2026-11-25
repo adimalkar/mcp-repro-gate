@@ -11,27 +11,41 @@ npm run build --silent
 node --test dist/tests/git-promotion-benign.test.js
 ```
 
-Each case starts with a fresh Git repository, a clean source worktree, a separate destination branch at the source commit, a persisted action plan, an Ed25519 operator review, and a SQLite approval ledger. Apply one change after review. For changes expected to block, try it both before reservation and again between reservation and promotion. The suite checks the destination ref, checks whether the journal wrote a reservation or admission, and retries with the same approval after restoring the reviewed state.
+Each case starts with a fresh Git repository, a clean source worktree, a separate destination branch at the source commit, a persisted action plan, an Ed25519 operator review, and a SQLite approval ledger, then applies one change after review. Every change is ordinary work that does not touch the approved patch. It is tried in two windows, before reservation and between reservation and promotion, with the same result in both unless the table says otherwise. The changes expected to promote are applied together in each window, which keeps the suite fast; each also promoted alone, in both windows, when this table was recorded. The suite checks the destination ref and whether the journal wrote a reservation or admission. For refused changes, it undoes the change and retries with the same approval.
 
-| Change after review                          | Observed result | Operator action while drift is present             |
-| -------------------------------------------- | --------------- | -------------------------------------------------- |
-| No change (control)                          | Promoted        | Proceed                                            |
-| Unrelated branch moves                       | Promoted        | Proceed                                            |
-| Release tag added                            | Promoted        | Proceed                                            |
-| Unrelated linked worktree added              | Promoted        | Proceed                                            |
-| Ignored local runtime file added             | Promoted        | Proceed                                            |
-| Local Git author name updated                | Promoted        | Proceed                                            |
-| Tracked scratch edit                         | Blocked         | Restore a clean source worktree                    |
-| Untracked scratch note                       | Blocked         | Restore a clean source worktree                    |
-| Destination checked out for inspection       | Blocked         | Free the destination branch                        |
-| Both bound branches advance to the same tree | Blocked         | Get a new plan and approval to keep the new base   |
-| Policy adds a rule for a different tool      | Blocked         | Get a new plan and approval to keep the new policy |
+| Change after review                                   | Observed result | Operator action                                             |
+| ----------------------------------------------------- | --------------- | ----------------------------------------------------------- |
+| No change (control)                                   | Promoted        | Proceed                                                     |
+| Unrelated branch moves                                | Promoted        | Proceed                                                     |
+| Release tag added                                     | Promoted        | Proceed                                                     |
+| Unrelated linked worktree added                       | Promoted        | Proceed                                                     |
+| Ignored local runtime file added                      | Promoted        | Proceed                                                     |
+| Local Git author name updated                         | Promoted        | Proceed                                                     |
+| Fetch updates a remote-tracking branch                | Promoted        | Proceed                                                     |
+| Default garbage collection                            | Promoted        | Proceed                                                     |
+| Refs packed                                           | Promoted        | Proceed                                                     |
+| Local draft stashed                                   | Promoted        | Proceed                                                     |
+| Tracked file touched without a content change         | Promoted        | Proceed                                                     |
+| Local Git hook added                                  | Promoted        | Proceed                                                     |
+| Catalog tool description reworded                     | Promoted        | Proceed                                                     |
+| Second operator trusted                               | Promoted        | Proceed                                                     |
+| Tracked scratch edit                                  | Refused         | Restore a clean source worktree                             |
+| Untracked scratch note                                | Refused         | Restore a clean source worktree                             |
+| Destination checked out for inspection                | Refused         | Free the destination branch                                 |
+| Source worktree switched to a new branch              | Refused         | Switch back                                                 |
+| Agent commits more work on the source branch          | Refused         | Move the new commit to another branch                       |
+| A teammate's commit lands on the destination          | Refused         | Get a new plan and approval on the new base                 |
+| Both bound branches advance to the same tree          | Refused         | Get a new plan and approval to keep the new base            |
+| Policy adds a rule for a different tool               | Refused         | Get a new plan and approval to keep the new policy          |
+| Unreachable objects pruned (`gc --prune=now`), before | Refused         | Prepare the candidate again and use the same approval       |
+| Unreachable objects pruned (`gc --prune=now`), after  | Refused         | Recover the attempt; the approval is lost, so get a new one |
 
-- **False denials on changes expected to preserve approval: 0/5.** All five changes and the unchanged control promoted the exact reviewed candidate.
-- **Approvals unusable while benign drift was present: 5/10** of changed scenarios. All five were blocked at both reservation and promotion. The commit and policy changes account for **2/10** cases where retaining the change requires a new approval, even though the tree or effective policy decision stayed the same.
-- **Recovery after restoring the reviewed state: 5/5.** Reservation refusals wrote no attempt. Promotion precheck refusals kept the existing attempt `prepared` with no admission or outcome. The same approval then promoted successfully in each case.
+- **Refused: 9 of 22 benign changes.** 13 of 22 kept the approval usable and promoted the exact reviewed candidate, in both windows. The two pruning rows are one change.
+- **What each refusal costs.** 5 of the 9 clear when the operator tidies the repository, and the same approval then promotes. 3 of the 9 need a new plan and approval to keep the change. The contract binds the exact base and the whole policy digest, so it refuses even a commit with an identical tree or a rule for another tool. The fixtures also undo these three to show that the refusal did not spend the approval; undoing a teammate's commit is not advice.
+- **One change can lose the approval.** Nothing refers to the candidate commit until promotion, so `git gc --prune=now` deletes it. Before reservation, the candidate can be prepared again. After reservation, a new candidate is a different commit and the approval is already bound to the old one: recovery ends the attempt, and the approval refuses any other. `git-review promote` reserves and promotes in one command, so this needs an attempt left `prepared` for `resume`. Default `git gc` keeps recent unreachable objects and is safe.
+- **No refusal moved the destination.** Before reservation, refusals wrote no attempt. Afterwards, they left the attempt `prepared` with no admission or outcome.
 
-These counts describe ten synthetic changes selected to cover the current contract. They do not estimate how often teams see this drift, or how often denials occur after admission. The fixtures use the host promotion APIs and exercise no MCP client. See [Promoting a reviewed Git change](GIT_PROMOTION.md) for operator guidance.
+The 22 synthetic changes were chosen to cover the contract, so 9 of 22 is not a rate that a team would see: that depends on how often each change happens. They do not cover denials after admission, moved repositories, or submodules. The fixtures use the host promotion APIs and exercise no MCP client. See [Promoting a reviewed Git change](GIT_PROMOTION.md) for operator guidance.
 
 ## Façade measurement
 
