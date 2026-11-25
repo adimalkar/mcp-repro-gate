@@ -589,10 +589,17 @@ export function startWorker(
     | "silent"
     | "exit-before-event"
     | "event-stall",
-  // These modes perform a full signed-plan/object/fence reservation before
-  // reporting. Actual Windows setup takes ~27s and work exceeds the former 10s.
+  // These modes perform a full signed-plan/object/fence reservation, or its
+  // precheck, before reporting. Actual Windows setup takes ~27s and work
+  // exceeds the former 10s.
   // Keep short negative probes explicit and stop()/quiescence at 10s.
-  timeoutMs = ["reserve", "before-commit", "after-commit"].includes(mode)
+  timeoutMs = [
+    "reserve",
+    "before-commit",
+    "after-commit",
+    "wait",
+    "wait-expiry",
+  ].includes(mode)
     ? 45_000
     : 10_000,
   execPath = process.execPath,
