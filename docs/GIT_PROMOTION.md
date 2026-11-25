@@ -65,7 +65,8 @@ A `failed` or `indeterminate` attempt cannot be retried, so get a new approval f
 
 ## Effects and limits
 
-- A confirmed promotion moves only the destination ref and appends a reflog entry `reprogate promotion <attemptId>`. Candidate preparation can leave unreachable objects. Source HEAD, index and worktree are not written. Nothing refers to the candidate until promotion, so do not run `git gc --prune=now` or `git prune` while an attempt is `prepared`: the candidate cannot be rebuilt, and the one-use approval is then spent.
+- A confirmed promotion moves only the destination ref and appends a reflog entry `reprogate promotion <attemptId>`. Candidate preparation can leave unreachable objects. Source HEAD, index and worktree are not written.
+- Nothing refers to the candidate until promotion, so its pack is imported with a Git keep file (`objects/pack/pack-<hash>.keep`, which names the attempt). Git then never repacks or deletes that pack, even under `git gc --prune=now` or `git repack -a -d`. The file is removed when the attempt is resolved, or when its unreserved fence is released by `promote` or `recover`. Do not delete it while an attempt is `prepared`: a lost candidate cannot be rebuilt, the gate refuses with `Candidate commit <oid> is missing from the repository`, and the one-use approval is then spent unless the same objects are restored. A leftover file is harmless and only keeps one small pack.
 - Expiry is checked at admission and again just before the ref write, which is not atomic with that check. Git and SQLite are not one atomic transaction.
 - The claim is scoped to the Git ref, under trusted host configuration, ledger, process, key and clock, and cooperating fence ownership. See the [threat model](THREAT_MODEL.md#final-git-promotion-gate-boundary).
 - A resolved promotion can be exported as signed portable evidence and verified offline; see [Portable evidence](#portable-evidence).

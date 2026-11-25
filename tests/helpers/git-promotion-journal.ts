@@ -284,6 +284,15 @@ export function fixture(
   };
 }
 
+/** Attempt IDs whose candidate packs are kept from garbage collection. */
+export function candidateKeeps(f: ReturnType<typeof fixture>): string[] {
+  const directory = join(f.root, ".git", "objects", "pack");
+  return readdirSync(directory)
+    .filter((name) => name.endsWith(".keep"))
+    .map((name) => readFileSync(join(directory, name), "utf8"))
+    .map((text) => text.replace(/^reprogate promotion candidate /u, "").trim());
+}
+
 export function request(
   f: ReturnType<typeof fixture>,
 ): ReserveGitPromotionFromPlanInput {

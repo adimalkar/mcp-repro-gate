@@ -10,7 +10,9 @@ import {
   type GitChangeProposal,
   type GitChangeProposalV2,
 } from "./git-change-proposal.js";
+import { candidateKeepMessage } from "./git-promotion-keep.js";
 import {
+  GitRunnerUnavailableError,
   removeScratch,
   runGit as git,
   runGitLine as gitLine,
@@ -244,8 +246,53 @@ function fixedGitPromotionCommitBytes(
   );
 }
 
+/** The exact candidate is gone from the object store, rather than different. */
+export class MissingGitCandidateError extends Error {}
+
 /** Read-only verification of already imported objects; no staging/ref/index writes. */
 export function verifyInstalledGitPromotionObjects(
+  proposal: GitChangeProposalV2,
+  repositoryPath: string,
+  prepared: PreparedGitPromotionObjectsV1,
+): void {
+  try {
+    verifyInstalledObjects(proposal, repositoryPath, prepared);
+  } catch (error) {
+    if (error instanceof GitRunnerUnavailableError) throw error;
+    // Diagnose only after a failure; the check itself is unchanged.
+    const missing = missingCandidate(repositoryPath, prepared);
+    if (missing === undefined) throw error;
+    throw new MissingGitCandidateError(
+      `${missing} is missing from the repository`,
+      { cause: error },
+    );
+  }
+}
+
+function missingCandidate(
+  repositoryPath: string,
+  prepared: PreparedGitPromotionObjectsV1,
+): string | undefined {
+  const wanted: [string, string][] = [
+    ["commit", prepared.candidateCommitOid],
+    ["tree", prepared.candidateTreeOid],
+  ];
+  try {
+    const lines = git(
+      ["-C", repositoryPath, "cat-file", "--batch-check"],
+      Buffer.from(wanted.map(([, oid]) => `${oid}\n`).join(""), "ascii"),
+      MAX_COMMIT_BYTES,
+    )
+      .toString("ascii")
+      .split("\n");
+    const found = wanted.find(([, oid]) => lines.includes(`${oid} missing`));
+    return found && `Candidate ${found[0]} ${found[1]}`;
+  } catch {
+    return undefined;
+  }
+}
+
+function verifyInstalledObjects(
   proposal: GitChangeProposalV2,
   repositoryPath: string,
   prepared: PreparedGitPromotionObjectsV1,
@@ -386,7 +433,15 @@ function materializeStagedGitObjects(
     ),
     Buffer.from(`${candidateCommitOid}\n^${parent}\n`, "ascii"),
   );
-  git(inRepository("index-pack", "--stdin", "--strict"), pack);
+  git(
+    inRepository(
+      "index-pack",
+      "--stdin",
+      "--strict",
+      `--keep=${candidateKeepMessage(attemptId)}`,
+    ),
+    pack,
+  );
   const importedCommit = git(
     inRepository("cat-file", "commit", candidateCommitOid),
     undefined,

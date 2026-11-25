@@ -89,7 +89,7 @@ Residual limits:
 - Ref and object durability relies on Git honouring `core.fsync=committed,reference` (Git 2.36 or later) and on the file system's fsync; older Git ignores the setting, and Git does not fsync the refs directory after renaming a ref lock file.
 - If SQLite stays busy beyond its timeout after admission, the attempt is left admitted without an outcome and recovery records `indeterminate` although nothing was written.
 - Writers that ignore the fence, a same-user attacker, and a raw writer of the trusted ledger, which could insert a consistent but false outcome, are outside the claim.
-- Reflog entries and unreachable candidate objects are retained effects.
+- Reflog entries and unreachable candidate objects are retained effects. While an attempt is unresolved, a keep file protects its candidate's pack from Git's own garbage collection, not from a process that deletes repository files; losing the candidate spends the approval but cannot promote anything else.
 - The host-only `git-review` promotion commands add no authority of their own: `--confirm-quiescent` is an operator assertion, and a version 2 configuration is trusted host input. No portable signed promotion receipt exists yet.
 
 ## Native handoff context boundary
