@@ -91,7 +91,18 @@ All 12 runs passed on November 24, 2026. See [the run report](benchmarks/two-hos
 
 The paired ratio divides façade bytes by direct bytes for each task in the same host, then takes the median. It excludes tool listings. Across list requests in one run, direct mode returned 3,570 bytes in both hosts. The façade returned 9,990 bytes in Codex CLI and 10,138 in Claude Code.
 
-For these short sessions with two downstream tools, catalog discovery, planning and mediated execution added calls and bytes. The measured surface includes ReproGate's policy and receipt flow. A larger catalog, reuse within a session, or smaller graph views could change the comparison. The runs measure wire payloads and whole-turn usage. The roadmap's tool-result token target remains unmeasured.
+Whole-turn cost from the same runs, as medians over the three tasks (ratios are the median of each task's paired ratio):
+
+| Host        | Time, direct | Time, façade | Ratio | Input tokens, direct | Input tokens, façade | Ratio | Output tokens, direct | Output tokens, façade | Ratio |
+| ----------- | -----------: | -----------: | ----: | -------------------: | -------------------: | ----: | --------------------: | --------------------: | ----: |
+| Codex CLI   |       18.7 s |       27.8 s | 1.50× |               84,827 |              133,024 | 1.57× |                   450 |                   646 | 1.42× |
+| Claude Code |        6.9 s |       15.7 s | 2.45× |               17,144 |               53,559 | 3.14× |                   681 |                 1,316 | 1.93× |
+
+Input tokens count cached input and are summed over every model request in the turn, so they include each host's own prompt again for every extra call. Most are cache reads. Compare them within a host, not between hosts.
+
+**In this pilot the façade cost more on every measure.** With two downstream tools, catalog discovery, describe and plan calls were 54–60% of the façade's result bytes. The graph results themselves were 1.10–1.14× direct. The Phase 4 target is a 25% reduction in tool-result tokens, which this harness can't count; the bytes it can count moved the other way. The façade ran without the opt-in compact graph views (`mediation.result.graphViews`). A larger catalog, reuse within a session, or those views could change the comparison, and none of them is measured here. The façade surface also includes ReproGate's policy and receipt flow, which the direct surface does not provide.
+
+Limits of this pilot: one run per task, host and surface, so there is no variance estimate. All three tasks are the same kind of lookup, and the prompt names the calls to make. The `sonnet` alias was recorded, not the model it resolved to. Two earlier diagnostic reports (nine runs) are excluded: in both, the direct Codex run was refused approval because the graph tools lacked `readOnlyHint`, which the relay then added. Their other seven runs all passed.
 
 ## Two-host protocol (manual)
 
