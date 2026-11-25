@@ -494,7 +494,12 @@ test("runner makes refs and loose objects durable whatever the repository says",
     assert.equal(read("core.fsync"), "committed,reference");
     assert.equal(read("core.fsyncMethod"), "fsync");
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    rmSync(root, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100,
+    });
   }
 });
 
@@ -512,6 +517,11 @@ test("a Git process that cannot run is distinct from a negative answer", () => {
       GitRunnerUnavailableError,
     );
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    rmSync(root, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100,
+    });
   }
 });

@@ -21,7 +21,12 @@ test(
   (t) => {
     const directory = mkdtempSync(join(tmpdir(), "reprogate-private-db-"));
     t.after(() => {
-      rmSync(directory, { recursive: true, force: true });
+      rmSync(directory, {
+        recursive: true,
+        force: true,
+        maxRetries: 10,
+        retryDelay: 100,
+      });
     });
     const plans = new SqliteExecutionStore(join(directory, "plans.sqlite"));
     const approvals = new SqliteGitApprovalStore(
@@ -43,7 +48,12 @@ test(
 test("an existing database keeps its own mode", { skip: !posix }, (t) => {
   const directory = mkdtempSync(join(tmpdir(), "reprogate-private-db-"));
   t.after(() => {
-    rmSync(directory, { recursive: true, force: true });
+    rmSync(directory, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100,
+    });
   });
   const path = join(directory, "shared.sqlite");
   writeFileSync(path, "");

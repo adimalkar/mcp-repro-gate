@@ -245,7 +245,12 @@ export function fixture(
         failures,
         "Owned journal workers could not all be reaped",
       );
-    rmSync(scratch, { recursive: true, force: true });
+    rmSync(scratch, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100,
+    });
   });
   const snapshot = () => ({
     head: git(root, "symbolic-ref", "HEAD"),
@@ -446,7 +451,12 @@ export function modeledRawFilenameProbe(t: TestContext) {
     mkdtempSync(join(tmpdir(), "reprogate-raw-name-model-")),
   );
   t.after(() => {
-    rmSync(scratch, { recursive: true, force: true });
+    rmSync(scratch, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100,
+    });
   });
   const skips: string[] = [];
   const context = {
