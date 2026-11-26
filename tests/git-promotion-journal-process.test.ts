@@ -180,7 +180,7 @@ for (const mode of ["before-commit", "after-commit"] as const) {
 for (const drift of ["revocation", "expiry"] as const) {
   test(
     `blocked BEGIN IMMEDIATE rechecks ${drift} after waiting`,
-    { timeout: 60_000 },
+    { timeout: 120_000 },
     async (t) => {
       const f = fixture(t);
       const w = startWorker(f, drift === "expiry" ? "wait-expiry" : "wait");

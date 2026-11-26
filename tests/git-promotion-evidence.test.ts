@@ -477,7 +477,12 @@ test("the effect check needs the real objects and the right patch", (t) => {
   const bundle = exportBundle(s, promote(s));
   const empty = mkdtempSync(join(tmpdir(), "reprogate-evidence-empty-"));
   t.after(() => {
-    rmSync(empty, { recursive: true, force: true });
+    rmSync(empty, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100,
+    });
   });
   git(empty, "init", "--quiet");
   assert.equal(
@@ -807,7 +812,12 @@ test("the patch must reproduce the staged tree the operator signed", (t) => {
   // The staged diff digest of that tree, computed the way staging does.
   const scratch = mkdtempSync(join(tmpdir(), "reprogate-evidence-forge-"));
   t.after(() => {
-    rmSync(scratch, { recursive: true, force: true });
+    rmSync(scratch, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100,
+    });
   });
   git(scratch, "init", "--quiet");
   writeFileSync(
