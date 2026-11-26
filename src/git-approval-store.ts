@@ -26,6 +26,7 @@ import {
   type GitPromotionHostControl,
   type GitPromotionHostControlConfig,
 } from "./git-promotion-host-control.js";
+import { releaseCandidateKeep } from "./git-promotion-keep.js";
 import { GitRunnerUnavailableError, runGit } from "./git-runner.js";
 import type { PreparedGitPromotionObjectsV1 } from "./git-promotion-objects.js";
 import { DatabaseSync } from "node:sqlite";
@@ -46,6 +47,7 @@ import {
   type GitChangeProposalV2,
 } from "./git-change-proposal.js";
 import {
+  MissingGitCandidateError,
   stageGitChangeProposal,
   verifyInstalledGitPromotionObjects,
 } from "./git-change-stage.js";
@@ -1269,7 +1271,11 @@ export class SqliteGitApprovalStore {
       repositoryPath,
     );
     if (precheck !== undefined)
-      throw new Error(`Promotion precheck rejected: ${precheck}`);
+      throw new Error(
+        `Promotion precheck rejected: ${precheck.reason}${
+          precheck.detail === undefined ? "" : ` (${precheck.detail})`
+        }`,
+      );
     checkFence();
     const deadline = Date.parse(attempt.admissionDeadline);
 
@@ -1281,7 +1287,7 @@ export class SqliteGitApprovalStore {
         context,
         trust,
         repositoryPath,
-      );
+      )?.reason;
       checkFence();
       // One clock read decides the deadline AND becomes admittedAt, so a
       // record committed here always satisfies strict readback.
@@ -1493,6 +1499,7 @@ export class SqliteGitApprovalStore {
           "Promotion attempt was reserved; recover it instead of releasing its fence",
         );
     });
+    releaseCandidateKeep(config.repositoryPath, attemptId);
     control.release(owner, { childrenQuiescent: true });
     return { fence: "released" };
   }
@@ -1511,6 +1518,8 @@ export class SqliteGitApprovalStore {
       throw new Error("Promotion outcome readback uncertain; fence retained");
     if (policy === "confirmed-only" && status.outcome.state !== "confirmed")
       return { status, fence: "retained" };
+    // Resolved: the candidate is either reachable or no longer needed.
+    releaseCandidateKeep(attempt.repositoryPath, attempt.attemptId);
     try {
       const held = control.query();
       if (
@@ -1532,13 +1541,16 @@ export class SqliteGitApprovalStore {
     context: GitPlanBindingContext,
     trust: unknown,
     repositoryPath: string,
-  ): GitPromotionFailedReason | undefined {
+  ): { reason: GitPromotionFailedReason; detail?: string } | undefined {
+    const expired = { reason: "admission_expired" as const };
     const deadline = Date.parse(attempt.admissionDeadline);
     // Expiry also makes the approval and plan checks fail; whichever check
     // notices first, a passed deadline is reported as such.
-    const reject = (reason: GitPromotionFailedReason) =>
-      Date.now() < deadline ? reason : "admission_expired";
-    if (!(Date.now() < deadline)) return "admission_expired";
+    const reject = (reason: GitPromotionFailedReason, detail?: string) =>
+      Date.now() < deadline
+        ? { reason, ...(detail !== undefined && { detail }) }
+        : expired;
+    if (!(Date.now() < deadline)) return expired;
     const proposal = attempt.proposal as GitChangeProposalV2;
     let authority: GitApprovalAuthority;
     try {
@@ -1579,10 +1591,13 @@ export class SqliteGitApprovalStore {
       );
     } catch (error) {
       if (transientFailure(error)) throw error;
-      return reject("candidate_rejected");
+      return reject(
+        "candidate_rejected",
+        error instanceof MissingGitCandidateError ? error.message : undefined,
+      );
     }
     // The checks above take time; the deadline applies when they finish.
-    return Date.now() < deadline ? undefined : "admission_expired";
+    return Date.now() < deadline ? undefined : expired;
   }
 
   #insertAdmission(record: GitPromotionAdmissionV1): void {
