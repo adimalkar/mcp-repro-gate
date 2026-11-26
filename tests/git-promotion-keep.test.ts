@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import {
+import fs, {
+  constants,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -9,8 +10,9 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import test, { type TestContext } from "node:test";
 
 import {
@@ -81,7 +83,30 @@ test("only keep files holding exactly this attempt's text are removed", (t) => {
     left.push(name("3"));
   }
 
-  releaseCandidateKeep(linked, attemptId);
+  const opening = t.mock.method(fs, "openSync");
+  syncBuiltinESMExports();
+  try {
+    releaseCandidateKeep(linked, attemptId);
+  } finally {
+    opening.mock.restore();
+    syncBuiltinESMExports();
+  }
+  const opened = new Map<string, number>();
+  for (const {
+    arguments: [path, flags],
+  } of opening.mock.calls) {
+    if (typeof path === "string" && typeof flags === "number") {
+      opened.set(basename(path), flags);
+    }
+  }
+  assert.equal(opened.has(name("2")), false, "skip directory before open");
+  const available = constants as Partial<typeof constants>;
+  const required = (available.O_NONBLOCK ?? 0) | (available.O_NOFOLLOW ?? 0);
+  for (const file of mine) {
+    const flags = opened.get(file);
+    assert.notEqual(flags, undefined);
+    assert.equal((flags ?? 0) & required, required);
+  }
   assert.deepEqual(readdirSync(pack).sort(), left.sort());
   // Nothing left to release is fine too.
   releaseCandidateKeep(linked, attemptId);

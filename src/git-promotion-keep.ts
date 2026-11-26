@@ -50,9 +50,9 @@ export function releaseCandidateKeep(
       `${candidateKeepMessage(attemptId)}\n`,
       "ascii",
     );
-    for (const name of readdirSync(directory)) {
-      if (!KEEP_NAME.test(name)) continue;
-      const path = join(directory, name);
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      if (!entry.isFile() || !KEEP_NAME.test(entry.name)) continue;
+      const path = join(directory, entry.name);
       try {
         if (holdsExactly(path, expected)) unlinkSync(path);
       } catch {
@@ -65,9 +65,13 @@ export function releaseCandidateKeep(
 }
 
 function holdsExactly(path: string, expected: Buffer): boolean {
-  // O_NOFOLLOW is absent on Windows.
-  const noFollow = (constants.O_NOFOLLOW as number | undefined) ?? 0;
-  const descriptor = openSync(path, constants.O_RDONLY | noFollow);
+  // A pack entry can change between listing and opening. Check the descriptor
+  // and avoid waiting on a special file on platforms that have O_NONBLOCK.
+  const flags = constants as Partial<typeof constants>;
+  const descriptor = openSync(
+    path,
+    constants.O_RDONLY | (flags.O_NOFOLLOW ?? 0) | (flags.O_NONBLOCK ?? 0),
+  );
   try {
     const info = fstatSync(descriptor);
     if (!info.isFile() || info.size !== expected.length) return false;
