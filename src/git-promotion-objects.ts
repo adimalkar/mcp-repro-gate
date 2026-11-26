@@ -39,6 +39,8 @@ export interface PrepareGitPromotionObjectsInput {
 /**
  * Host-only object preparation. NOT authorization, approval consumption, or
  * promotion. May leave unreachable objects, even on failure. No ref writes.
+ * The candidate's pack is kept from garbage collection until the attempt is
+ * resolved or its unreserved fence is released; see git-promotion-keep.ts.
  */
 export function prepareGitPromotionObjects(
   input: PrepareGitPromotionObjectsInput,
