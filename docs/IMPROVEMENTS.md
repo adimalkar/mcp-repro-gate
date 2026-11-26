@@ -12,7 +12,7 @@ This is the maintained improvement backlog for ReproGate, aligned with the [phas
 - [ ] Export coverage-aware, content-addressed receipt bundles and an asymmetric-signature offline verifier that can recompute the changed-path claim from a Git object or supplied patch; make missing or unknown effect coverage explicit.
 - [ ] Add optional test, secret-scan, and user-script verifier evidence without conflating test success with authorization.
 - [x] Maintain adversarial fixtures for stale refs, changed patches, concurrent promotion, interrupted promotion, symlink escape, and out-of-scope writes. Publish [benign false denial and approval invalidation measurements](BENCHMARKS.md#phase-3-git-approval-usability).
-- [ ] Keep a prepared candidate from being pruned before promotion (for example, a private ref, or a candidate that can be rebuilt exactly), and report a missing candidate by name instead of "Git staging command failed".
+- [x] Keep a prepared candidate from being pruned before promotion (a Git keep file beside its pack, removed once the attempt is resolved), and report a missing candidate by name.
 
 ## Delivered reference-path controls and remaining Phase 2 closure
 

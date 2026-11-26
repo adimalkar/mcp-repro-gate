@@ -43,7 +43,7 @@ A candidate-only pack excludes the base closure and is imported into the local o
 
 Each controlled Git command has a 15-second timeout and a bounded output buffer, at most 16 MiB. Oversized packs or outputs reject rather than truncate. These limits do not bound clone disk usage or the total time of a workflow containing multiple commands; the host needs a separate scratch/storage budget.
 
-Permitted preparation effects include temporary clones and new object/pack files in the repository, including unreachable objects after a failure. Preparation does not move protected refs or write `HEAD`, the protected index or worktree. Existing review staging does not install candidate objects into the protected repository.
+Permitted preparation effects include temporary clones and new object/pack files in the repository, including unreachable objects after a failure. The candidate's pack carries a keep file that names the attempt, so garbage collection cannot delete an unpromoted candidate; a host that releases a fence directly instead of through the approval store leaves that file behind. Preparation does not move protected refs or write `HEAD`, the protected index or worktree. Existing review staging does not install candidate objects into the protected repository.
 
 The controlled runner suppresses configured execution callbacks, replacement-object interpretation, automatic maintenance and unintended transports/lazy fetching. This is a concrete Git execution policy, not process or network syscall confinement. Raw patch/diff content may contain secrets: displaying an exact escaped diff is not secret scanning.
 

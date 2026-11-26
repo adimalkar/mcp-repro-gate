@@ -10,6 +10,7 @@ import {
   type PromoteGitPromotionAttemptInput,
 } from "../src/git-approval-store.js";
 import {
+  candidateKeeps,
   fixture,
   git,
   observingPlans,
@@ -227,8 +228,11 @@ test("a lost compare-and-swap after admission is indeterminate and keeps the fen
   assert.equal(f.control.query().status, "held");
   assert.equal(target(f), moved, "the newer ref is never overwritten");
   assert.throws(() => promote(f), /admitted or resolved/u);
-  // Recovery after quiescence keeps the outcome and only releases the fence.
+  // Recovery after quiescence keeps the outcome; it releases only the fence
+  // and the candidate's keep file.
+  assert.deepEqual(candidateKeeps(f), [f.prepared.attemptId]);
   const recovered = recover(f);
+  assert.deepEqual(candidateKeeps(f), []);
   assert.equal(canonicalJson(recovered.status), canonicalJson(result.status));
   assert.equal(recovered.fence, "released");
   assert.equal(recover(f).fence, "not_held");
@@ -267,6 +271,7 @@ test("recovery of a never-admitted attempt fails it without dispatch", (t) => {
   const f = fixture(t);
   reserve(f);
   const result = recover(f);
+  assert.deepEqual(candidateKeeps(f), []);
   assert.equal(result.status.state, "failed");
   assert.equal(result.status.outcome?.reason, "abandoned");
   assert.equal(
@@ -519,6 +524,7 @@ test("an unreserved fence is released only for its own attempt, never after rese
   reserve(f);
   assert.throws(() => release(f.prepared.attemptId), /recover it instead/u);
   assert.equal(f.control.query().status, "held");
+  assert.deepEqual(candidateKeeps(f), [f.prepared.attemptId]);
 });
 
 test("a never-reserved attempt's fence is released and nothing is recorded", (t) => {
@@ -531,6 +537,7 @@ test("a never-reserved attempt's fence is released and nothing is recorded", (t)
     }),
     { fence: "released" },
   );
+  assert.deepEqual(candidateKeeps(f), []);
   assert.equal(f.control.query().status, "available");
   assert.equal(f.store.getGitPromotionAttempt(f.prepared.attemptId), undefined);
 });

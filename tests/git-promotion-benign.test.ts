@@ -6,9 +6,11 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { gitOperatorKeyId } from "../src/git-operator-review.js";
+import { releaseCandidateKeep } from "../src/git-promotion-keep.js";
 import { prepareGitPromotionObjects } from "../src/git-promotion-objects.js";
 import { evaluatePolicy } from "../src/policy.js";
 import {
+  candidateKeeps,
   firstOperator,
   fixture,
   git,
@@ -360,36 +362,47 @@ for (const [name, reason, change] of gated) {
   });
 }
 
-// Nothing refers to the candidate until promotion, so `gc --prune=now`
-// deletes it; default `gc` keeps recent unreachable objects.
-test("approval blocked during benign drift: unreachable objects pruned before reservation", (t) => {
+// Nothing refers to the candidate until promotion. Only the keep file beside
+// its pack stops these commands from deleting it.
+test("approval preserved: unreachable objects pruned before and after reservation", (t) => {
   const f = fixture(t);
-  git(f.root, "gc", "-q", "--prune=now");
-  assert.throws(() => reserve(f), /Git staging command failed/u);
-  noAttempt(f);
-
-  // `git-review promote` prepares the candidate itself; the same approval
-  // accepts a fresh one.
-  f.prepared = prepareGitPromotionObjects({
-    proposal: f.proposal,
-    repositoryPath: f.root,
-    patch: f.patch,
-    attemptId: f.prepared.attemptId,
-  });
+  const prune = () => {
+    git(f.root, "gc", "-q", "--prune=now");
+    git(f.root, "repack", "-q", "-a", "-d");
+    git(f.root, "prune", "--expire=now");
+  };
+  const orphan = git(f.root, "commit-tree", "-m", "orphan", "HEAD^{tree}")
+    .toString()
+    .trim();
+  assert.deepEqual(candidateKeeps(f), [f.prepared.attemptId]);
+  prune();
+  // Control: the commands really do delete what nothing keeps.
+  assert.throws(() => git(f.root, "cat-file", "-e", orphan));
   reserve(f);
+  prune();
+  assert.deepEqual(candidateKeeps(f), [f.prepared.attemptId]);
   assertPromoted(f);
+  assert.deepEqual(candidateKeeps(f), []);
+  prune();
+  assert.equal(git(f.root, "show", "target:value.txt").toString(), "after\n");
 });
 
-test("approval lost to benign drift: unreachable objects pruned after reservation", (t) => {
+test("a candidate that is gone anyway is named, and its approval stays spent", (t) => {
   const f = fixture(t);
+  const lose = (attemptId: string) => {
+    releaseCandidateKeep(f.root, attemptId);
+    git(f.root, "gc", "-q", "--prune=now");
+  };
   reserve(f);
-  git(f.root, "gc", "-q", "--prune=now");
+  lose(f.prepared.attemptId);
   const before = target(f);
-  assert.throws(() => promote(f), /precheck rejected: candidate_rejected/u);
+  const missing = (oid: string) =>
+    new RegExp(`Candidate commit ${oid} is missing from the repository`, "u");
+  assert.throws(() => promote(f), missing(f.prepared.candidateCommitOid));
+  assert.throws(() => promote(f), /precheck rejected: candidate_rejected \(/u);
   const status = f.store.getGitPromotionStatus(f.prepared.attemptId);
   assert.equal(status?.state, "prepared");
   assert.equal(status.admission, undefined);
-  assert.equal(target(f), before);
 
   // A new candidate is a different commit, so the reserved one cannot be
   // rebuilt. Recovery ends the attempt and frees the fence, but the one-use
@@ -412,6 +425,11 @@ test("approval lost to benign drift: unreachable objects pruned after reservatio
   assert.throws(
     () => reserve(f, { prepared: again, owner }),
     /permanently consumed/u,
+  );
+  lose(again.attemptId);
+  assert.throws(
+    () => reserve(f, { prepared: again, owner }),
+    missing(again.candidateCommitOid),
   );
   assert.equal(target(f), before);
 });
