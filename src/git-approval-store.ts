@@ -47,6 +47,7 @@ import {
   type GitChangeProposalV2,
 } from "./git-change-proposal.js";
 import {
+  GitCandidateMismatchError,
   MissingGitCandidateError,
   stageGitChangeProposal,
   verifyInstalledGitPromotionObjects,
@@ -1265,6 +1266,7 @@ export class SqliteGitApprovalStore {
     // Heavy object, plan and workspace checks run BEFORE the SQL lock. Nothing
     // has been dispatched, so a rejection here leaves the attempt retryable.
     const precheck = this.#promotionRejection(
+      "precheck",
       attempt,
       context,
       trust,
@@ -1283,6 +1285,7 @@ export class SqliteGitApprovalStore {
       checkFence();
       assertUnresolved();
       const reason = this.#promotionRejection(
+        "admission",
         attempt,
         context,
         trust,
@@ -1537,6 +1540,7 @@ export class SqliteGitApprovalStore {
   // Run every final-gate check and return the first rejection, if any. The
   // same checks serve the unlocked precheck and the locked admission.
   #promotionRejection(
+    phase: "precheck" | "admission",
     attempt: ImmutablePromotion<GitPromotionAttemptV1>,
     context: GitPlanBindingContext,
     trust: unknown,
@@ -1590,11 +1594,13 @@ export class SqliteGitApprovalStore {
         attempt.prepared as PreparedGitPromotionObjectsV1,
       );
     } catch (error) {
-      if (transientFailure(error)) throw error;
-      return reject(
-        "candidate_rejected",
-        error instanceof MissingGitCandidateError ? error.message : undefined,
-      );
+      if (error instanceof GitCandidateMismatchError)
+        return reject("candidate_rejected");
+      // Keep the existing precheck diagnostic for an unavailable object.
+      // Inside admission, an incomplete read must roll back the transaction.
+      if (phase === "precheck" && error instanceof MissingGitCandidateError)
+        return reject("candidate_rejected", error.message);
+      throw error;
     }
     // The checks above take time; the deadline applies when they finish.
     return Date.now() < deadline ? undefined : expired;
