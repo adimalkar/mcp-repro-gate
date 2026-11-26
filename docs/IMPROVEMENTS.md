@@ -2,6 +2,8 @@
 
 This is the maintained improvement backlog for ReproGate, aligned with the [phased implementation plan](ROADMAP.md). Items are ordered by the security or adoption risk they retire, not by feature novelty. Completed work stays visible so design claims can be traced to code and tests. A successful downstream call and a pair of filesystem hashes are not, by themselves, proof that all effects stayed in approved scope.
 
+The [audit and feature ledger](AUDIT_LEDGER.md) tracks the promotion review, two-host measurement gaps and researched feature proposals.
+
 ## P0 — deliver the staged authorized-change workflow (Phase 3)
 
 - [x] Add a plan-only Git proposal with a clean-worktree witness, patch digest, exact path syntax, structural schema, and read-only drift tests.

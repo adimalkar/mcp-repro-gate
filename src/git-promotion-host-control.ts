@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   closeSync,
   constants,
@@ -31,7 +31,7 @@ import { runGit } from "./git-runner.js";
 const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$(?![\s\S])/u;
 export const MAX_GIT_PROMOTION_FENCE_OWNER_BYTES = 16 * 1024;
-const OWNER_FILE = "owner.json";
+const LEGACY_OWNER_FILE = "owner.json";
 const SIDECARS = ["", "-wal", "-shm", "-journal"];
 
 export interface GitPromotionHostControlConfig {
@@ -445,10 +445,17 @@ function syncDirectory(path: string): void {
     closeSync(fd);
   }
 }
-function onlyOwnerEntry(path: string): boolean {
+function ownerFileName(token: string): string {
+  // Filesystem error messages can include the pathname. Keep the owner token private.
+  return createHash("sha256").update(token).digest("hex") + ".json";
+}
+function ownerEntry(path: string): string | undefined {
   const dir = opendirSync(path);
   try {
-    return dir.readSync()?.name === OWNER_FILE && dir.readSync() === null;
+    const name = dir.readSync()?.name;
+    if (!name || dir.readSync() !== null) return undefined;
+    if (name === LEGACY_OWNER_FILE) return name;
+    return /^[a-f0-9]{64}\.json$(?![\s\S])/u.test(name) ? name : undefined;
   } finally {
     dir.closeSync();
   }
@@ -569,12 +576,18 @@ export function createGitPromotionHostControl(
     );
   }
   function inspect():
-    | { owner: GitPromotionFenceOwnerV1; file: BigIntStats; dir: BigIntStats }
+    | {
+        owner: GitPromotionFenceOwnerV1;
+        path: string;
+        file: BigIntStats;
+        dir: BigIntStats;
+      }
     | undefined {
     const dir = lstatSync(fencePath, { bigint: true });
     privateStats(dir, "directory");
-    if (!onlyOwnerEntry(fencePath)) return undefined;
-    const path = join(fencePath, OWNER_FILE);
+    const name = ownerEntry(fencePath);
+    if (!name) return undefined;
+    const path = join(fencePath, name);
     const file = lstatSync(path, { bigint: true });
     privateStats(file, "file");
     const bytes = readBoundedRegularFile(
@@ -593,7 +606,11 @@ export function createGitPromotionHostControl(
     const owner = parseGitPromotionFenceOwner(
       JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)),
     );
-    if (!bound(owner) || !bytes.equals(Buffer.from(JSON.stringify(owner))))
+    if (
+      !bound(owner) ||
+      (name !== LEGACY_OWNER_FILE && name !== ownerFileName(owner.token)) ||
+      !bytes.equals(Buffer.from(JSON.stringify(owner)))
+    )
       return undefined;
     const finalDir = lstatSync(fencePath, { bigint: true });
     const finalFile = lstatSync(path, { bigint: true });
@@ -601,7 +618,7 @@ export function createGitPromotionHostControl(
     privateStats(finalFile, "file");
     if (!sameSnapshot(dir, finalDir) || !sameSnapshot(file, finalFile))
       return undefined;
-    return { owner, file: finalFile, dir: finalDir };
+    return { owner, path, file: finalFile, dir: finalDir };
   }
   function query(): GitPromotionFenceStatus {
     try {
@@ -655,7 +672,7 @@ export function createGitPromotionHostControl(
       privateStats(lstatSync(fencePath, { bigint: true }), "directory");
       syncDirectory(parent);
       validateLocations();
-      const path = join(fencePath, OWNER_FILE);
+      const path = join(fencePath, ownerFileName(owner.token));
       const fd = openSync(
         path,
         constants.O_WRONLY |
@@ -716,14 +733,17 @@ export function createGitPromotionHostControl(
     // Cooperating host protocol only; path operations cannot exclude same-user attackers.
     const final = inspect();
     if (
-      !final ||
+      final?.path !== current.path ||
       !sameSnapshot(current.file, final.file) ||
       !sameSnapshot(current.dir, final.dir) ||
       JSON.stringify(final.owner) !== JSON.stringify(owner)
     )
       throw new Error("Fence changed before release");
     validateLocations();
-    unlinkSync(join(fencePath, OWNER_FILE));
+    // Each generation uses a fresh name. Only the releaser that unlinks this
+    // exact entry can reach rmdir; a successor can acquire only after rmdir.
+    // Legacy latches use a name that new acquisitions never create.
+    unlinkSync(final.path);
     validateLocations();
     syncDirectory(fencePath);
     // If observation drifts during the unlink/flush, retain the now-invalid

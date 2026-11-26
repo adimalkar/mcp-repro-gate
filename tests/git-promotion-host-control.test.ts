@@ -325,6 +325,13 @@ function snapshot(root: string, host: string) {
       : null,
   };
 }
+function fenceOwnerFile(fencePath: string): string {
+  const entries = readdirSync(fencePath);
+  assert.equal(entries.length, 1);
+  const [name] = entries;
+  assert.ok(name);
+  return join(fencePath, name);
+}
 function snapshotFile(path: string): Buffer {
   const flags = constants as Partial<Record<string, number>>;
   const descriptor = openSync(
@@ -718,6 +725,37 @@ test("exclusive instances release only exact immutable bound owner after explici
   assert.deepEqual(snapshot(f.root, f.host), before);
 });
 
+test("each acquisition removes only its own entry, including across a legacy upgrade", async (t) => {
+  const f = fixture(t);
+  const { createGitPromotionHostControl } = await controlModule();
+  const control = createGitPromotionHostControl(f.config);
+  const attemptId = randomUUID();
+  const owner = control.acquire(attemptId);
+  const firstPath = fenceOwnerFile(f.config.fencePath);
+  const legacyPath = join(f.config.fencePath, "owner.json");
+  assert.notEqual(firstPath, legacyPath);
+  assert.ok(!firstPath.includes(owner.token));
+  renameSync(firstPath, legacyPath);
+  assert.deepEqual(control.query(), { status: "held", owner });
+  control.release(owner, { childrenQuiescent: true });
+  const successor = control.acquire(attemptId);
+  const successorPath = fenceOwnerFile(f.config.fencePath);
+  assert.notEqual(firstPath, successorPath);
+  assert.notEqual(legacyPath, successorPath);
+  assert.throws(() => {
+    control.release(owner, { childrenQuiescent: true });
+  });
+  assert.deepEqual(control.query(), { status: "held", owner: successor });
+  // A token-specific name from a different generation cannot identify this record.
+  renameSync(successorPath, firstPath);
+  assert.deepEqual(control.query(), { status: "held-invalid" });
+  assert.throws(() => {
+    control.release(successor, { childrenQuiescent: true });
+  });
+  renameSync(firstPath, successorPath);
+  control.release(successor, { childrenQuiescent: true });
+});
+
 test("two compiled workers compete, SIGKILL leaves persistent ownership; fresh process never steals", async (t) => {
   const f = fixture(t);
   const before = snapshot(f.root, f.host);
@@ -740,7 +778,7 @@ test("two compiled workers compete, SIGKILL leaves persistent ownership; fresh p
   noWaitListeners(winner.child);
   // No PID is persisted or treated as authority. Even an ancient canonical time cannot expire a latch.
   writeFileSync(
-    join(f.config.fencePath, "owner.json"),
+    fenceOwnerFile(f.config.fencePath),
     JSON.stringify({ ...owner, createdAt: "2000-01-01T00:00:00.000Z" }),
     { mode: 0o600 },
   );
@@ -988,7 +1026,7 @@ test("unsafe ledger/owner/fence symlinks, hardlinks and nonregular files fail cl
   rmSync(f.config.approvalDatabasePath);
   const c = createGitPromotionHostControl(f.config);
   const owner = c.acquire(randomUUID());
-  const ownerPath = join(f.config.fencePath, "owner.json");
+  const ownerPath = fenceOwnerFile(f.config.fencePath);
   linkSync(ownerPath, join(f.host, "owner alias"));
   assert.equal(c.query().status, "held-invalid");
   assert.throws(() => {
@@ -1022,7 +1060,7 @@ test(
     chmodSync(f.host, 0o700);
     const c = createGitPromotionHostControl(f.config);
     const owner = c.acquire(randomUUID());
-    const path = join(f.config.fencePath, "owner.json");
+    const path = fenceOwnerFile(f.config.fencePath);
     assert.equal(lstatSync(path).mode & 0o777, 0o600);
     assert.equal(lstatSync(f.config.fencePath).mode & 0o777, 0o700);
     chmodSync(path, 0o644);
@@ -1054,7 +1092,7 @@ test("captured host inputs are detached and release refuses mismatched repositor
   input.statePaths.push(f.host);
   const owner = c.acquire(randomUUID());
   assert.equal(owner.fencePath, f.config.fencePath);
-  const path = join(f.config.fencePath, "owner.json");
+  const path = fenceOwnerFile(f.config.fencePath);
   for (const field of [
     "commonDirectory",
     "approvalDatabasePath",
@@ -1078,14 +1116,15 @@ test("captured host inputs are detached and release refuses mismatched repositor
     c.release(o, { childrenQuiescent: true });
   }
   const malformedOwner = c.acquire(randomUUID());
-  writeFileSync(path, "{");
+  const malformedPath = fenceOwnerFile(f.config.fencePath);
+  writeFileSync(malformedPath, "{");
   for (let i = 0; i < 30; i++) {
     assert.equal(c.query().status, "held-invalid");
     assert.throws(() => {
       c.release(malformedOwner, { childrenQuiescent: true });
     });
   }
-  writeFileSync(path, JSON.stringify(malformedOwner));
+  writeFileSync(malformedPath, JSON.stringify(malformedOwner));
   c.release(malformedOwner, { childrenQuiescent: true });
   assert.equal(fdCount(), before);
   assert.equal(existsSync(input.fencePath), false);
@@ -1144,7 +1183,7 @@ test(
     const { createGitPromotionHostControl } = await controlModule();
     const c = createGitPromotionHostControl(f.config);
     const owner = c.acquire(randomUUID());
-    const path = join(f.config.fencePath, "owner.json");
+    const path = fenceOwnerFile(f.config.fencePath);
     const uid = process.getuid?.();
     const gid = process.getgid?.();
     assert.notEqual(uid, undefined);
@@ -1343,7 +1382,7 @@ for (const target of [
           timing === "held" ? createGitPromotionHostControl(config) : undefined;
         const owner = controller?.acquire(randomUUID());
         const latch = owner
-          ? readFileSync(join(f.config.fencePath, "owner.json"))
+          ? readFileSync(fenceOwnerFile(f.config.fencePath))
           : undefined;
         chmodSync(unsafe, isDirectory ? 0o777 : 0o666);
         try {
@@ -1363,7 +1402,7 @@ for (const target of [
               controller.release(owner, { childrenQuiescent: true });
             }, /private|ancestor/u);
             assert.deepEqual(
-              readFileSync(join(f.config.fencePath, "owner.json")),
+              readFileSync(fenceOwnerFile(f.config.fencePath)),
               latch,
             );
           }
@@ -1404,7 +1443,7 @@ for (const target of [
       const owner =
         timing === "held" ? controller.acquire(randomUUID()) : undefined;
       const latch = owner
-        ? readFileSync(join(f.config.fencePath, "owner.json"))
+        ? readFileSync(fenceOwnerFile(f.config.fencePath))
         : undefined;
       const replaced = {
         "ledger-parent": ledgerParent,
@@ -1426,7 +1465,7 @@ for (const target of [
           controller.release(owner, { childrenQuiescent: true });
         }, /identity changed/u);
         assert.deepEqual(
-          readFileSync(join(f.config.fencePath, "owner.json")),
+          readFileSync(fenceOwnerFile(f.config.fencePath)),
           latch,
         );
       } else assert.equal(existsSync(f.config.fencePath), false);
@@ -1557,7 +1596,7 @@ for (const suffix of ["-wal", "-shm", "-journal"]) {
         // Valid directory bases must remain supported; an absent ledger is never created.
         const controller = createGitPromotionHostControl(config);
         const owner = controller.acquire(randomUUID());
-        const latch = readFileSync(join(f.config.fencePath, "owner.json"));
+        const latch = readFileSync(fenceOwnerFile(f.config.fencePath));
         const path = state + suffix;
         switch (alias) {
           case "fence":
@@ -1601,7 +1640,7 @@ for (const suffix of ["-wal", "-shm", "-journal"]) {
           controller.release(owner, { childrenQuiescent: true });
         });
         assert.deepEqual(
-          readFileSync(join(f.config.fencePath, "owner.json")),
+          readFileSync(fenceOwnerFile(f.config.fencePath)),
           latch,
         );
         assert.equal(existsSync(f.config.approvalDatabasePath), false);
@@ -1689,7 +1728,7 @@ for (const target of ["ledger", "state"] as const) {
           : { ...f.config, statePaths: [path] };
       const controller = createGitPromotionHostControl(config);
       const owner = controller.acquire(randomUUID());
-      const latch = readFileSync(join(f.config.fencePath, "owner.json"));
+      const latch = readFileSync(fenceOwnerFile(f.config.fencePath));
       chmodSync(ancestor, 0o777);
       try {
         assert.equal(lstatSync(parent).mode & 0o777, 0o700);
@@ -1700,7 +1739,7 @@ for (const target of ["ledger", "state"] as const) {
           controller.release(owner, { childrenQuiescent: true });
         }, /ancestor/u);
         assert.deepEqual(
-          readFileSync(join(f.config.fencePath, "owner.json")),
+          readFileSync(fenceOwnerFile(f.config.fencePath)),
           latch,
         );
         assert.equal(lstatSync(ancestor).mode & 0o777, 0o777);
@@ -1720,8 +1759,8 @@ for (const operation of ["query", "acquire", "release"] as const) {
     const controller = createGitPromotionHostControl(f.config);
     const owner =
       operation === "acquire" ? undefined : controller.acquire(randomUUID());
-    const ownerPath = join(f.config.fencePath, "owner.json");
-    const latch = owner ? snapshotFile(ownerPath) : undefined;
+    const ownerPath = owner ? fenceOwnerFile(f.config.fencePath) : undefined;
+    const latch = ownerPath ? snapshotFile(ownerPath) : undefined;
     let replaced = false;
     let opens = 0;
     const originalOpen = fs.openSync;
@@ -1788,7 +1827,7 @@ for (const operation of ["query", "acquire", "release"] as const) {
     }
     assert.equal(replaced, true);
     assert.ok(existsSync(f.config.fencePath));
-    if (owner) assert.deepEqual(snapshotFile(ownerPath), latch);
+    if (ownerPath) assert.deepEqual(snapshotFile(ownerPath), latch);
   });
 }
 
@@ -1852,8 +1891,8 @@ for (const timing of ["available", "held"] as const) {
       const controller = createGitPromotionHostControl(f.config);
       const owner =
         timing === "held" ? controller.acquire(randomUUID()) : undefined;
-      const ownerPath = join(f.config.fencePath, "owner.json");
-      const latch = owner ? snapshotFile(ownerPath) : undefined;
+      const ownerPath = owner ? fenceOwnerFile(f.config.fencePath) : undefined;
+      const latch = ownerPath ? snapshotFile(ownerPath) : undefined;
       const common = realpathSync.native(join(f.root, ".git"));
       replaceCommon(common);
       assert.equal(
@@ -1880,7 +1919,7 @@ for (const timing of ["available", "held"] as const) {
           controller.release(owner, { childrenQuiescent: true });
         }, /common-directory binding changed/u);
       }
-      if (owner) assert.deepEqual(snapshotFile(ownerPath), latch);
+      if (ownerPath) assert.deepEqual(snapshotFile(ownerPath), latch);
       else assert.equal(existsSync(f.config.fencePath), false);
     });
   }
@@ -1896,7 +1935,7 @@ for (const layout of LIFETIME_LAYOUTS) {
         repositoryPath: f.repository,
       });
       const owner = controller.acquire(randomUUID());
-      const ownerPath = join(f.config.fencePath, "owner.json");
+      const ownerPath = fenceOwnerFile(f.config.fencePath);
       const latch = snapshotFile(ownerPath);
       const identity = lstatSync(f.common, { bigint: true });
       const redirected = join(f.scratch, "redirected common ü");
@@ -2136,8 +2175,10 @@ for (const layout of ["file", "symlink-file", "symlink-directory"] as const) {
         });
         const owner =
           timing === "held" ? controller.acquire(randomUUID()) : undefined;
-        const ownerPath = join(f.config.fencePath, "owner.json");
-        const latch = owner ? snapshotFile(ownerPath) : undefined;
+        const ownerPath = owner
+          ? fenceOwnerFile(f.config.fencePath)
+          : undefined;
+        const latch = ownerPath ? snapshotFile(ownerPath) : undefined;
         redirectGitdirIntoFenceParent(f);
         if (operation === "query") {
           if (owner)
@@ -2151,7 +2192,7 @@ for (const layout of ["file", "symlink-file", "symlink-directory"] as const) {
             controller.release(owner, { childrenQuiescent: true });
           }, /overlap/u);
         }
-        if (owner) assert.deepEqual(snapshotFile(ownerPath), latch);
+        if (ownerPath) assert.deepEqual(snapshotFile(ownerPath), latch);
         else assert.equal(existsSync(f.config.fencePath), false);
       });
     }
@@ -2176,8 +2217,8 @@ for (const boundary of [
       boundary === "available-observation" || boundary === "post-mkdir"
         ? undefined
         : controller.acquire(randomUUID());
-    const ownerPath = join(f.config.fencePath, "owner.json");
-    const latch = owner ? snapshotFile(ownerPath) : undefined;
+    const ownerPath = owner ? fenceOwnerFile(f.config.fencePath) : undefined;
+    const latch = ownerPath ? snapshotFile(ownerPath) : undefined;
     let drifted = false;
     let opens = 0;
     const redirect = () => {
@@ -2272,7 +2313,7 @@ for (const boundary of [
       assert.ok(existsSync(f.config.fencePath));
       if (boundary === "post-unlink")
         assert.deepEqual(readdirSync(f.config.fencePath), []);
-      else if (owner) assert.deepEqual(snapshotFile(ownerPath), latch);
+      else if (ownerPath) assert.deepEqual(snapshotFile(ownerPath), latch);
     }
   });
 }
@@ -2481,7 +2522,7 @@ for (const target of [
           owner?.fencePath ??
           realpathSync.native(dirname(f.config.fencePath)) + "/ownership";
         const latch = owner
-          ? snapshotFile(join(capturedFence, "owner.json"))
+          ? snapshotFile(fenceOwnerFile(capturedFence))
           : undefined;
         const substitute = join(f.scratch, "late physical \uFFFD");
         const staging = join(f.scratch, "late physical staging");
@@ -2511,10 +2552,7 @@ for (const target of [
           rejectsBeforeTwinInspection(t, substitute, () => {
             controller.release(owner, { childrenQuiescent: true });
           });
-          assert.deepEqual(
-            snapshotFile(join(capturedFence, "owner.json")),
-            latch,
-          );
+          assert.deepEqual(snapshotFile(fenceOwnerFile(capturedFence)), latch);
         } else assert.equal(existsSync(capturedFence), false);
       },
     );
@@ -2617,7 +2655,7 @@ test("modeled unchanged ctime permits real same-size owner token mutation eviden
   const { createGitPromotionHostControl } = await controlModule();
   const controller = createGitPromotionHostControl(f.config);
   const owner = controller.acquire(randomUUID());
-  const path = join(f.config.fencePath, "owner.json");
+  const path = fenceOwnerFile(f.config.fencePath);
   const fd = openSync(path, "r");
   let before: fs.BigIntStats;
   let bytes: Buffer;
@@ -2688,7 +2726,7 @@ for (const timing of ["during-read", "after-close"] as const) {
           operation === "acquire"
             ? undefined
             : controller.acquire(randomUUID());
-        const path = join(f.config.fencePath, "owner.json");
+        let path = owner ? fenceOwnerFile(f.config.fencePath) : undefined;
         const targetRead = operation === "release" ? 2 : 1;
         let readNumber = 0;
         let descriptor: number | undefined;
@@ -2702,10 +2740,12 @@ for (const timing of ["during-read", "after-close"] as const) {
           (...args: Parameters<typeof fs.openSync>) => {
             const fd = originalOpen(...args);
             if (
-              args[0] === path &&
+              typeof args[0] === "string" &&
+              dirname(args[0]) === f.config.fencePath &&
               typeof args[1] === "number" &&
               (args[1] & (constants.O_WRONLY | constants.O_RDWR)) === 0
             ) {
+              path = args[0];
               readNumber++;
               descriptor = fd;
             }
@@ -2724,8 +2764,10 @@ for (const timing of ["during-read", "after-close"] as const) {
               args[0] === descriptor &&
               readNumber === targetRead &&
               !evidence
-            )
+            ) {
+              assert.ok(path);
               evidence = mutateOwner(path, mutation);
+            }
             return count;
           },
         );
@@ -2743,8 +2785,10 @@ for (const timing of ["during-read", "after-close"] as const) {
               ownerDescriptor &&
               readNumber === targetRead &&
               !evidence
-            )
+            ) {
+              assert.ok(path);
               evidence = mutateOwner(path, mutation);
+            }
           },
         );
         syncBuiltinESMExports();
@@ -2762,6 +2806,7 @@ for (const timing of ["during-read", "after-close"] as const) {
           syncBuiltinESMExports();
         }
         assert.ok(evidence, "real same-inode mutation must have executed");
+        assert.ok(path);
         if (operation === "query")
           assert.deepEqual(result, { status: "held-invalid" });
         else {
@@ -2912,7 +2957,7 @@ for (const mutation of [
       );
       return;
     }
-    const path = join(f.config.fencePath, "owner.json");
+    const path = fenceOwnerFile(f.config.fencePath);
     const fd = openSync(path, "r+");
     try {
       const before = pinOwnerMtime(fd);
@@ -2971,7 +3016,7 @@ for (const metadata of ["native", "modeled-unchanged-ctime"] as const) {
     const { createGitPromotionHostControl } = await controlModule();
     const controller = createGitPromotionHostControl(f.config);
     const owner = controller.acquire(randomUUID());
-    const path = join(f.config.fencePath, "owner.json");
+    const path = fenceOwnerFile(f.config.fencePath);
     const fd = openSync(path, "r+");
     try {
       const before = pinOwnerMtime(fd);
@@ -3060,7 +3105,7 @@ test("injected ctime-only owner snapshots between release inspections retain unc
   const { createGitPromotionHostControl } = await controlModule();
   const controller = createGitPromotionHostControl(f.config);
   const owner = controller.acquire(randomUUID());
-  const path = join(f.config.fencePath, "owner.json");
+  const path = fenceOwnerFile(f.config.fencePath);
   const fd = openSync(path, "r");
   try {
     const before = ownerDescriptorSnapshot(fd);
@@ -3138,7 +3183,7 @@ for (const target of ["metadata-pointer", "common-pointer"] as const) {
         const owner =
           timing === "held" ? controller.acquire(randomUUID()) : undefined;
         const latch = owner
-          ? snapshotFile(join(f.config.fencePath, "owner.json"))
+          ? snapshotFile(fenceOwnerFile(f.config.fencePath))
           : undefined;
         const raw = rawPhysicalTwin(f);
         rmSync(f.entry);
@@ -3160,7 +3205,7 @@ for (const target of ["metadata-pointer", "common-pointer"] as const) {
             controller.release(owner, { childrenQuiescent: true });
           });
           assert.deepEqual(
-            snapshotFile(join(f.config.fencePath, "owner.json")),
+            snapshotFile(fenceOwnerFile(f.config.fencePath)),
             latch,
           );
         } else assert.equal(existsSync(f.config.fencePath), false);

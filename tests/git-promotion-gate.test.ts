@@ -1,7 +1,7 @@
 import { Ajv2020 } from "ajv/dist/2020.js";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { chmodSync, readFileSync } from "node:fs";
+import { chmodSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { canonicalJson } from "../src/canonical-json.js";
@@ -103,6 +103,17 @@ test("an exact admitted promotion moves only the destination and confirms", (t) 
     canonicalJson(reopened.getGitPromotionStatus(f.prepared.attemptId)),
     canonicalJson(result.status),
   );
+});
+
+test("recovery reports an invalid occupied fence as retained", (t) => {
+  const f = fixture(t);
+  reserve(f);
+  writeFileSync(join(f.owner.fencePath, "unexpected"), "");
+  const result = recover(f);
+  assert.equal(result.status.outcome?.reason, "abandoned");
+  assert.equal(result.fence, "retained");
+  assert.equal(f.control.query().status, "held-invalid");
+  assert.throws(() => f.control.acquire(randomUUID()), /held/u);
 });
 
 test("SHA256 repositories promote with the same exact readback", (t) => {

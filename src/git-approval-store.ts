@@ -1479,6 +1479,10 @@ export class SqliteGitApprovalStore {
     ) as GitPromotionHostControlConfig;
     const control = createGitPromotionHostControl(config);
     const held = control.query();
+    if (held.status === "held-invalid")
+      throw new Error(
+        "Invalid repository fence retained; ownership cannot be verified",
+      );
     if (held.status !== "held" || held.owner.attemptId !== attemptId)
       throw new Error("No fence is held for this promotion attempt");
     const owner = held.owner;
@@ -1513,8 +1517,9 @@ export class SqliteGitApprovalStore {
       return { status, fence: "retained" };
     try {
       const held = control.query();
+      if (held.status === "held-invalid") return { status, fence: "retained" };
       if (
-        held.status !== "held" ||
+        held.status === "available" ||
         canonicalJson(held.owner) !== canonicalJson(owner)
       )
         return { status, fence: "not_held" };

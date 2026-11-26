@@ -861,10 +861,18 @@ function runPromote(options: Options, io: GitReviewCliIo): number {
     const approvals = session.openApprovals();
     try {
       const control = createGitPromotionHostControl(hostControl);
-      const owner = control.acquire(attemptId);
-      const context = session.context(plans);
+      let owner: ReturnType<typeof control.acquire>;
+      try {
+        owner = control.acquire(attemptId);
+      } catch (error) {
+        throw new Error(
+          `Promotion attempt ${attemptId} could not acquire the fence: ${error instanceof Error ? error.message : "unknown error"}`,
+          { cause: error },
+        );
+      }
       let reserved = false;
       try {
+        const context = session.context(plans);
         const prepared = prepareGitPromotionObjects({
           proposal,
           repositoryPath: session.snapshot.config.repositoryPath,
@@ -986,6 +994,7 @@ function runRecover(options: Options, io: GitReviewCliIo): number {
         acknowledgement: QUIESCENT,
       });
       io.stdout(asciiJson(promotionSummary(result)));
+      return result.fence === "retained" ? 1 : 0;
     } else {
       // Never reserved: nothing was consumed, only the fence can be held.
       const { fence } = approvals.releaseUnreservedGitPromotionFence({

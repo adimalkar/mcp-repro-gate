@@ -1,10 +1,11 @@
 import { Ajv2020 } from "ajv/dist/2020.js";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
+import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { runGitReviewCli } from "../src/git-review-cli.js";
 import {
@@ -156,6 +157,90 @@ test("recover fails a reserved, never-admitted attempt and releases its fence", 
   assert.equal(summary.reason, "abandoned");
   assert.equal(summary.fence, "released");
   assert.equal(target(s.f), s.f.prepared.expectedOldOid);
+});
+
+test("recover signals retained ownership through the CLI before and after reservation", (t) => {
+  const s = setup(t);
+  const extra = join(s.f.owner.fencePath, "unexpected");
+  const args = [
+    ...attemptArgs("recover", s, s.f.prepared.attemptId),
+    "--confirm-quiescent",
+  ];
+  writeFileSync(extra, "");
+  const unreserved = cli(args);
+  assert.equal(unreserved.code, 1);
+  assert.match(unreserved.stderr, /invalid repository fence retained/iu);
+  unlinkSync(extra);
+  reserve(s.f);
+  writeFileSync(extra, "");
+  const reserved = cli(args);
+  assert.equal(reserved.code, 1);
+  assert.equal(json(reserved.stdout).fence, "retained");
+  assert.equal(json(reserved.stdout).state, "failed");
+  unlinkSync(extra);
+  assert.equal(json(cli(args).stdout).fence, "released");
+  const repeated = cli(args);
+  assert.equal(repeated.code, 0);
+  assert.equal(json(repeated.stdout).fence, "not_held");
+});
+
+test("concurrent recovery clients acknowledge a resolved attempt while the successor keeps its fence", async (t) => {
+  const s = setup(t);
+  reserve(s.f);
+  const args = [
+    ...attemptArgs("recover", s, s.f.prepared.attemptId),
+    "--confirm-quiescent",
+  ];
+  const binary = fileURLToPath(new URL("../src/cli.js", import.meta.url));
+  const recover = async () => {
+    try {
+      const { stdout } = await promisify(execFile)(
+        process.execPath,
+        [binary, "git-review", ...args],
+        { timeout: 120_000 },
+      );
+      return json(stdout).fence;
+    } catch (error) {
+      // A concurrent release may still be flushing its now-empty latch.
+      if (
+        error instanceof Error &&
+        "code" in error &&
+        error.code === 1 &&
+        "stdout" in error &&
+        typeof error.stdout === "string" &&
+        json(error.stdout).fence === "retained"
+      )
+        return "retained";
+      throw error;
+    }
+  };
+  let successor: ReturnType<typeof s.f.control.acquire> | undefined;
+  const recoverThenAcquire = async () => {
+    const fence = await recover();
+    assert.ok(
+      fence === "released" || fence === "not_held" || fence === "retained",
+    );
+    if (fence === "released") {
+      assert.equal(
+        successor,
+        undefined,
+        "only one client can release an owner",
+      );
+      successor = s.f.control.acquire(randomUUID());
+    }
+  };
+  // Join both processes before the fixture can remove its SQLite and Git files.
+  const results = await Promise.allSettled([
+    recoverThenAcquire(),
+    recoverThenAcquire(),
+  ]);
+  for (const result of results) {
+    if (result.status === "rejected") throw result.reason;
+  }
+  assert.ok(successor);
+  assert.deepEqual(s.f.control.query(), { status: "held", owner: successor });
+  assert.throws(() => s.f.control.acquire(randomUUID()), /held/u);
+  s.f.control.release(successor, { childrenQuiescent: true });
 });
 
 test("recover releases a fence whose attempt was never reserved", (t) => {

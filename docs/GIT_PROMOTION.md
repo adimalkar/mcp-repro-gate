@@ -26,6 +26,8 @@ Git Review Configuration v2 adds two fields to every version 1 field ([schema](.
 
 `fencePath` is absolute and names the latch directory itself, which must not exist while nothing is promoting. It must be outside the repository and its Git metadata, and separate from both databases and their sidecars. A version 1 configuration keeps its exact behavior and cannot promote. Each configuration version accepts only proposals of the same version.
 
+Stop all cooperating writers and recovery processes before upgrading the host. The updated host can read and release an existing `owner.json` fence. Each new acquisition writes its owner record under a fresh token-derived filename. Older binaries treat that layout as occupied and invalid. Upgrade all cooperating processes before resuming promotions.
+
 ## Commands
 
 ```bash
@@ -35,31 +37,35 @@ node dist/src/cli.js git-review resume  --config /trusted/review.json --attempt-
 node dist/src/cli.js git-review recover --config /trusted/review.json --attempt-id <attempt-id> --confirm-quiescent
 ```
 
-- **`promote`** acquires the fence for a fresh attempt ID, prepares the candidate objects, reserves the approval, and runs the final gate. It prints a JSON summary: `attemptId`, `state`, `reason`, `fence`, the destination, the expected old and candidate commits, and the observed destination. If it stops before the reservation is recorded, it releases the fence and the approval is not consumed. Any later error names the attempt ID.
+- **`promote`** acquires the fence for a fresh attempt ID, prepares the candidate objects, reserves the approval, and runs the final gate. It prints a JSON summary: `attemptId`, `state`, `reason`, `fence`, the destination, the expected old and candidate commits, and the observed destination. If preparation fails before reservation, the approval remains available and the host attempts to release its fence. An acquisition or preparation error includes the attempted ID.
 - **`status`** prints the strict readback of the attempt, its admission and its outcome, or `{"found":false}`.
 - **`resume`** runs the gate again for an attempt that is still `prepared`, for example after a moved destination is restored. The fence must still be held by that attempt's own owner. An admitted or resolved attempt is refused.
 - **`recover`** is for after a crash or an `indeterminate` result. `--confirm-quiescent` states that you have stopped or reaped every process that might still be promoting; it is your assertion, not something the tool can prove.
   - An admitted attempt with no outcome becomes `indeterminate`.
   - A reserved attempt that was never admitted becomes `failed` (`abandoned`).
   - An existing outcome is kept.
-  - The fence is released if the attempt's owner still holds it.
+  - Recovery reports `released` when it removes the attempt's own fence. It reports `not_held` for an available fence or a different valid owner. An invalid occupied fence or uncertain release reports `retained`. For an invalid fence, pause cooperating writers, establish child quiescence, preserve the latch and ledger for inspection, and reconcile the journal and destination before an operator restores service.
   - A fence acquired for an attempt that was never reserved is released, and the command reports `"state":"unreserved"`.
   - Recovery never moves, restores or overwrites refs.
 
-| Command             | Exit 0        | Exit 1                                  | Exit 2 |
-| ------------------- | ------------- | --------------------------------------- | ------ |
-| `promote`, `resume` | `confirmed`   | `failed`, `indeterminate`, or any error | usage  |
-| `status`            | attempt found | unknown attempt or error                | usage  |
-| `recover`           | completed     | error                                   | usage  |
+| Command             | Exit 0                               | Exit 1                                  | Exit 2 |
+| ------------------- | ------------------------------------ | --------------------------------------- | ------ |
+| `promote`, `resume` | `confirmed`                          | `failed`, `indeterminate`, or any error | usage  |
+| `status`            | attempt found                        | unknown attempt or error                | usage  |
+| `recover`           | released or not held by this attempt | retained fence or error                 | usage  |
+
+A recovery of an unreserved attempt with an invalid fence exits 1 and reports the unverified ownership on stderr.
 
 ## Reading outcomes
 
-| State           | Meaning                                                                                                                                                                                                                                                    | Fence                    |
+| State           | Meaning                                                                                                                                                                                                                                                    | Usual fence result       |
 | --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------ |
 | `confirmed`     | The destination moved from the expected old commit to the candidate, and the readback was exact.                                                                                                                                                           | released                 |
 | `failed`        | Rejected at the gate before any Git write, or abandoned by recovery. The approval stays consumed.                                                                                                                                                          | released                 |
 | `indeterminate` | The write was admitted, but its effect is not proven: a lost compare-and-swap, an error, or a non-exact readback. With reason `not_dispatched`, the gate declined to write after admission because the deadline passed or the destination was checked out. | retained until `recover` |
 | `prepared`      | Reserved but not resolved: a precheck rejected it, or it was interrupted.                                                                                                                                                                                  | held by the attempt      |
+
+Check the returned `fence` field separately from the journal state. A confirmed or failed attempt can still have a retained fence when cleanup is uncertain.
 
 A `failed` or `indeterminate` attempt cannot be retried, so get a new approval for a new proposal. After an `indeterminate` result, inspect the destination yourself. The recorded `observedDestinationOid` is an observation, not proof of who moved the ref.
 
