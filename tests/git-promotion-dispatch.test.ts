@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import childProcess from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { once } from "node:events";
 import { syncBuiltinESMExports } from "node:module";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -354,6 +356,109 @@ test("a worker killed after update-ref recovers as interrupted on the candidate"
     f.prepared.candidateCommitOid,
   );
   assert.equal(result.fence, "released");
+});
+
+test("recovery observes a destination that moved from base to candidate and back", async (t) => {
+  const f = fixture(t);
+  reserve(f);
+  const base = f.prepared.expectedOldOid;
+  const candidate = f.prepared.candidateCommitOid;
+  assert.equal(target(f), base);
+  const worker = startGateWorker(f, "after-update-ref");
+  await worker.waitFor("dispatched");
+  await worker.kill();
+  assert.equal(target(f), candidate);
+  // Model the history independently of the journal. Recovery only sees base.
+  git(f.root, "update-ref", "refs/heads/target", base, candidate);
+  const history = () =>
+    git(
+      f.root,
+      "reflog",
+      "show",
+      "--format=%H",
+      "refs/heads/target",
+    ).toString();
+  const before = history();
+  assert.deepEqual(before.trim().split(/\r?\n/u).slice(0, 3), [
+    base,
+    candidate,
+    base,
+  ]);
+  assert.equal(status(f)?.outcome, undefined);
+  const result = recover(f);
+  assert.equal(result.status.state, "indeterminate");
+  assert.equal(result.status.outcome?.reason, "interrupted");
+  assert.equal(result.status.outcome.observedDestinationOid, base);
+  assert.equal(target(f), base);
+  assert.equal(history(), before);
+  assert.equal(result.fence, "released");
+  assert.throws(() => f.store.revoke(f.approval.approvalId), /Unresolved/u);
+});
+
+test("a live Git updater can outlast the promoter while the fence remains held", async (t) => {
+  const f = fixture(t);
+  reserve(f);
+  const worker = startGateWorker(f, "after-admission");
+  await worker.waitFor("admitted");
+  // The test owns this independent Git process so it can actually reap it.
+  // It models a surviving writer without leaving an orphan for the OS to clean up.
+  const updater = childProcess.spawn(
+    "git",
+    ["-C", f.root, "update-ref", "--stdin"],
+    {
+      stdio: ["pipe", "pipe", "pipe"],
+      timeout: 90_000,
+      killSignal: "SIGKILL",
+    },
+  );
+  const closed = new Promise<number | null>((resolve) =>
+    updater.once("close", resolve),
+  );
+  let output = "";
+  updater.stdout.setEncoding("utf8").on("data", (chunk: string) => {
+    output += chunk;
+  });
+  try {
+    await once(updater, "spawn");
+    await worker.kill();
+    assert.equal(updater.exitCode, null);
+    assert.equal(updater.signalCode, null);
+    assert.ok(status(f)?.admission);
+    assert.throws(
+      () =>
+        f.store.recoverGitPromotionAttempt({
+          attemptId: f.prepared.attemptId,
+          hostControl: f.hostControl,
+          acknowledgement: { childrenQuiescent: false } as unknown as {
+            childrenQuiescent: true;
+          },
+        }),
+      /quiescence/u,
+    );
+    assert.deepEqual(f.control.query(), { status: "held", owner: f.owner });
+    assert.throws(() => f.control.acquire(randomUUID()), /held/u);
+    assert.equal(status(f)?.outcome, undefined);
+    // After the promoter dies the updater can still prepare a transaction.
+    // Abort and wait for its actual exit before asserting quiescence.
+    updater.stdin.end(
+      `start\nverify refs/heads/target ${f.prepared.expectedOldOid}\nprepare\nabort\n`,
+    );
+    assert.equal(await closed, 0);
+    assert.deepEqual(output.trim().split(/\r?\n/u), [
+      "start: ok",
+      "prepare: ok",
+      "abort: ok",
+    ]);
+  } finally {
+    if (updater.exitCode === null && updater.signalCode === null)
+      updater.kill("SIGKILL");
+    await closed;
+  }
+  const result = recover(f);
+  assert.equal(result.status.state, "indeterminate");
+  assert.equal(result.status.outcome?.reason, "interrupted");
+  assert.equal(result.fence, "released");
+  assert.equal(target(f), f.prepared.expectedOldOid);
 });
 
 test("a worker killed after its outcome keeps it; recovery only releases", async (t) => {

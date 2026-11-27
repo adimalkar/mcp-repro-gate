@@ -43,7 +43,7 @@ Effects of a confirmed promotion: the destination ref moves to the candidate com
 
 ## Recovery and status
 
-`recoverGitPromotionAttempt` requires the plain acknowledgement `{ childrenQuiescent: true }`. The trusted host makes it only after stopping or reaping every process that might still be promoting the attempt; the acknowledgement is a host contract, not proof. Recovery:
+`recoverGitPromotionAttempt` requires the plain acknowledgement `{ childrenQuiescent: true }`. The trusted host makes it only after stopping or reaping every process that might still be promoting the attempt. Recovery relies on this attestation. Terminating the parent or acquiring a SQLite writer lock cannot establish child quiescence. Recovery:
 
 - resolves an admitted attempt without an outcome as `indeterminate` (`interrupted`);
 - resolves a prepared attempt that was never admitted as `failed` (`abandoned`);
@@ -52,6 +52,8 @@ Effects of a confirmed promotion: the destination ref moves to the candidate com
 - releases the fence only if the attempt's own persisted owner still holds it.
 
 Recovery never retries the write, rolls back or overwrites refs, clears consumption, or turns an uncertain outcome into `confirmed`.
+
+Two recovery fixtures exercise those limits. If the destination moves from the base to the candidate and back before recovery, the journal records `interrupted` and the observed base OID. The reflog stays intact. A separate fixture keeps a supervised `git update-ref --stdin` process alive after the promoter exits. The process can still prepare a transaction on the destination. Recovery refuses a negative attestation and retains the fence. The fixture aborts the transaction and waits for the Git process to exit before attesting. Identifying and stopping any real orphan remains a host responsibility.
 
 `getGitPromotionStatus` returns the strict canonical readback of the attempt with its optional admission and outcome, from two reads: the immutable attempt row, then its admission and outcome in one statement. It is idempotent, so a confirmed promotion whose response was lost still reads back as `confirmed`. It is not authorization or recovery.
 
