@@ -414,6 +414,7 @@ test("MCP clients discover handoff tools only when configured and update with op
       ?.readOnlyHint,
     true,
   );
+  assert.ok(tools.every((tool) => tool.annotations?.destructiveHint === false));
   assert.ok(tools.every((tool) => tool.outputSchema !== undefined));
   const initial = await client.callTool({
     name: "handoff_status",

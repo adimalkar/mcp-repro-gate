@@ -129,6 +129,7 @@ export function heldApprovalMatches(
     record.envelopeDigest === plan.envelopeDigest &&
     canonicalJson(record.scopes) ===
       canonicalJson([...new Set(plan.envelope.authority.scopes)].sort()) &&
+    Date.parse(record.issuedAt) <= now.getTime() &&
     Date.parse(record.expiresAt) > now.getTime() &&
     Date.parse(record.expiresAt) <= Date.parse(plan.envelope.expiresAt)
   );

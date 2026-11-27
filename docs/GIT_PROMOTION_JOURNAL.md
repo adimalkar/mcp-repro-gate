@@ -1,6 +1,6 @@
 # Prepared Git promotion journal
 
-This library implements durable prepared-intent reservation (T1), the final promotion gate, and conservative recovery. Reservation consumes one linked signed approval for an already-installed candidate in the private connection owned by `SqliteGitApprovalStore`. A prepared record is not permission to dispatch a Git command or a receipt for a changed ref; only the final gate below dispatches. The host-only [promotion commands](GIT_PROMOTION.md) drive these APIs; portable signed receipts remain future work.
+This library implements durable prepared-intent reservation (T1), the final promotion gate, and conservative recovery. Reservation consumes one linked signed approval for an already-installed candidate in the private connection owned by `SqliteGitApprovalStore`. A prepared record is not permission to dispatch a Git command or a receipt for a changed ref; only the final gate below dispatches. The host-only promotion commands drive these APIs. For a resolved attempt, the host can export a signed bundle that a verifier checks offline. [Promotion commands and portable evidence](GIT_PROMOTION.md#portable-evidence)
 
 ## Reservation and retained evidence
 
@@ -20,17 +20,17 @@ Raw external connections cannot insert journal rows without the function. On Nod
 
 Only `prepared` may be inserted into the attempt table. Updates, deletes, replacements, and insertion of terminal states are rejected by SQL guards. Terminal states are recorded in separate insert-only outcome rows, described below; there is no generic state setter.
 
-`revoke` checks for attempts and updates approval status under the same writer lock. Any attempt, including a resolved one, has permanently consumed its approval, so revocation is refused. SQL also blocks raw revocation of linked approvals. Strict journal corruption rejects revocation; malformed evidence cannot manufacture completion or quiescence.
+The V2 `git-review revoke` command acquires the configured repository fence with a fresh owner, validates that the connected database is its bound ledger inside the SQLite writer transaction, and releases the fence after the transaction finishes. Both versions check for attempts and update approval status under the same writer lock. Any attempt, including a resolved one, has permanently consumed its approval, so revocation is refused. SQL also blocks raw revocation of linked approvals. Strict journal corruption rejects revocation; malformed evidence cannot manufacture completion or quiescence.
 
 ## Final gate: admission, compare-and-swap and outcomes
 
 `promoteGitPromotionAttempt` runs only for a prepared attempt whose fence is held by its exact persisted owner. Each step's checks and results:
 
-1. **Precheck, outside the SQLite lock.** It verifies the installed candidate objects, rederives plan authority (which re-observes the V2 workspace: source HEAD and tree, cleanliness, the destination ref, and every registered worktree), authenticates the linked signed review under current trust, and checks the admission deadline. A rejection throws and records nothing. Nothing was dispatched, so the attempt can be retried, for example after a moved destination is restored. A check that could not run at all (Git could not be spawned or timed out, or the ledger could not be read) also throws without recording anything, at either step, so a transient failure never consumes the approval.
-2. **Admission, under `BEGIN IMMEDIATE` and the fence.** The same checks run again. A rejection now records a `failed` outcome and releases the fence; the approval stays consumed. Otherwise the gate commits an **admission** record with `synchronous=FULL`. `admittedAt` is the authorization check time.
-3. **Dispatch.** In a new transaction, under the fence, the gate first re-reads the attempt.
+1. **Precheck, outside the SQLite lock.** It verifies the installed candidate objects, rederives plan authority (which re-observes the V2 workspace: source HEAD and tree, cleanliness, the destination ref, and every registered worktree), authenticates the linked signed review under current trust, and checks the admission deadline. A rejection throws and records nothing. Nothing was dispatched, so the attempt can be retried, for example after a moved destination is restored. A check that could not run at all (Git could not be spawned or timed out, or the ledger could not be read) also throws without recording anything, at either step, so the reserved attempt remains retryable under the same fence.
+2. **Admission, under `BEGIN IMMEDIATE` and the fence.** The same checks run again. If Git cannot read a candidate object, including when it reports the object missing, admission rolls back. The host can restore the original objects and resume, or abandon the attempt through recovery. An observed mismatch in the candidate bytes, tree or effect records a terminal rejection. A rejection now records a `failed` outcome and releases the fence; the approval stays consumed. Otherwise the gate commits an **admission** record with `synchronous=FULL`. `admittedAt` is the authorization check time.
+3. **Dispatch.** Under a new `BEGIN IMMEDIATE`, the gate reads the admission and outcome, revalidates plan, policy, catalog, workspace, operator trust, approval, candidate objects and deadline, then rechecks fence ownership. It holds this writer transaction through the Git compare-and-swap and outcome.
    - If an outcome already exists, for example because recovery concluded while this process stalled after admission, nothing is written.
-   - If the admission deadline has passed, or the destination has been checked out in a worktree since admission, it records `indeterminate` (`not_dispatched`) and writes nothing.
+   - A rejected dispatch check, an occupied destination or a passed deadline records `indeterminate` (`not_dispatched`) and retains the fence. An unavailable check that throws leaves the durable admission for explicit recovery.
    - Otherwise it runs `update-ref --no-deref <destination> <candidate> <expected-old>` through the hardened runner, then reads back the destination, source HEAD and branch, and the worktree list. The runner disables hooks and forces `core.fsync=committed,reference` and `core.fsyncMethod=fsync`, so the ref and the candidate objects are on disk before the outcome is recorded.
    - A zero exit with exact readback records `confirmed` and releases the fence.
    - Any other result records `indeterminate` and **retains** the fence: a nonzero exit (`dispatch_uncertain`, which includes a lost compare-and-swap, since the runner does not distinguish it), a readback that is not exact (`readback_mismatch`), or a write declined before dispatch (`not_dispatched`).
@@ -43,7 +43,7 @@ Effects of a confirmed promotion: the destination ref moves to the candidate com
 
 ## Recovery and status
 
-`recoverGitPromotionAttempt` requires the plain acknowledgement `{ childrenQuiescent: true }`. The trusted host makes it only after stopping or reaping every process that might still be promoting the attempt; the acknowledgement is a host contract, not proof. Recovery:
+`recoverGitPromotionAttempt` requires the plain acknowledgement `{ childrenQuiescent: true }`. The trusted host makes it only after stopping or reaping every process that might still be promoting the attempt. Recovery relies on this attestation. Terminating the parent or acquiring a SQLite writer lock cannot establish child quiescence. Recovery:
 
 - resolves an admitted attempt without an outcome as `indeterminate` (`interrupted`);
 - resolves a prepared attempt that was never admitted as `failed` (`abandoned`);
@@ -52,6 +52,8 @@ Effects of a confirmed promotion: the destination ref moves to the candidate com
 - releases the fence only if the attempt's own persisted owner still holds it.
 
 Recovery never retries the write, rolls back or overwrites refs, clears consumption, or turns an uncertain outcome into `confirmed`.
+
+Two recovery fixtures exercise those limits. If the destination moves from the base to the candidate and back before recovery, the journal records `interrupted` and the observed base OID. The reflog stays intact. A separate fixture keeps a supervised `git update-ref --stdin` process alive after the promoter exits. The process can still prepare a transaction on the destination. Recovery refuses a negative attestation and retains the fence. The fixture aborts the transaction and waits for the Git process to exit before attesting. Identifying and stopping any real orphan remains a host responsibility.
 
 `getGitPromotionStatus` returns the strict canonical readback of the attempt with its optional admission and outcome, from two reads: the immutable attempt row, then its admission and outcome in one statement. It is idempotent, so a confirmed promotion whose response was lost still reads back as `confirmed`. It is not authorization or recovery.
 

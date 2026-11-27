@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import childProcess from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { once } from "node:events";
 import { syncBuiltinESMExports } from "node:module";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -143,6 +145,51 @@ test("an outcome recorded while the promoter stalled prevents dispatch", (t) => 
   assert.equal(status(f)?.outcome?.reason, "interrupted");
 });
 
+for (const change of ["policy", "operator trust"] as const) {
+  test(`dispatch reauthenticates changed ${change} after durable admission`, (t) => {
+    const f = fixture(t);
+    reserve(f);
+    hooks(t, {
+      afterAdmission: () => {
+        if (change === "policy")
+          f.context.currentPolicy.defaults.local_write = "deny";
+        else f.trust.operators = [];
+      },
+    });
+    const result = promote(f);
+    assert.equal(result.status.state, "indeterminate");
+    assert.equal(result.status.outcome?.reason, "not_dispatched");
+    assert.ok(result.status.admission);
+    assert.equal(target(f), f.prepared.expectedOldOid);
+    assert.equal(result.fence, "retained");
+    assert.throws(() => promote(f), /admitted or resolved/u);
+  });
+}
+
+test("the SQLite writer excludes a competing writer during the dispatch authorization check", (t) => {
+  const f = fixture(t);
+  reserve(f);
+  let checked = false;
+  const result = promote(f, {
+    context: {
+      ...f.context,
+      plans: observingPlans(f.plans, (n) => {
+        if (n === 3) {
+          raw(f, (db) => {
+            db.exec("PRAGMA busy_timeout = 0");
+            assert.throws(() => {
+              db.exec("BEGIN IMMEDIATE");
+            }, /locked/u);
+          });
+          checked = true;
+        }
+      }),
+    },
+  });
+  assert.ok(checked);
+  assert.equal(result.status.state, "confirmed");
+});
+
 test("a deadline passed after admission is not dispatched", (t) => {
   const f = fixture(t);
   reserve(f);
@@ -165,6 +212,33 @@ test("a deadline passed after admission is not dispatched", (t) => {
   assert.equal(recover(f).fence, "released");
 });
 
+test("an update launched before expiry can complete after the deadline", (t) => {
+  const f = fixture(t);
+  reserve(f);
+  const deadline = Date.parse(f.approval.expiresAt);
+  const spawn = childProcess.spawnSync;
+  childProcess.spawnSync = ((command: string, args: string[], options) => {
+    if (args.includes("update-ref")) {
+      assert.ok(Date.now() < deadline);
+      t.mock.method(Date, "now", () => deadline + 1);
+    }
+    return spawn(command, args, options);
+  }) as typeof childProcess.spawnSync;
+  syncBuiltinESMExports();
+  try {
+    const result = promote(f);
+    assert.equal(result.status.state, "confirmed");
+    assert.equal(
+      Date.parse(result.status.outcome?.decidedAt ?? ""),
+      deadline + 1,
+    );
+    assert.equal(target(f), f.prepared.candidateCommitOid);
+  } finally {
+    childProcess.spawnSync = spawn;
+    syncBuiltinESMExports();
+  }
+});
+
 test("a destination checked out after admission is not dispatched", (t) => {
   const f = fixture(t);
   reserve(f);
@@ -185,6 +259,50 @@ test("a destination checked out after admission is not dispatched", (t) => {
   assert.equal(result.status.outcome?.reason, "not_dispatched");
   assert.equal(target(f), f.prepared.expectedOldOid);
 });
+
+for (const phase of ["dispatch", "readback"]) {
+  test(`a linked rebase holding the destination at ${phase} prevents confirmation`, (t) => {
+    const f = fixture(t);
+    reserve(f);
+    const linked = join(f.scratch, "rebase");
+    const pause = () => {
+      git(f.root, "worktree", "add", "--quiet", linked, "target");
+      assert.throws(() =>
+        git(linked, "rebase", "--root", "--force-rebase", "--exec", "false"),
+      );
+      assert.throws(() => git(linked, "symbolic-ref", "-q", "HEAD"));
+    };
+    let reads = 0;
+    hooks(
+      t,
+      phase === "dispatch"
+        ? { afterAdmission: pause }
+        : {
+            prepare: (sql) => {
+              if (
+                sql.includes("LEFT JOIN git_promotion_admissions") &&
+                ++reads === 2
+              )
+                pause();
+            },
+          },
+    );
+    const result = promote(f);
+    t.mock.restoreAll();
+    assert.equal(result.status.state, "indeterminate");
+    assert.equal(
+      result.status.outcome?.reason,
+      phase === "dispatch" ? "not_dispatched" : "readback_mismatch",
+    );
+    assert.equal(
+      target(f),
+      phase === "dispatch"
+        ? f.prepared.expectedOldOid
+        : f.prepared.candidateCommitOid,
+    );
+    assert.equal(result.fence, "retained");
+  });
+}
 
 test("a fence lost after admission stops the dispatch", (t) => {
   const f = fixture(t);
@@ -311,6 +429,109 @@ test("a worker killed after update-ref recovers as interrupted on the candidate"
   assert.equal(result.fence, "released");
 });
 
+test("recovery observes a destination that moved from base to candidate and back", async (t) => {
+  const f = fixture(t);
+  reserve(f);
+  const base = f.prepared.expectedOldOid;
+  const candidate = f.prepared.candidateCommitOid;
+  assert.equal(target(f), base);
+  const worker = startGateWorker(f, "after-update-ref");
+  await worker.waitFor("dispatched");
+  await worker.kill();
+  assert.equal(target(f), candidate);
+  // Model the history independently of the journal. Recovery only sees base.
+  git(f.root, "update-ref", "refs/heads/target", base, candidate);
+  const history = () =>
+    git(
+      f.root,
+      "reflog",
+      "show",
+      "--format=%H",
+      "refs/heads/target",
+    ).toString();
+  const before = history();
+  assert.deepEqual(before.trim().split(/\r?\n/u).slice(0, 3), [
+    base,
+    candidate,
+    base,
+  ]);
+  assert.equal(status(f)?.outcome, undefined);
+  const result = recover(f);
+  assert.equal(result.status.state, "indeterminate");
+  assert.equal(result.status.outcome?.reason, "interrupted");
+  assert.equal(result.status.outcome.observedDestinationOid, base);
+  assert.equal(target(f), base);
+  assert.equal(history(), before);
+  assert.equal(result.fence, "released");
+  assert.throws(() => f.store.revoke(f.approval.approvalId), /Unresolved/u);
+});
+
+test("a live Git updater can outlast the promoter while the fence remains held", async (t) => {
+  const f = fixture(t);
+  reserve(f);
+  const worker = startGateWorker(f, "after-admission");
+  await worker.waitFor("admitted");
+  // The test owns this independent Git process so it can actually reap it.
+  // It models a surviving writer without leaving an orphan for the OS to clean up.
+  const updater = childProcess.spawn(
+    "git",
+    ["-C", f.root, "update-ref", "--stdin"],
+    {
+      stdio: ["pipe", "pipe", "pipe"],
+      timeout: 90_000,
+      killSignal: "SIGKILL",
+    },
+  );
+  const closed = new Promise<number | null>((resolve) =>
+    updater.once("close", resolve),
+  );
+  let output = "";
+  updater.stdout.setEncoding("utf8").on("data", (chunk: string) => {
+    output += chunk;
+  });
+  try {
+    await once(updater, "spawn");
+    await worker.kill();
+    assert.equal(updater.exitCode, null);
+    assert.equal(updater.signalCode, null);
+    assert.ok(status(f)?.admission);
+    assert.throws(
+      () =>
+        f.store.recoverGitPromotionAttempt({
+          attemptId: f.prepared.attemptId,
+          hostControl: f.hostControl,
+          acknowledgement: { childrenQuiescent: false } as unknown as {
+            childrenQuiescent: true;
+          },
+        }),
+      /quiescence/u,
+    );
+    assert.deepEqual(f.control.query(), { status: "held", owner: f.owner });
+    assert.throws(() => f.control.acquire(randomUUID()), /held/u);
+    assert.equal(status(f)?.outcome, undefined);
+    // After the promoter dies the updater can still prepare a transaction.
+    // Abort and wait for its actual exit before asserting quiescence.
+    updater.stdin.end(
+      `start\nverify refs/heads/target ${f.prepared.expectedOldOid}\nprepare\nabort\n`,
+    );
+    assert.equal(await closed, 0);
+    assert.deepEqual(output.trim().split(/\r?\n/u), [
+      "start: ok",
+      "prepare: ok",
+      "abort: ok",
+    ]);
+  } finally {
+    if (updater.exitCode === null && updater.signalCode === null)
+      updater.kill("SIGKILL");
+    await closed;
+  }
+  const result = recover(f);
+  assert.equal(result.status.state, "indeterminate");
+  assert.equal(result.status.outcome?.reason, "interrupted");
+  assert.equal(result.fence, "released");
+  assert.equal(target(f), f.prepared.expectedOldOid);
+});
+
 test("a worker killed after its outcome keeps it; recovery only releases", async (t) => {
   const f = fixture(t);
   reserve(f);
@@ -414,3 +635,72 @@ test("a Git timeout at the locked gate records nothing", (t) => {
   assert.equal(current.outcome, undefined);
   assert.equal(promote(f).status.state, "confirmed");
 });
+
+for (const observation of [
+  "read error",
+  "missing",
+  "different bytes",
+] as const) {
+  test(`locked candidate verification handles ${observation}`, (t) => {
+    const f = fixture(t);
+    reserve(f);
+    const original = childProcess.spawnSync;
+    const oid = f.prepared.candidateCommitOid;
+    let commitReads = 0;
+    childProcess.spawnSync = ((command: string, args: string[], options) => {
+      const result = original(command, args, options);
+      if (
+        args.includes("cat-file") &&
+        args.at(-1) === oid &&
+        ++commitReads === 2
+      ) {
+        if (observation === "different bytes")
+          return {
+            ...result,
+            stdout: Buffer.from("invalid candidate bytes\n"),
+          };
+        return {
+          ...result,
+          status: 128,
+          stdout: Buffer.alloc(0),
+          stderr: Buffer.alloc(0),
+        };
+      }
+      if (observation === "missing" && args.at(-1) === "--batch-check")
+        return {
+          ...result,
+          stdout: Buffer.from(
+            `${oid} missing\n${f.prepared.candidateTreeOid} tree 123\n`,
+          ),
+        };
+      return result;
+    }) as typeof childProcess.spawnSync;
+    syncBuiltinESMExports();
+    try {
+      if (observation === "different bytes") {
+        const result = promote(f);
+        assert.equal(result.status.outcome?.reason, "candidate_rejected");
+        assert.equal(result.status.state, "failed");
+      } else {
+        assert.throws(
+          () => promote(f),
+          observation === "missing"
+            ? /is missing from the repository/u
+            : /nonzero command result/u,
+        );
+      }
+      assert.equal(commitReads, 2);
+    } finally {
+      childProcess.spawnSync = original;
+      syncBuiltinESMExports();
+    }
+    assert.equal(target(f), f.prepared.expectedOldOid);
+    if (observation !== "different bytes") {
+      assert.equal(status(f)?.state, "prepared");
+      assert.equal(status(f)?.admission, undefined);
+      assert.equal(status(f)?.outcome, undefined);
+      assert.deepEqual(f.control.query(), { status: "held", owner: f.owner });
+      assert.equal(promote(f).status.state, "confirmed");
+    }
+  });
+}

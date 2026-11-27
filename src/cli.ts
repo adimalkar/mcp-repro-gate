@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { parseUniqueJson } from "./unique-json.js";
 import { readFileSync } from "node:fs";
 
 import { serveStdio } from "@modelcontextprotocol/server/stdio";
@@ -79,7 +80,9 @@ function verifyReceiptFile(
   secretEnvironmentName: string,
   expectedKeyId?: string,
 ): void {
-  const receipt: unknown = JSON.parse(readFileSync(receiptPath, "utf8"));
+  const receipt: unknown = parseUniqueJson(
+    new TextDecoder("utf-8", { fatal: true }).decode(readFileSync(receiptPath)),
+  );
   const signingKeyId =
     receipt !== null &&
     typeof receipt === "object" &&
@@ -160,6 +163,11 @@ async function main(): Promise<void> {
     if (runtime !== undefined && runtime.recoveredExecutions > 0) {
       process.stderr.write(
         `Recovered ${String(runtime.recoveredExecutions)} incomplete execution(s) as indeterminate\n`,
+      );
+    }
+    if (runtime !== undefined && runtime.ownedExecutions > 0) {
+      process.stderr.write(
+        `Left ${String(runtime.ownedExecutions)} prepared execution(s) pending after lease recovery\n`,
       );
     }
     const handle = serveStdio(

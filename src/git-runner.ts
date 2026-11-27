@@ -77,6 +77,7 @@ function isMetadataRead(
     ["rev-parse", "--verify", "HEAD^{commit}"],
     ["rev-parse", "--verify", "HEAD^{tree}"],
     ["symbolic-ref", "--quiet", "HEAD"],
+    ["ls-files", "-v", "-z"],
     ["worktree", "list", "--porcelain", "-z"],
   ];
   if (

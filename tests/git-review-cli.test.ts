@@ -1301,6 +1301,17 @@ test("bounded malformed config and inputs fail without echoing their contents", 
     /review is not valid UTF-8 JSON/u,
     f.importReview({ review: reviewPath }),
   );
+  writeFileSync(
+    reviewPath,
+    JSON.stringify(review).replace(
+      '"decision":',
+      '"decision":"approve","decision":',
+    ),
+  );
+  check(
+    /review is not valid UTF-8 JSON/u,
+    f.importReview({ review: reviewPath }),
+  );
   writeFileSync(reviewPath, " ".repeat(64 * 1024 + 1));
   check(/exceeds/u, f.importReview({ review: reviewPath }));
   const flipped = review.signature.value.startsWith("A") ? "B" : "A";

@@ -27,9 +27,9 @@ The [audit and feature ledger](AUDIT_LEDGER.md) tracks the promotion review, two
 - [x] Exercise a real downstream MCP stdio process in integration tests.
 - [x] Add a production configuration format and start the execution-enabled MCP façade only when every backend, observer, database, and secret is explicitly configured.
 - [x] Bind and verify the downstream server artifact digest, not only its advertised schema.
-- [ ] Add process ownership/lease metadata so recovery can distinguish a crashed worker from a still-running replica.
-- [ ] Add cross-process capability race and hard-kill/response-loss fixtures.
-- [ ] Document that HMAC receipt verification requires a shared secret and bounded before/after hashes do not prove effect confinement.
+- [x] Add process ownership/lease metadata so recovery can distinguish a crashed worker from a still-running replica.
+- [x] Add cross-process capability race and hard-kill/response-loss fixtures.
+- [x] Document that HMAC receipt verification requires a shared secret and bounded before/after hashes do not prove effect confinement.
 
 ## P1 — make the agent-facing contract easier, cheaper, and continuous to use (Phase 4)
 

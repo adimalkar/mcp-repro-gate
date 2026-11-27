@@ -29,7 +29,9 @@ V2 requires an actual clean worktree root with symbolic source HEAD. Its destina
 
 - be a different, existing direct local `refs/heads/` branch;
 - point to the same base commit as source HEAD;
-- not be checked out in any registered worktree, including linked worktrees.
+- be available in every registered worktree. An attached checkout, a rebase of the destination, a pending `rebase --update-refs` entry or a bisect started on the destination reserves that branch, even while HEAD is detached.
+
+V2 rejects source index entries marked `assume-unchanged` or `skip-worktree`, because Git status can omit changes to those paths. Use a fully populated source checkout with normal index flags. An unreadable worktree registry or operation state prevents the gate from verifying branch availability.
 
 The witness binds canonical root/common-directory digests, source ref/commit/tree and destination ref/OID. Observations are repeated for consistency. Unknown/mixed contract versions and malformed record/input shapes fail closed. Worktree enumeration preserves path bytes and decodes branch identities strictly; the host ownership layer rejects physical paths it cannot represent losslessly.
 
@@ -69,7 +71,7 @@ On POSIX, host fence/ledger/state parents and directory targets require current-
 
 Windows deployments must provide equivalent private current-user ACLs. Unix mode bits do not establish that policy on Windows. Portable Windows directory fsync is not provided, and filesystem/device power-loss guarantees are not implied by successful file/POSIX-directory flushes.
 
-The quiescence boolean is a trusted-host assertion, not evidence that no child exists. Before release, the host must establish that every possible dispatched writer has completed or has been stopped and reaped. A dead parent PID or released SQLite lock does not establish this: an orphan Git child can remain live. The later journal/recovery layer must handle that uncertainty explicitly; this foundation does not automate recovery.
+The quiescence boolean is a trusted-host assertion, not evidence that no child exists. Before release, the host must establish that every possible dispatched writer has completed or has been stopped and reaped. A dead parent PID or released SQLite lock does not establish this: an orphan Git child can remain live. Journal recovery requires this acknowledgement before releasing the fence.
 
 An agent sharing the host's filesystem credentials may still access host records or signing material. Private modes and signatures do not replace deployment-level agent/operator separation.
 
@@ -79,6 +81,6 @@ Bounded regular-file reads use one descriptor, verify safety and size before/aft
 
 These checks reject observable truncation, same-size replacement and permission/identity drift. They do not reserve the filesystem or detect changes hidden by the filesystem's metadata granularity, nor changes after the final observation. Conflicting or uncertain owner observations must not authorize successful release.
 
-## Remaining promotion gates
+## Journal and evidence
 
-A complete promotion builds on the [durable prepared-only journal](GIT_PROMOTION_JOURNAL.md) and still needs fresh authenticated admission under persistent ownership and a shared SQLite write lock, expected-old direct-ref CAS, ownership-aware revocation and conservative quiescent recovery. Git ref movement and SQLite completion are not one distributed atomic transaction. No portable signed promotion receipt or proof of human presence/inspection is delivered by these foundations.
+The promotion journal consumes the approval, rechecks authorization under the fence and SQLite writer lock, and performs the expected-old Git ref update. A crash between that write and the SQLite outcome can leave the attempt indeterminate. The host can export a signed record of a resolved attempt. The signature attests to the recorded outcome. Proof of human presence or inspection remains outside its scope. [Journal and recovery](GIT_PROMOTION_JOURNAL.md) · [Portable evidence](GIT_PROMOTION.md#portable-evidence)

@@ -43,6 +43,8 @@ All notable changes will be documented in this file. The project follows [Semant
 ### Fixed
 
 - `git gc --prune=now` or `git repack -a -d` between preparation and promotion no longer deletes the candidate and spends its one-use approval: its pack carries a Git keep file until the attempt is resolved or its unreserved fence is released. A candidate that is missing anyway is named in the error.
+- Several `serve` processes sharing one database: startup recovery recorded every in-progress execution `indeterminate`, including a call another live process was still running, whose receipt then could not be stored. Executions are now owned under a renewed lease (`execution_owners`, `executions.owner_id`), and recovery skips those whose owner's lease is live; `serve` reports them on stderr. Executions from before this change are recovered as before. An execution whose outcome cannot be stored is reported as `ExecutionIndeterminateError` rather than a generic error. Multi-process fixtures cover capability races, hard kills and lost downstream responses.
+
 - `action.plan` and `ReproGateKernel.plan` reject arguments that fail the catalog tool's input schema, with the executor's validator settings. Previously such a plan could be persisted, explained and approved, then refused at execution. Error messages name schema paths, never argument values.
 - New plan and approval SQLite databases are created owner-only (`0600`), and so are their sidecars. `git-review import` used to create a world-readable ledger that `git-review promote` then refused. Fence permission errors now name the offending path and the required modes.
 - `reprogate help`, `--help` and `-h` print usage on stdout and exit 0 instead of exiting as a usage error.

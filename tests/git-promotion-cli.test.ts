@@ -4,6 +4,7 @@ import { execFile, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import test, { type TestContext } from "node:test";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
@@ -118,6 +119,52 @@ test("promote confirms, status reads it back, and a second promote releases its 
   assert.match(second.stderr, /stopped \(fence released\)/u);
   assert.equal(second.stdout, "");
   assert.equal(s.f.control.query().status, "available");
+});
+
+test("V2 revocation respects the repository fence before reservation", (t) => {
+  const s = setup(t);
+  const args = [
+    "revoke",
+    "--config",
+    s.configPath,
+    "--approval-id",
+    s.f.approval.approvalId,
+  ];
+  const sql = t.mock.method(DatabaseSync.prototype, "exec");
+  const busy = cli(args);
+  assert.equal(
+    sql.mock.callCount(),
+    0,
+    "a busy V2 fence prevents opening the approval store",
+  );
+  sql.mock.restore();
+  assert.equal(busy.code, 1);
+  assert.match(busy.stderr, /fence is held/u);
+  assert.deepEqual(s.f.control.query(), { status: "held", owner: s.f.owner });
+  releaseFixtureFence(s.f);
+  writeFileSync(join(s.f.root, "value.txt"), "uncommitted work\n");
+  const revoked = cli(args);
+  assert.equal(revoked.code, 0, revoked.stderr);
+  assert.equal(json(revoked.stdout).revoked, true);
+  const again = cli(args);
+  assert.equal(again.code, 1, again.stderr);
+  assert.equal(json(again.stdout).revoked, false);
+  assert.equal(s.f.control.query().status, "available");
+});
+
+test("fenced revocation requires the owner's ledger connection", (t) => {
+  const a = setup(t);
+  const b = setup(t);
+  assert.throws(
+    () =>
+      a.f.store.revokeGitApprovalUnderFence(
+        a.f.approval.approvalId,
+        b.f.hostControl,
+        b.f.owner,
+      ),
+    /bound absolute disk ledger/u,
+  );
+  reserve(a.f);
 });
 
 test("a version 1 config cannot promote or read promotion status", (t) => {

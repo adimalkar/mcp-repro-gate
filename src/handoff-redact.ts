@@ -1,9 +1,10 @@
 export const HANDOFF_REDACTED = "[REDACTED]";
 
 // Well-known credential shapes. Each pattern is anchored on a fixed prefix
-// and uses bounded, non-nested quantifiers, so matching stays linear.
+// and consumes a match before scanning for the next one. A captured key
+// block can extend to the end of a truncated host message.
 const SECRET_PATTERNS: readonly RegExp[] = [
-  /-----BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY-----[\s\S]{0,8192}?(?:-----END [A-Z0-9 ]{0,40}PRIVATE KEY-----|$)/gu,
+  /-----BEGIN ([A-Z0-9 ]{0,40}PRIVATE KEY)-----[\s\S]*?(?:-----END \1-----|$)/gu,
   /\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,255}\b/gu,
   /\bgithub_pat_[A-Za-z0-9_]{20,255}\b/gu,
   /\bglpat-[A-Za-z0-9_-]{20,255}\b/gu,

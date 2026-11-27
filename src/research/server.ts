@@ -97,6 +97,12 @@ export function createResearchServer(
           ? {}
           : { allowHosts: options.allowHosts }),
       }));
+  const readOnly = {
+    readOnlyHint: true,
+    destructiveHint: false,
+    idempotentHint: true,
+    openWorldHint: true,
+  };
   const server = new McpServer({
     name: "reprogate-research",
     version: "0.0.0",
@@ -117,11 +123,7 @@ export function createResearchServer(
           .default(DEFAULT_MAX_TOKENS),
       }),
       outputSchema: fetchDistilledOutputSchema,
-      annotations: {
-        readOnlyHint: true,
-        idempotentHint: true,
-        openWorldHint: true,
-      },
+      annotations: readOnly,
     },
     async ({ url, query, maxTokens }) => {
       try {
@@ -173,11 +175,7 @@ export function createResearchServer(
         maxResults: z.number().int().min(1).max(10).default(5),
       }),
       outputSchema: webSearchOutputSchema,
-      annotations: {
-        readOnlyHint: true,
-        idempotentHint: true,
-        openWorldHint: true,
-      },
+      annotations: readOnly,
     },
     async ({ query, maxResults }) => {
       try {
@@ -213,11 +211,7 @@ export function createResearchServer(
           .default(DEFAULT_MAX_TOKENS),
       }),
       outputSchema: resolveStuckErrorOutputSchema,
-      annotations: {
-        readOnlyHint: true,
-        idempotentHint: true,
-        openWorldHint: true,
-      },
+      annotations: readOnly,
     },
     async ({ error, context, maxTokens }) => {
       try {

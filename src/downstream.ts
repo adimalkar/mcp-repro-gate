@@ -1,5 +1,8 @@
 import { Client } from "@modelcontextprotocol/client";
-import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
+import {
+  DEFAULT_INHERITED_ENV_VARS,
+  StdioClientTransport,
+} from "@modelcontextprotocol/client/stdio";
 
 import { sha256File } from "./file-digest.js";
 import type { Digest } from "./types.js";
@@ -19,6 +22,22 @@ export interface DownstreamToolDescription extends DownstreamTool {
 }
 
 const MAX_LISTED_TOOLS = 1024;
+// Node's Windows libuv inserts the parent's value for each missing name in
+// required_vars (deps/uv/src/win/process.c). Explicit empty entries prevent
+// that fallback while allowing the caller to supply the real values below.
+const windowsRequiredEnvironment = [
+  "HOMEDRIVE",
+  "HOMEPATH",
+  "LOGONSERVER",
+  "PATH",
+  "SYSTEMDRIVE",
+  "SYSTEMROOT",
+  "TEMP",
+  "USERDOMAIN",
+  "USERNAME",
+  "USERPROFILE",
+  "WINDIR",
+];
 
 export interface DownstreamSession {
   getTool(name: string): Promise<DownstreamTool | undefined>;
@@ -37,7 +56,10 @@ export interface StdioBackendConfig {
   command: string;
   args?: string[];
   cwd?: string;
+  /** Overrides the SDK's default stdio environment unless envMode is exact. */
   env?: Record<string, string>;
+  /** Runtime configuration resolves its own inheritance policy before connecting. */
+  envMode?: "overlay" | "exact";
   /** Where the backend's own stderr goes; the SDK default is "inherit". */
   stderr?: "inherit" | "ignore";
   artifact?: {
@@ -154,7 +176,27 @@ export class StdioMcpConnector implements DownstreamConnector {
       name: "mcp-repro-gate-downstream",
       version: "0.0.0",
     });
-    const transport = new StdioClientTransport(config);
+    // The SDK overlays env onto its own process-wide defaults. Node's spawn
+    // skips keys whose value is undefined. Shadow every implicit default
+    // when the caller selected exact inheritance, including an empty environment.
+    const transportConfig = { ...config };
+    if (config.envMode === "exact") {
+      const env: NodeJS.ProcessEnv = Object.fromEntries(
+        [...DEFAULT_INHERITED_ENV_VARS, "NODE_V8_COVERAGE"].map((key) => [
+          key,
+          undefined,
+        ]),
+      );
+      if (process.platform === "win32") {
+        for (const key of windowsRequiredEnvironment) env[key] = "";
+      }
+      for (const [key, value] of Object.entries(config.env ?? {}))
+        env[process.platform === "win32" ? key.toUpperCase() : key] = value;
+      // StdioServerParameters types the spread as strings only. The optional
+      // keys above are consumed by Node and never reach the child environment.
+      transportConfig.env = env as Record<string, string>;
+    }
+    const transport = new StdioClientTransport(transportConfig);
     try {
       await client.connect(transport);
       return new McpDownstreamSession(client);

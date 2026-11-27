@@ -150,6 +150,7 @@ test("exact metadata reads use one real Git spawn per command and retain observe
       ],
       ["check-ref-format", "refs/heads/main"],
       ["worktree", "list", "--porcelain", "-z"],
+      ["ls-files", "-v", "-z"],
     ];
     const expected = commands.map((command) => git(root, ...command));
     const original = childProcess.spawnSync;

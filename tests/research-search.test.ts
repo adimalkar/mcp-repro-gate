@@ -313,6 +313,8 @@ test("search tools exist only when a provider is configured", async (context) =>
   ]);
   for (const tool of tools) {
     assert.equal(tool.annotations?.readOnlyHint, true, tool.name);
+    assert.equal(tool.annotations.destructiveHint, false, tool.name);
+    assert.equal(tool.annotations.idempotentHint, true, tool.name);
     assert.equal(tool.annotations.openWorldHint, true, tool.name);
   }
 });

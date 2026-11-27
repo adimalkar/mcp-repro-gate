@@ -27,6 +27,7 @@ import {
   type GitPromotionHostControlConfig,
 } from "./git-promotion-host-control.js";
 import { releaseCandidateKeep } from "./git-promotion-keep.js";
+import { gitDestinationInUse } from "./git-worktree-occupancy.js";
 import { GitRunnerUnavailableError, runGit } from "./git-runner.js";
 import type { PreparedGitPromotionObjectsV1 } from "./git-promotion-objects.js";
 import { DatabaseSync } from "node:sqlite";
@@ -37,7 +38,6 @@ import {
   oidSchema,
   ownGitChangeProposal,
   parseGitChangeProposalStructure,
-  parseGitWorktreeList,
   type GitChangeProposalVersions,
 } from "./git-change-contract.js";
 import {
@@ -47,6 +47,7 @@ import {
   type GitChangeProposalV2,
 } from "./git-change-proposal.js";
 import {
+  GitCandidateMismatchError,
   MissingGitCandidateError,
   stageGitChangeProposal,
   verifyInstalledGitPromotionObjects,
@@ -317,13 +318,7 @@ function promotionSourceUnchanged(
         undefined,
         4096,
       ).toString("utf8") === `${headCommit}\n` &&
-      !parseGitWorktreeList(
-        runGit(
-          ["-C", root, "worktree", "list", "--porcelain", "-z"],
-          undefined,
-          1024 * 1024,
-        ),
-      ).some((worktree) => worktree.branch === destinationRef)
+      !gitDestinationInUse(root, destinationRef)
     );
   } catch {
     return false;
@@ -432,16 +427,6 @@ function transientFailure(error: unknown): boolean {
     cause = cause instanceof Error ? cause.cause : undefined;
   }
   return false;
-}
-
-/** Whether any registered worktree has the branch checked out. */
-function destinationCheckedOut(
-  repositoryPath: string,
-  destinationRef: string,
-): boolean {
-  return parseGitWorktreeList(
-    runGit(["-C", repositoryPath, "worktree", "list", "--porcelain", "-z"]),
-  ).some((worktree) => worktree.branch === destinationRef);
 }
 
 export class SqliteGitApprovalStore {
@@ -999,16 +984,7 @@ export class SqliteGitApprovalStore {
       owner.attemptId !== prepared.attemptId
     )
       throw new Error("Promotion repository/attempt ownership mismatch");
-    const checkFence = (): void => {
-      this.#assertPromotionDatabase(owner.approvalDatabasePath);
-      const held = control.query();
-      if (
-        held.status !== "held" ||
-        canonicalJson(held.owner) !== canonicalJson(owner)
-      )
-        throw new Error("Promotion requires the exact persisted fence owner");
-    };
-    checkFence();
+    this.#assertFenceOwner(control, owner);
     const authority = deriveGitApprovalAuthorityFromPlan(proposal, context);
     const before = this.#reviewedApproval(approvalId, proposal.proposalId);
     if (
@@ -1025,12 +1001,12 @@ export class SqliteGitApprovalStore {
     const current = deriveGitApprovalAuthorityFromPlan(proposal, context);
     if (digestCanonical(current) !== digestCanonical(authority))
       throw new Error("Promotion plan authority changed during precheck");
-    checkFence();
+    this.#assertFenceOwner(control, owner);
     const precheckedAt = new Date().toISOString();
     const expected = this.#writeTransaction(() => {
       // BEGIN IMMEDIATE has completed, including any busy wait. Reload all
       // linked proof/expiry/trust and persisted plan state under this lock.
-      checkFence();
+      this.#assertFenceOwner(control, owner);
       const finalAuthority = deriveGitApprovalAuthorityFromPlan(
         proposal,
         context,
@@ -1056,7 +1032,7 @@ export class SqliteGitApprovalStore {
         throw new Error(
           "Promotion approval/proposal/attempt is permanently consumed",
         );
-      checkFence();
+      this.#assertFenceOwner(control, owner);
       const record = parseGitPromotionAttempt({
         attemptVersion: 1,
         state: "prepared",
@@ -1239,15 +1215,6 @@ export class SqliteGitApprovalStore {
       canonicalJson(owner) !== canonicalJson(attempt.fenceOwner)
     )
       throw new Error("Promotion repository/attempt ownership mismatch");
-    const checkFence = (): void => {
-      this.#assertPromotionDatabase(owner.approvalDatabasePath);
-      const held = control.query();
-      if (
-        held.status !== "held" ||
-        canonicalJson(held.owner) !== canonicalJson(owner)
-      )
-        throw new Error("Promotion requires the exact persisted fence owner");
-    };
     const assertUnresolved = (): void => {
       const status = this.getGitPromotionStatus(attemptId);
       if (
@@ -1260,11 +1227,12 @@ export class SqliteGitApprovalStore {
           "Promotion attempt was already admitted or resolved; read its status or recover it",
         );
     };
-    checkFence();
+    this.#assertFenceOwner(control, owner);
     assertUnresolved();
     // Heavy object, plan and workspace checks run BEFORE the SQL lock. Nothing
     // has been dispatched, so a rejection here leaves the attempt retryable.
     const precheck = this.#promotionRejection(
+      "precheck",
       attempt,
       context,
       trust,
@@ -1276,19 +1244,20 @@ export class SqliteGitApprovalStore {
           precheck.detail === undefined ? "" : ` (${precheck.detail})`
         }`,
       );
-    checkFence();
+    this.#assertFenceOwner(control, owner);
     const deadline = Date.parse(attempt.admissionDeadline);
 
     const rejected = this.#writeTransaction(() => {
-      checkFence();
+      this.#assertFenceOwner(control, owner);
       assertUnresolved();
       const reason = this.#promotionRejection(
+        "admission",
         attempt,
         context,
         trust,
         repositoryPath,
       )?.reason;
-      checkFence();
+      this.#assertFenceOwner(control, owner);
       // One clock read decides the deadline AND becomes admittedAt, so a
       // record committed here always satisfies strict readback.
       const admittedAt = Date.now();
@@ -1319,7 +1288,7 @@ export class SqliteGitApprovalStore {
     // Admission is durable. From here on, every failure path keeps the fence.
     try {
       this.#writeTransaction(() => {
-        checkFence();
+        this.#assertFenceOwner(control, owner);
         const destinationRef = attempt.proposal.workspace.destinationRef;
         // Recovery may have concluded while this process stalled between
         // the admission commit and here; never write after that.
@@ -1328,11 +1297,20 @@ export class SqliteGitApprovalStore {
           throw new Error(
             "Promotion was resolved before dispatch; nothing was written",
           );
-        // Expiry bounds the write as well as admission, and a branch checked
-        // out since admission must not move behind its worktree.
+        // Binding the durable marker and the ref update requires two commits.
+        // Reauthenticate under the writer lock which also encloses the CAS.
+        const rejection = this.#promotionRejection(
+          "dispatch",
+          attempt,
+          context,
+          trust,
+          repositoryPath,
+        );
+        this.#assertFenceOwner(control, owner);
         if (
-          !(Date.now() < deadline) ||
-          destinationCheckedOut(repositoryPath, destinationRef)
+          rejection !== undefined ||
+          gitDestinationInUse(repositoryPath, destinationRef) ||
+          !(Date.now() < deadline)
         ) {
           this.#insertOutcome({
             outcomeVersion: 1,
@@ -1352,6 +1330,7 @@ export class SqliteGitApprovalStore {
             repositoryPath,
             "update-ref",
             "--no-deref",
+            "--create-reflog",
             "-m",
             `reprogate promotion ${attemptId}`,
             destinationRef,
@@ -1540,8 +1519,9 @@ export class SqliteGitApprovalStore {
   }
 
   // Run every final-gate check and return the first rejection, if any. The
-  // same checks serve the unlocked precheck and the locked admission.
+  // same checks serve precheck, admission and the final dispatch transaction.
   #promotionRejection(
+    phase: "precheck" | "admission" | "dispatch",
     attempt: ImmutablePromotion<GitPromotionAttemptV1>,
     context: GitPlanBindingContext,
     trust: unknown,
@@ -1595,11 +1575,13 @@ export class SqliteGitApprovalStore {
         attempt.prepared as PreparedGitPromotionObjectsV1,
       );
     } catch (error) {
-      if (transientFailure(error)) throw error;
-      return reject(
-        "candidate_rejected",
-        error instanceof MissingGitCandidateError ? error.message : undefined,
-      );
+      if (error instanceof GitCandidateMismatchError)
+        return reject("candidate_rejected");
+      // Keep the existing precheck diagnostic for an unavailable object.
+      // Inside admission, an incomplete read must roll back the transaction.
+      if (phase === "precheck" && error instanceof MissingGitCandidateError)
+        return reject("candidate_rejected", error.message);
+      throw error;
     }
     // The checks above take time; the deadline applies when they finish.
     return Date.now() < deadline ? undefined : expired;
@@ -1683,48 +1665,77 @@ export class SqliteGitApprovalStore {
       throw new Error("Durable promotion ledger identity/durability changed");
   }
 
-  /** Revocation is durable; no new grant for the same proposal is allowed. */
+  #assertFenceOwner(
+    control: GitPromotionHostControl,
+    owner: GitPromotionFenceOwnerV1,
+  ): void {
+    this.#assertPromotionDatabase(owner.approvalDatabasePath);
+    const held = control.query();
+    if (
+      held.status !== "held" ||
+      canonicalJson(held.owner) !== canonicalJson(owner)
+    )
+      throw new Error("Promotion requires the exact persisted fence owner");
+  }
+
+  /** Legacy host revocation. Any journaled consumption permanently prevents it. */
   revoke(approvalId: string): boolean {
+    return this.#writeTransaction(() => this.#revokeApproval(approvalId));
+  }
+
+  /** Revoke under the V2 repository owner's fence and the bound ledger writer lock. */
+  revokeGitApprovalUnderFence(
+    approvalId: string,
+    hostControl: GitPromotionHostControlConfig,
+    fenceOwner: GitPromotionFenceOwnerV1,
+  ): boolean {
+    const owner = parseGitPromotionFenceOwner(fenceOwner);
+    const control = createGitPromotionHostControl(hostControl);
     return this.#writeTransaction(() => {
-      // Guard + update are one locked transaction. Any attempt, even a
-      // resolved one, permanently consumed its approval; corrupt/ambiguous
-      // journal JSON cannot manufacture evidence that bypasses crash fencing.
-      const approval = this.#database
-        .prepare(
-          "SELECT proposal_id FROM git_change_approvals WHERE approval_id = ?",
-        )
-        .get(approvalId);
-      if (
-        this.#database
-          .prepare(
-            "SELECT 1 FROM git_promotion_attempts WHERE approval_id = ? OR proposal_id = ?",
-          )
-          .get(
-            approvalId,
-            typeof approval?.proposal_id === "string"
-              ? approval.proposal_id
-              : "",
-          )
-      )
-        throw new Error("Unresolved promotion prevents raw revocation");
-      // A damaged linkage must not disappear from the guard. Validate even
-      // unrelated rows before allowing raw revoke; corruption fails closed.
-      for (const row of this.#database
-        .prepare("SELECT attempt_id FROM git_promotion_attempts")
-        .all()) {
-        if (
-          typeof row.attempt_id !== "string" ||
-          !this.getGitPromotionAttempt(row.attempt_id)
-        )
-          throw new Error("Corrupt promotion journal prevents raw revocation");
-      }
-      const changed = this.#database
-        .prepare(
-          `UPDATE git_change_approvals SET status = 'revoked', revoked_at = ? WHERE approval_id = ? AND status = 'active'`,
-        )
-        .run(new Date().toISOString(), approvalId);
-      return Number(changed.changes) === 1;
+      this.#assertFenceOwner(control, owner);
+      const revoked = this.#revokeApproval(approvalId);
+      this.#assertFenceOwner(control, owner);
+      return revoked;
     });
+  }
+
+  #revokeApproval(approvalId: string): boolean {
+    // Guard + update are one locked transaction. Any attempt, even a
+    // resolved one, permanently consumed its approval; corrupt/ambiguous
+    // journal JSON cannot manufacture evidence that bypasses crash fencing.
+    const approval = this.#database
+      .prepare(
+        "SELECT proposal_id FROM git_change_approvals WHERE approval_id = ?",
+      )
+      .get(approvalId);
+    if (
+      this.#database
+        .prepare(
+          "SELECT 1 FROM git_promotion_attempts WHERE approval_id = ? OR proposal_id = ?",
+        )
+        .get(
+          approvalId,
+          typeof approval?.proposal_id === "string" ? approval.proposal_id : "",
+        )
+    )
+      throw new Error("Unresolved promotion prevents raw revocation");
+    // A damaged linkage must not disappear from the guard. Validate even
+    // unrelated rows before allowing raw revoke; corruption fails closed.
+    for (const row of this.#database
+      .prepare("SELECT attempt_id FROM git_promotion_attempts")
+      .all()) {
+      if (
+        typeof row.attempt_id !== "string" ||
+        !this.getGitPromotionAttempt(row.attempt_id)
+      )
+        throw new Error("Corrupt promotion journal prevents raw revocation");
+    }
+    const changed = this.#database
+      .prepare(
+        `UPDATE git_change_approvals SET status = 'revoked', revoked_at = ? WHERE approval_id = ? AND status = 'active'`,
+      )
+      .run(new Date().toISOString(), approvalId);
+    return Number(changed.changes) === 1;
   }
 
   #writeTransaction<T>(operation: () => T): T {

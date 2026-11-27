@@ -821,6 +821,24 @@ test("known credential shapes are redacted from notes and the count is reported"
   assert.ok(performance.now() - started < 1000);
 });
 
+test("captured private-key blocks are redacted through the end of a long or clipped message", (t) => {
+  const fixtureHost = fixture(t, { captureMessages: true });
+  fixtureHost.hook({ hook_event_name: "SessionStart", source: "startup" });
+  for (const clipped of [false, true]) {
+    const body = "synthetic fixture line\n".repeat(clipped ? 1000 : 500);
+    const end = clipped ? "" : "-----END PRIVATE KEY----- after";
+    fixtureHost.hook({
+      hook_event_name: "Stop",
+      last_assistant_message: `before -----BEGIN PRIVATE KEY-----\n${body}${end}`,
+    });
+    const stored = fixtureHost.service().brief(65536).sessions[0]?.lastMessage;
+    assert.equal(
+      stored,
+      clipped ? "before [REDACTED]" : "before [REDACTED] after",
+    );
+  }
+});
+
 test("Git observation reports branch, changes, an operation in progress and commits since the last session", (t) => {
   const f = fixture(t, { observeGit: true });
   const root = f.workspaceRoot;

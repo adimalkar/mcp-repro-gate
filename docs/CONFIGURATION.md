@@ -89,7 +89,7 @@ Validate the document against [`schemas/runtime-config.schema.json`](../schemas/
 }
 ```
 
-Secret values never belong in this file. `environment.from` maps a child-process variable to the name of an existing host variable. `inherit: "safe"` copies only a small cross-platform process environment allowlist; it does not forward variables such as `NODE_OPTIONS` or arbitrary credentials.
+Secret values never belong in this file. `environment.from` maps a child-process variable to the name of an existing host variable. `inherit: "safe"` copies only a small cross-platform process environment allowlist; it does not forward variables such as `NODE_OPTIONS` or arbitrary credentials. With `inherit: "none"`, only `from` mappings carry host values. The gateway suppresses the stdio SDK’s implicit host-variable defaults in both modes. On Windows, libuv automatically supplies certain missing process variables from the parent. The gateway sets those names to empty strings unless the selected environment supplies a value. For a Windows backend that depends on `SYSTEMROOT`, `TEMP` or `PATH`, list the required mappings in `from` or select `safe`. [Node’s bundled libuv environment handling](https://github.com/nodejs/node/blob/v24.x/deps/uv/src/win/process.c)
 
 The artifact path identifies the file being authorized. For an interpreter command such as Node.js, point it at the executed script rather than the interpreter. ReproGate hashes that file at configured startup and again immediately before starting the backend; drift rejects startup or execution before capability consumption. This check does not eliminate a hostile same-host filesystem race; immutable/read-only deployment artifacts remain the operator's responsibility.
 
@@ -109,6 +109,12 @@ Issue approval and verify a receipt using the same configuration:
 node dist/src/cli.js approve --config /absolute/path/reprogate.json '<action-id>'
 node dist/src/cli.js verify-receipt --config /absolute/path/reprogate.json ./receipt.json
 ```
+
+`verify-receipt` checks an HMAC with the receipt secret, so whoever can verify a receipt can also sign one. A valid receipt shows that it has not changed since a holder of that secret signed it. Its `observedEffects` digests cover only the observer's configured roots, before and after the call; they do not prove that the call's effects stayed in scope.
+
+### Several processes on one database
+
+Several `serve` processes, for example one per agent host, can share one `databasePath`. Each capability still runs at most once. A process that begins an execution owns it under a lease that it renews every 10 seconds while the call is running, and which lapses 30 seconds after the last renewal. At startup, `serve` records as `indeterminate` only the executions whose owner's lease has lapsed. The CLI reports how many executions remain `prepared` after recovery. A worker that just exited can hold an unexpired lease. A crashed process's executions are recovered by the first startup after its lease lapses. Keep the database on a local filesystem: SQLite locking is not reliable over network filesystems, and leases compare wall clocks.
 
 ## Host-mediated execution
 
@@ -243,3 +249,5 @@ their limits.
 The observer hashes regular-file contents and records file type, mode, and size. It does not retain file contents, and it records but never follows symlinks inside an observed root. Entry and byte limits fail closed.
 
 The current observer does not observe network, process, or credential effects. Configured mode remains a reference enforcement path, not a sandbox. Run one ReproGate process per SQLite database; multi-process leases and asymmetric receipt signing remain future work.
+
+With host mediation enabled, `action.plan` and `action.inspect` report `nextStep: "run"` when `action.run` can use a configured read or a valid unused held approval. `await_approval` asks the operator to approve the action. `await_capability` indicates a token is required for direct execution. A denied, expired, stale or exhausted mediated route returns `stop`. Guidance is a point-in-time observation. Mediation compares the live schema, artifact, effects, scopes, filesystem roots, network destinations, secret handles, sensitivity labels and policy against the envelope. Aliases with identical bindings and conflicting policy decisions make the plan stale. After connecting to the backend and taking the initial snapshot, dispatch rechecks the route and the plan and capability deadlines under the execution ledger’s writer lock. A refusal at this point leaves the capability unused.

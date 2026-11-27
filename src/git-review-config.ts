@@ -1,3 +1,4 @@
+import { parseUniqueJson } from "./unique-json.js";
 import {
   closeSync,
   constants,
@@ -590,7 +591,9 @@ export function loadGitReviewConfigSnapshot(
   );
   let value: unknown;
   try {
-    value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+    value = parseUniqueJson(
+      new TextDecoder("utf-8", { fatal: true }).decode(bytes),
+    );
   } catch {
     // Parser diagnostics can quote input; report only the failure class.
     throw new Error("Git review config is not valid UTF-8 JSON");

@@ -14,6 +14,7 @@ import {
   compactPlan,
   describeCatalogTool,
   fullPlan,
+  nextStepFor,
   policyExplainOutputSchema,
   toolRefInputSchema,
 } from "./facade.js";
@@ -94,9 +95,13 @@ export function createReproGateServer(
       : {},
   );
 
-  const executorConfigured = executor !== undefined;
+  const nextStep = (plan: ReturnType<ReproGateKernel["plan"]>) =>
+    executor && mediator
+      ? mediator.nextStep(plan)
+      : nextStepFor(plan, executor !== undefined);
   const readOnly = {
     readOnlyHint: true,
+    destructiveHint: false,
     idempotentHint: true,
     openWorldHint: false,
   };
@@ -164,8 +169,8 @@ export function createReproGateServer(
         const plan = kernel.plan({ toolRef, arguments: toolArguments });
         return result(
           detail === "full"
-            ? fullPlan(plan, executorConfigured)
-            : compactPlan(plan, toolRef, executorConfigured),
+            ? fullPlan(plan, nextStep(plan))
+            : compactPlan(plan, toolRef, nextStep(plan)),
         );
       } catch (planError) {
         return error(
@@ -189,7 +194,7 @@ export function createReproGateServer(
     ({ actionId }) => {
       const plan = kernel.explain(actionId);
       if (plan === undefined) return error(`Unknown actionId: ${actionId}`);
-      return result(fullPlan(plan, executorConfigured));
+      return result(fullPlan(plan, nextStep(plan)));
     },
   );
 
@@ -353,11 +358,7 @@ export function createReproGateServer(
           "Report the host-configured workspace handoff state with revision, digests and counts; set includeContext for the caller-asserted context, brief for a bounded resume brief with session states and observed Git state, or sessionId for that session's lane: its notes and subagents. Advisory only: it never authorizes actions",
         inputSchema: handoffStatusInputSchema,
         outputSchema: handoffStatusSchema,
-        annotations: {
-          readOnlyHint: true,
-          idempotentHint: true,
-          openWorldHint: false,
-        },
+        annotations: readOnly,
       },
       (input) => handoffResult(() => handoff.status(input)),
     );

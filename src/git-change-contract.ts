@@ -10,7 +10,7 @@ import type { Digest } from "./types.js";
 // The negative lookahead requires the actual end of input, not before a newline.
 const DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$(?![\s\S])/u;
 const OID_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$(?![\s\S])/u;
-const MAX_WORKTREES = 1024;
+export const MAX_WORKTREES = 1024;
 const IDENTIFIER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/@-]*$(?![\s\S])/u;
 const REF_PATTERN =
   /^refs\/heads\/(?!.*(?:\.\.|@\{|\/\/|\/\.|\.lock(?:\/|$)|\.(?:\/|$)))(?!.*\/$)[A-Za-z0-9_+@-][A-Za-z0-9_./+@-]*$(?![\s\S])/u;

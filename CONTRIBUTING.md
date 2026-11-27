@@ -28,6 +28,8 @@ npm test
 npm run pack:check
 ```
 
+After a build, `npm run pack:check` installs a tarball in a fresh consumer and exercises its CLI and library export. To check a release archive you already built, pass its path with `npm run pack:check -- /path/to/package.tgz`. The tag workflow checks that same file before attestation and upload.
+
 ## Pull requests
 
 Keep pull requests focused and include tests for behavior changes. CI must pass on supported Node.js versions and operating systems.

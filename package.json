@@ -38,10 +38,11 @@
     "check": "npm run format:check && npm run lint && npm run typecheck && npm test",
     "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
     "demo": "npm run build --silent && node dist/src/cli.js demo",
+    "bench:two-host": "npm run build --silent && node dist/benchmarks/two-host.js",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint": "eslint . --max-warnings 0",
-    "pack:check": "npm pack --dry-run --json",
+    "pack:check": "node dist/scripts/check-package.js",
     "start": "node dist/src/cli.js serve",
     "test": "npm run build --silent && node --test \"dist/tests/*.test.js\"",
     "typecheck": "tsc -p tsconfig.json --noEmit"

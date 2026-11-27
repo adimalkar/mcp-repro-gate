@@ -296,6 +296,63 @@ test("V2 constructors bind a reviewer worktree to a distinct unchecked-out desti
   assert.equal(git(root, "rev-parse", "refs/heads/target").trim(), baseCommit);
 });
 
+test("V2 requires observable index entries for its clean-source witness", (context) => {
+  const { root } = repositoryFixture(context);
+  const observe = () => observeGitPromotionWorkspace(root, "refs/heads/target");
+  for (const flag of ["assume-unchanged", "skip-worktree"]) {
+    git(root, "update-index", `--${flag}`, "--", "src/value.txt");
+    assert.throws(observe, /fully observed tracked entries/u);
+    writeFileSync(join(root, "src", "value.txt"), "local edit\n");
+    assert.throws(observe, /fully observed tracked entries/u);
+    git(root, "update-index", `--no-${flag}`, "--", "src/value.txt");
+    assert.throws(observe, /Git worktree must be clean/u);
+    git(root, "restore", "--", "src/value.txt");
+  }
+  assert.equal(observe().status, "clean");
+});
+
+test("V2 observes branches reserved by linked rebase, update-refs and bisect operations", (context) => {
+  const { root, scratch } = repositoryFixture(context);
+  const linked = join(scratch, "linked rebase");
+  git(root, "worktree", "add", "-q", "-b", "topic", linked);
+  git(linked, "commit", "--allow-empty", "-qm", "topic work");
+  const observe = () => observeGitPromotionWorkspace(root, "refs/heads/target");
+
+  for (const update of ["--no-update-refs", "--update-refs"]) {
+    assert.throws(() =>
+      git(
+        linked,
+        "rebase",
+        "--root",
+        "--force-rebase",
+        update,
+        "--exec",
+        "false",
+      ),
+    );
+    assert.throws(() => git(linked, "symbolic-ref", "-q", "HEAD"));
+    if (update === "--update-refs")
+      assert.throws(observe, /reserved by a worktree operation/u);
+    else assert.equal(observe().status, "clean");
+    git(linked, "rebase", "--abort");
+  }
+  git(linked, "switch", "-q", "target");
+  assert.throws(() =>
+    git(linked, "rebase", "--root", "--force-rebase", "--exec", "false"),
+  );
+  assert.throws(observe, /reserved by a worktree operation/u);
+  git(linked, "rebase", "--abort");
+  git(linked, "switch", "-q", "topic");
+  git(linked, "commit", "--allow-empty", "-qm", "another topic commit");
+  git(linked, "switch", "-q", "target");
+  git(linked, "bisect", "start", "topic", "target");
+  assert.throws(() => git(linked, "symbolic-ref", "-q", "HEAD"));
+  assert.throws(observe, /reserved by a worktree operation/u);
+  git(linked, "bisect", "reset");
+  git(linked, "switch", "-q", "topic");
+  assert.equal(observe().status, "clean");
+});
+
 test("V2 schema and runtime parsing agree and V1 schema bytes are unchanged", (context) => {
   const fixture = repositoryFixture(context);
   const proposal = createGitChangeProposalV2(input(fixture));

@@ -69,6 +69,11 @@ function deadlineClock(t: TestContext, f: Fixture) {
 
 test("an exact admitted promotion moves only the destination and confirms", (t) => {
   const f = fixture(t);
+  // A destination created with automatic reflogs disabled starts without one.
+  git(f.root, "config", "core.logAllRefUpdates", "false");
+  git(f.root, "branch", "-D", "target");
+  git(f.root, "branch", "target", f.prepared.expectedOldOid);
+  assert.throws(() => git(f.root, "reflog", "exists", "refs/heads/target"));
   reserve(f);
   const before = source(f);
   const result = promote(f);
@@ -225,9 +230,9 @@ test("a lost compare-and-swap after admission is indeterminate and keeps the fen
   const result = promote(f, {
     context: {
       ...f.context,
-      // After the locked workspace observation, before update-ref.
+      // The third observation runs inside the writer transaction that also runs update-ref.
       plans: observingPlans(f.plans, (n) => {
-        if (n === 2) git(f.root, "update-ref", "refs/heads/target", moved);
+        if (n === 3) git(f.root, "update-ref", "refs/heads/target", moved);
       }),
     },
   });
@@ -259,7 +264,7 @@ test("a destination already at the candidate without our dispatch is never confi
       // Another writer moves the ref to the candidate first; our expected-old
       // compare-and-swap then fails. Present-ref equality is not evidence.
       plans: observingPlans(f.plans, (n) => {
-        if (n === 2)
+        if (n === 3)
           git(
             f.root,
             "update-ref",

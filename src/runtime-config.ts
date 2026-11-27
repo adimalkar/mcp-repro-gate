@@ -139,6 +139,8 @@ export interface ConfiguredRuntime {
   mediator?: HostMediator;
   store: SqliteExecutionStore;
   recoveredExecutions: number;
+  /** Number of prepared executions observed after lease recovery. */
+  ownedExecutions: number;
   close(): void;
 }
 
@@ -187,9 +189,20 @@ function resolveBackendEnvironment(
   config: RuntimeConfigV1["backends"][string]["environment"],
   source: NodeJS.ProcessEnv,
 ): Record<string, string> {
-  const result = config.inherit === "safe" ? safeEnvironment(source) : {};
+  // Windows process.env folds case, but callers may pass a plain-object copy
+  // (for example { ...process.env } preserves the spelling "SystemRoot").
+  const windows = process.platform === "win32";
+  const available = windows
+    ? Object.fromEntries(
+        Object.entries(source).map(([key, value]) => [
+          key.toUpperCase(),
+          value,
+        ]),
+      )
+    : source;
+  const result = config.inherit === "safe" ? safeEnvironment(available) : {};
   for (const [targetName, sourceName] of Object.entries(config.from)) {
-    const value = source[sourceName];
+    const value = available[windows ? sourceName.toUpperCase() : sourceName];
     if (value === undefined) {
       throw new Error(
         `Backend environment source ${sourceName} for ${targetName} is not set`,
@@ -340,6 +353,7 @@ async function stdioBackend(
     args: [...backend.args],
     ...(backend.cwd === undefined ? {} : { cwd: backend.cwd }),
     env: resolveBackendEnvironment(backend.environment, environment),
+    envMode: "exact",
     artifact: { path: backend.artifact.path, digest: backend.artifact.digest },
   };
 }
@@ -400,6 +414,7 @@ export async function createConfiguredRuntime(
   const store = new SqliteExecutionStore(config.databasePath);
   try {
     const recoveredExecutions = store.recoverIncomplete();
+    const ownedExecutions = store.countIncomplete();
     const kernel = new ReproGateKernel(
       config.catalog as CatalogTool[],
       config.policy as PolicyV1,
@@ -431,6 +446,7 @@ export async function createConfiguredRuntime(
           }),
       store,
       recoveredExecutions,
+      ownedExecutions,
       close: () => {
         if (closed) return;
         closed = true;

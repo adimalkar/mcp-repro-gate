@@ -4,7 +4,7 @@ This guide covers the host-only `git-review` promotion commands. They move one d
 
 ## What you need
 
-- **A version 2 proposal.** Its destination is an existing local branch at the same commit as the source HEAD, and that branch is not checked out in any worktree. The host creates the plan and proposal with `createGitChangeIntentV2` and `createGitChangeProposalV2`, as in the [persisted-plan binding](GIT_CHANGE_PROPOSAL.md#bind-a-git-proposal-to-a-persisted-plan).
+- **A version 2 proposal.** Its destination is an existing local branch at the same commit as the source HEAD, and every worktree must leave that branch available, including during a paused rebase or bisect. The host creates the plan and proposal with `createGitChangeIntentV2` and `createGitChangeProposalV2`, as in the [persisted-plan binding](GIT_CHANGE_PROPOSAL.md#bind-a-git-proposal-to-a-persisted-plan).
 - **An imported, signed approval** for that proposal, from the usual [operator review](GIT_OPERATOR_REVIEW.md) flow: `prepare`, `sign`, `import`. Those commands accept version 2 proposals under a version 2 configuration.
 - **Private host state.** On POSIX, the fence's parent directory and the directories holding the approval database, the plan database and the config file must be owned by the current user with mode `0700`. Those files, and any SQLite sidecars, must be single-link regular files with mode `0600`. The plan and approval stores create new databases owner-only, but they never change an existing file: `chmod 600` a database created by an older version, and create the config file and directories privately yourself. The fence checks these on every use, names any path that fails, and never repairs it. On Windows, deploy equivalent private ACLs yourself.
 - **Cooperating writers.** Every process that promotes, revokes, checks out branches, adds worktrees, or edits configuration, plans or keys for this repository must use the same fence and approval ledger. The fence is a cooperative latch, not an OS sandbox.
@@ -58,12 +58,12 @@ A recovery of an unreserved attempt with an invalid fence exits 1 and reports th
 
 ## Reading outcomes
 
-| State           | Meaning                                                                                                                                                                                                                                                    | Usual fence result       |
-| --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------ |
-| `confirmed`     | The destination moved from the expected old commit to the candidate, and the readback was exact.                                                                                                                                                           | released                 |
-| `failed`        | Rejected at the gate before any Git write, or abandoned by recovery. The approval stays consumed.                                                                                                                                                          | released                 |
-| `indeterminate` | The write was admitted, but its effect is not proven: a lost compare-and-swap, an error, or a non-exact readback. With reason `not_dispatched`, the gate declined to write after admission because the deadline passed or the destination was checked out. | retained until `recover` |
-| `prepared`      | Reserved but not resolved: a precheck rejected it, or it was interrupted.                                                                                                                                                                                  | held by the attempt      |
+| State           | Meaning                                                                                                                                                                                                                              | Usual fence result       |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------ |
+| `confirmed`     | The destination moved from the expected old commit to the candidate, and the readback was exact.                                                                                                                                     | released                 |
+| `failed`        | Rejected at the gate before any Git write, or abandoned by recovery. The approval stays consumed.                                                                                                                                    | released                 |
+| `indeterminate` | The write was admitted, but its effect is not proven: a lost compare-and-swap, an error, or a non-exact readback. With reason `not_dispatched`, the gate declined to write after a final authorization, destination or expiry check. | retained until `recover` |
+| `prepared`      | Reserved but not resolved: a precheck rejected it, or it was interrupted.                                                                                                                                                            | held by the attempt      |
 
 Check the returned `fence` field separately from the journal state. A confirmed or failed attempt can still have a retained fence when cleanup is uncertain.
 
@@ -71,10 +71,10 @@ A `failed` or `indeterminate` attempt cannot be retried, so get a new approval f
 
 ## Effects and limits
 
-- A confirmed promotion moves only the destination ref and appends a reflog entry `reprogate promotion <attemptId>`. Candidate preparation can leave unreachable objects. Source HEAD, index and worktree are not written.
+- A confirmed promotion moves only the destination ref and appends a reflog entry `reprogate promotion <attemptId>`. The gate creates the destination reflog even when automatic reflog creation is disabled. Candidate preparation can leave unreachable objects. Source HEAD, index and worktree are not written.
 - Each newly prepared candidate gets a Git keep file (`objects/pack/pack-<hash>.keep`) naming the attempt. The marker protects its pack through `git gc --prune=now` and `git repack -a -d`. ReproGate tries to remove it after resolution or release of an unreserved fence. A leftover marker retains that pack. Keep it in place while the attempt is `prepared`.
 - **Upgrading with a prepared attempt.** A candidate prepared before keep-file support can still be pruned after the upgrade. Finish the attempt with `resume` before running aggressive garbage collection or repacking. If the gate reports `Candidate commit <oid> is missing from the repository`, resuming requires restoring those exact objects. To abandon the attempt, confirm quiescence and use `recover`. A later promotion requires a new proposal and approval.
-- Expiry is checked at admission and again just before the ref write, which is not atomic with that check. Git and SQLite are not one atomic transaction.
+- The host reauthenticates the approval, plan, policy, trust and candidate under the dispatch writer lock. The approval must still be valid when the host admits the attempt and when it launches the Git ref write. A write launched in time can finish after expiry. If a queued attempt expires before launch, establish quiescence, recover the retained fence, and obtain a fresh approval before trying again. Git and SQLite are not one atomic transaction.
 - The claim is scoped to the Git ref, under trusted host configuration, ledger, process, key and clock, and cooperating fence ownership. See the [threat model](THREAT_MODEL.md#final-git-promotion-gate-boundary).
 - A resolved promotion can be exported as signed portable evidence and verified offline; see [Portable evidence](#portable-evidence).
 
@@ -95,7 +95,7 @@ node dist/src/cli.js git-review verify-evidence --bundle bundle.json --trust tru
 
 - The key is an unencrypted Ed25519 private key with the same file protections as an operator signing key.
 - It must not be an operator key.
-- Only an attempt with an outcome can be exported. An attempt still in flight is refused.
+- Export requires a resolved attempt. If the host clock is behind the recorded outcome time, retry once it reaches that time.
 
 **What the bundle holds:**
 
@@ -129,9 +129,10 @@ The patch itself is not included. `manifestDigest` is the SHA-256 of the manifes
 | `manifest_schema`  | Every record is strict, and the proposal, prepared objects, authority, admission and outcome bind together as the ledger requires.                                                                    |
 | `review_links`     | The review is the one the attempt reserved: an approval for this effect, valid at least until the admission deadline.                                                                                 |
 | `operator_review`  | The review authenticates under `trust.review` (operator and key enabled, audience, permission for this repository and ref) at the recorded reservation time and, if admitted, at the admission time.  |
+| `patch_digest`     | With `--patch`: the patch is the one the proposal names.                                                                                                                                              |
+| `repository`       | With `--repo`, a failure here means the verifier could not open the clone or set up its temporary object reader.                                                                                      |
 | `candidate_commit` | With `--repo`: the candidate commit's bytes hash to its OID and match the recorded digest, its tree is the staged tree and its only parent is the expected old commit.                                |
 | `staged_diff`      | With `--repo`: the diff of the base commit against the candidate tree, computed exactly as staging computes it, hashes to the digest the operator signed. It covers every path, mode and change kind. |
-| `patch_digest`     | With `--patch`: the patch is the one the proposal names.                                                                                                                                              |
 | `patch_applies`    | With `--patch` and `--repo`: applying the patch to the base commit reproduces the staged tree.                                                                                                        |
 
 **Results.** The command exits 0 only for `verified`.
@@ -150,3 +151,5 @@ What a `verified` result does not cover:
 - **Trust at the time.** Operator keys and permissions are checked against your current `trust.json`, not the trust in force at promotion.
 - **Revocation.** The bundle holds no revocation list; that the approval was unrevoked at admission is the host's attestation.
 - **Path privacy.** The proposal's workspace digests are unsalted SHA-256 hashes of absolute host paths, so they can confirm a guessed path.
+
+Review and evidence file readers require valid UTF-8 JSON with unique member names within each object. Names are compared after JSON escape decoding. Integrations passing decoded objects to library verification must enforce this rule when reading the original bytes.

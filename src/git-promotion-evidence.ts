@@ -99,6 +99,14 @@ export function exportGitPromotionEvidence(input: {
   if (gitOperatorReviewDigest(review.payload) !== status.attempt.reviewDigest)
     throw new Error("Review does not belong to this promotion attempt");
   const attempt = gitPromotionAttemptEvidence(status.attempt);
+  const exportedAt = (input.exportedAt ?? new Date()).toISOString();
+  if (
+    !timestampSchema.safeParse(exportedAt).success ||
+    Date.parse(exportedAt) < Date.parse(status.outcome.decidedAt)
+  )
+    throw new Error(
+      "Evidence export requires a valid time on or after the recorded outcome",
+    );
   const manifest: GitPromotionEvidenceManifestV1 = {
     manifestVersion: 1,
     attemptId: attempt.attemptId,
@@ -109,7 +117,7 @@ export function exportGitPromotionEvidence(input: {
     ...(status.admission === undefined ? {} : { admission: status.admission }),
     outcome: status.outcome,
     coverage: GIT_PROMOTION_EVIDENCE_COVERAGE,
-    exportedAt: (input.exportedAt ?? new Date()).toISOString(),
+    exportedAt,
     hostKeyId: gitOperatorKeyId(createPublicKey(signingKey)),
   };
   const manifestDigest = digestCanonical(manifest);
@@ -209,6 +217,8 @@ export interface GitPromotionEvidenceReport {
   outcome?: GitPromotionOutcomeV1["state"];
   checks: GitPromotionEvidenceCheck[];
 }
+
+type GitObjectReader = (args: string[], input?: Uint8Array) => Buffer;
 
 class CheckFailed extends Error {}
 
@@ -348,14 +358,15 @@ export function verifyGitPromotionEvidence(
         "patch_digest",
         sha256(options.patch) === attempt.proposal.patchDigest,
       );
-    if (options.repositoryPath === undefined) {
+    const repositoryPath = options.repositoryPath;
+    if (repositoryPath === undefined) {
       // A patch digest alone says nothing about the resulting commit.
       report.result = "unchecked_effect";
       return report;
     }
     const prepared = attempt.prepared;
     const patch = options.patch;
-    withBorrowedObjects(options.repositoryPath, (git) => {
+    const verifyObjects = (git: GitObjectReader): void => {
       attemptTo("candidate_commit", () => {
         const raw = git(["cat-file", "commit", prepared.candidateCommitOid]);
         const header = raw.toString("utf8").split("\n\n", 1)[0] ?? "";
@@ -409,6 +420,9 @@ export function verifyGitPromotionEvidence(
             throw new Error("Patch does not reproduce the staged tree");
           checks.push({ check: "patch_applies", ok: true });
         });
+    };
+    attemptTo("repository", () => {
+      withBorrowedObjects(repositoryPath, verifyObjects);
     });
     report.result = "verified";
     return report;
@@ -427,7 +441,7 @@ export function verifyGitPromotionEvidence(
  */
 function withBorrowedObjects(
   repositoryPath: string,
-  run: (git: (args: string[], input?: Uint8Array) => Buffer) => void,
+  run: (git: GitObjectReader) => void,
 ): void {
   const root = realpathSync.native(repositoryPath);
   const common = runGit([

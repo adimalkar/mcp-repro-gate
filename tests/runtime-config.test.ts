@@ -18,6 +18,7 @@ import { Ajv2020 } from "ajv/dist/2020.js";
 
 import { issueCapabilityToken } from "../src/capability-token.js";
 import { demoPolicy } from "../src/demo-config.js";
+import { StdioMcpConnector } from "../src/downstream.js";
 import { sha256File } from "../src/file-digest.js";
 import {
   createConfiguredRuntime,
@@ -352,4 +353,80 @@ test("runtime configuration rejects raw secrets and incomplete backends", async 
   missingBackend.backends = {};
   writeFileSync(fixture.configPath, JSON.stringify(missingBackend));
   assert.throws(() => loadRuntimeConfig(fixture.configPath), /missing backend/);
+});
+
+test("configured child environment has exactly the selected inheritance and mappings", async (t) => {
+  const fixture = await createFixture(t);
+  const state = join(fixture.artifactPath, "..");
+  const observation = join(state, "observed-env.json");
+  const safe = process.platform === "win32" ? "USERNAME" : "USER";
+  const sdkOnly = process.platform === "win32" ? "APPDATA" : "TERM";
+  const previous = process.env[sdkOnly];
+  process.env[sdkOnly] = "sdk-ambient-sentinel";
+  t.after(() => {
+    if (previous === undefined) Reflect.deleteProperty(process.env, sdkOnly);
+    else process.env[sdkOnly] = previous;
+  });
+  const wrapper = readFileSync(fixture.artifactPath, "utf8");
+  writeFileSync(
+    fixture.artifactPath,
+    `import { writeFileSync } from 'node:fs';\nwriteFileSync(${JSON.stringify(observation)},JSON.stringify([process.env[${JSON.stringify(safe)}] ?? null,process.env[${JSON.stringify(sdkOnly)}] ?? null,process.env.EXPLICIT]));\n${wrapper}`,
+  );
+  const digest = await sha256File(fixture.artifactPath);
+  const backend = fixture.config.backends.configured;
+  backend.artifact.digest = digest;
+  const catalog = fixture.config.catalog[0];
+  assert.ok(catalog);
+  catalog.artifactDigest = digest;
+  // Standalone library callers historically passed env as overrides on the
+  // SDK defaults. The runtime's resolved safe/none modes below are exact.
+  const standalone = new StdioMcpConnector({
+    fixture: {
+      command: process.execPath,
+      args: [fixture.artifactPath],
+      env: { EXPLICIT: "overlay" },
+    },
+  });
+  const inherited = await standalone.connect("fixture");
+  await inherited.close();
+  const overlay = JSON.parse(readFileSync(observation, "utf8")) as unknown[];
+  assert.deepEqual(overlay.slice(1), ["sdk-ambient-sentinel", "overlay"]);
+  const windows = process.platform === "win32";
+  for (const [inherit, override] of [
+    ["none", false],
+    ["safe", false],
+    ["none", true],
+  ] as const) {
+    const from: Record<string, string> = { EXPLICIT: "RG_SENTINEL" };
+    if (windows) from.SYSTEMROOT = "SYSTEMROOT";
+    if (override) from[windows ? "UserName" : safe] = "RG_OVERRIDE";
+    backend.environment = { inherit, from };
+    writeFileSync(fixture.configPath, JSON.stringify(fixture.config));
+    const runtime = await createConfiguredRuntime(fixture.configPath, {
+      ...environment(),
+      [safe]: "supplied-safe",
+      RG_SENTINEL: "mapped",
+      RG_OVERRIDE: "explicit-safe",
+    });
+    try {
+      const session = await runtime.executor.connector.connect(
+        "configured",
+        digest,
+      );
+      await session.close();
+      assert.deepEqual(JSON.parse(readFileSync(observation, "utf8")), [
+        override
+          ? "explicit-safe"
+          : inherit === "safe"
+            ? "supplied-safe"
+            : windows
+              ? ""
+              : null,
+        null,
+        "mapped",
+      ]);
+    } finally {
+      runtime.close();
+    }
+  }
 });

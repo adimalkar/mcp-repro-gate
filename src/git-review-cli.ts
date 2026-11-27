@@ -1,3 +1,4 @@
+import { parseUniqueJson } from "./unique-json.js";
 import {
   createPrivateKey,
   createPublicKey,
@@ -286,7 +287,9 @@ function approvalIdOption(options: Options): string {
 function readJsonFile(path: string, maxBytes: number, label: string): unknown {
   const bytes = readBoundedRegularFile(resolve(path), maxBytes, label);
   try {
-    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+    return parseUniqueJson(
+      new TextDecoder("utf-8", { fatal: true }).decode(bytes),
+    );
   } catch {
     // Parser diagnostics quote input; report only the failure class.
     throw new Error(`${label} is not valid UTF-8 JSON`);
@@ -809,18 +812,45 @@ function runCheck(options: Options, io: GitReviewCliIo): number {
 
 function runRevoke(options: Options, io: GitReviewCliIo): number {
   const approvalId = approvalIdOption(options);
-  // Ledger-only: no patch, proposal, staging, clean worktree or key needed.
+  // Neither version needs patch bytes, staging or a signing key.
   const session = new GitReviewSession(option(options, "config"), {
     requirePlanDatabase: false,
     requireApprovalDatabase: true,
   });
+  const revoke = (
+    operation: (approvals: SqliteGitApprovalStore) => boolean,
+  ) => {
+    const approvals = session.openApprovals();
+    try {
+      session.assertUnchanged();
+      return operation(approvals);
+    } finally {
+      approvals.close();
+    }
+  };
   let revoked: boolean;
-  const approvals = session.openApprovals();
-  try {
-    session.assertUnchanged();
-    revoked = approvals.revoke(approvalId);
-  } finally {
-    approvals.close();
+  if (session.version === 1) {
+    revoked = revoke((approvals) => approvals.revoke(approvalId));
+  } else {
+    const config = session.hostControl();
+    const control = createGitPromotionHostControl(config);
+    const attemptId = randomUUID();
+    try {
+      const owner = control.acquire(attemptId);
+      try {
+        revoked = revoke((approvals) =>
+          approvals.revokeGitApprovalUnderFence(approvalId, config, owner),
+        );
+      } finally {
+        // Revocation has no Git write or surviving child to quiesce.
+        control.release(owner, QUIESCENT);
+      }
+    } catch (error) {
+      throw new Error(
+        `Revocation attempt ${attemptId}: ${error instanceof Error ? error.message : "unknown error"}`,
+        { cause: error },
+      );
+    }
   }
   io.stdout(asciiJson({ revoked }));
   return revoked ? 0 : 1;
