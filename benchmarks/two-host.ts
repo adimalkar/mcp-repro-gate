@@ -1,4 +1,9 @@
-import { execFileSync, spawnSync } from "node:child_process";
+import {
+  execFileSync,
+  spawnSync,
+  type SpawnSyncOptionsWithStringEncoding,
+  type SpawnSyncReturns,
+} from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import {
   closeSync,
@@ -13,7 +18,8 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import ts from "typescript";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { Client } from "@modelcontextprotocol/client";
 import {
   getDefaultEnvironment,
@@ -31,6 +37,7 @@ import {
   GRAPH_TOOLS,
   object,
   type WireSample,
+  wireSampleSchema,
 } from "./two-host-wire.js";
 
 const project = "reprogate-two-host";
@@ -50,16 +57,25 @@ const forwardedEnv = [...GRAPH_ENV, "CAPABILITY", "RECEIPT"].map(
   (name) => ENV_PREFIX + name,
 );
 
-function jsonLines(text: string): Record<string, unknown>[] {
-  return text
-    .trim()
-    .split("\n")
-    .filter(Boolean)
-    .map((line) => object(JSON.parse(line)));
+function jsonLines(text: string) {
+  const events: Record<string, unknown>[] = [];
+  let malformed = false;
+  for (const line of text.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      const value: unknown = JSON.parse(line);
+      if (value === null || typeof value !== "object" || Array.isArray(value))
+        malformed = true;
+      else events.push(object(value));
+    } catch {
+      malformed = true;
+    }
+  }
+  return { events, malformed };
 }
 
-function parseHost(host: Host, output: string) {
-  const events = jsonLines(output).reverse();
+function parseHost(host: Host, events: Record<string, unknown>[]) {
+  events.reverse();
   if (host === "codex") {
     const complete = events.find((e) => e.type === "turn.completed");
     const items = events
@@ -141,14 +157,48 @@ function hostArgs(
   ];
 }
 
-function measure(
+// Ground truth is read once from the exported pinned corpus, independently
+// of the graph server and of any line ranges asserted by the host.
+export function pinnedDefinition(corpus: string, task: Task): string {
+  const file = ts.createSourceFile(
+    task.file,
+    readFileSync(join(corpus, task.file), "utf8"),
+    ts.ScriptTarget.Latest,
+  );
+  const definitions = file.statements
+    .filter(ts.isFunctionDeclaration)
+    .filter(
+      (node) =>
+        node.name?.text === task.symbol &&
+        node.body &&
+        node.modifiers?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword),
+    );
+  if (definitions.length !== 1 || !definitions[0])
+    throw new Error(
+      "Missing or ambiguous pinned definition for " + task.symbol,
+    );
+  return definitions[0].getText(file).replace(/\r\n/gu, "\n").trim();
+}
+
+export interface Trial {
+  host: Host;
+  model: string;
+  surface: Surface;
+  task: Task;
+}
+type StartHost = (
   host: Host,
-  model: string,
-  surface: Surface,
-  task: Task,
+  args: string[],
+  options: SpawnSyncOptionsWithStringEncoding,
+) => SpawnSyncReturns<string>;
+
+export function measure(
+  { host, model, surface, task }: Trial,
+  expectedSource: string,
   cwd: string,
   target: string[],
   env: NodeJS.ProcessEnv,
+  startHost: StartHost = spawnSync,
 ) {
   const log = join(cwd, "wire.jsonl");
   writeFileSync(log, "", { flag: "wx", mode: 0o600 });
@@ -161,14 +211,18 @@ function measure(
     "If a tool returns an absolute path, use its src/ suffix.",
   ].join("\n");
   const start = Date.now();
-  const run = spawnSync(host, args, { ...budget, cwd, input, env });
-  const result = parseHost(
-    host,
+  const run = startHost(host, args, { ...budget, cwd, input, env });
+  const hostOutput = jsonLines(
     typeof run.stdout === "string" ? run.stdout : "",
   );
-  const records = jsonLines(
-    readFileSync(log, "utf8"),
-  ) as unknown as WireSample[];
+  const result = parseHost(host, hostOutput.events);
+  const wire = jsonLines(readFileSync(log, "utf8"));
+  const records: WireSample[] = [];
+  for (const event of wire.events) {
+    const sample = wireSampleSchema.safeParse(event);
+    if (sample.success) records.push(sample.data);
+    else wire.malformed = true;
+  }
   const calls = records.filter((sample) => sample.method === "tools/call");
   const lists = records.filter((sample) => sample.method === "tools/list");
   const executed = GRAPH_TOOLS.every((tool) =>
@@ -188,12 +242,25 @@ function measure(
       // An answer outside the requested JSON format fails the fixture.
     }
   }
-  const complete = run.status === 0 && result.completed;
+  let failure: string | null = null;
+  if (run.error) {
+    const code = (run.error as NodeJS.ErrnoException).code;
+    failure =
+      code === "ETIMEDOUT"
+        ? "host_timeout"
+        : code === "ENOBUFS"
+          ? "host_output_limit"
+          : "host_unavailable";
+  } else if (run.signal) failure = "host_signal";
+  else if (run.status !== 0) failure = "host_exit";
+  else if (hostOutput.malformed) failure = "invalid_host_stream";
+  else if (wire.malformed) failure = "invalid_wire_stream";
+  else if (!result.completed) failure = "incomplete_turn";
+  const complete = failure === null;
   const answerCorrect =
     answer.path === task.file &&
     typeof answer.source === "string" &&
-    answer.source.includes(`function ${task.symbol}(`) &&
-    answer.source.includes(task.answer);
+    answer.source.replace(/\r\n/gu, "\n").trim() === expectedSource;
   const bytes = (samples: WireSample[]) =>
     samples.reduce((sum, sample) => sum + sample.bytes, 0);
   const usage = Object.fromEntries(
@@ -208,13 +275,18 @@ function measure(
     ),
   );
   return {
-    host,
-    model,
-    surface,
-    task: task.symbol,
     completed: complete,
     status: run.status,
-    processError: run.error?.name ?? null,
+    signal: run.signal,
+    failure:
+      failure ??
+      (result.shellUsed
+        ? "shell_used"
+        : !executed
+          ? "missing_tool_calls"
+          : !answerCorrect
+            ? "answer_mismatch"
+            : null),
     pass: complete && !result.shellUsed && executed && answerCorrect,
     answerCorrect,
     executed,
@@ -229,6 +301,83 @@ function measure(
     usage,
     calls,
   };
+}
+
+export function trialSchedule(
+  count: number,
+  codexModel: string,
+  claudeModel: string,
+) {
+  const trials: Trial[] = [];
+  for (const [index, task] of tasks.slice(0, count).entries()) {
+    for (const [host, model] of [
+      ["codex", codexModel],
+      ["claude", claudeModel],
+    ] as const) {
+      const order: Surface[] =
+        (index + Number(host === "claude")) % 2 === 0
+          ? ["direct", "facade"]
+          : ["facade", "direct"];
+      for (const surface of order) trials.push({ host, model, surface, task });
+    }
+  }
+  return trials;
+}
+
+type TrialRow = Omit<Trial, "task"> & { task: string } & (
+    | { state: "unattempted" | "started" }
+    | {
+        state: "failed";
+        pass: false;
+        failure: "trial_error" | "corpus_changed";
+      }
+    | (ReturnType<typeof measure> & { state: "passed" | "failed" })
+  );
+
+export function runTrials(
+  trials: Trial[],
+  observe: (trial: Trial) => ReturnType<typeof measure>,
+  verifyCorpus: () => void,
+  publish: (rows: TrialRow[]) => void,
+) {
+  const rows: TrialRow[] = trials.map((trial) => ({
+    ...trial,
+    task: trial.task.symbol,
+    state: "unattempted",
+  }));
+  publish(rows);
+  for (const [index, trial] of trials.entries()) {
+    const id = { ...trial, task: trial.task.symbol };
+    rows[index] = { ...id, state: "started" };
+    publish(rows);
+    try {
+      const run = observe(trial);
+      rows[index] = { ...id, ...run, state: run.pass ? "passed" : "failed" };
+    } catch {
+      rows[index] = {
+        ...id,
+        state: "failed",
+        pass: false,
+        failure: "trial_error",
+      };
+    }
+    try {
+      verifyCorpus();
+    } catch {
+      rows[index] = {
+        ...id,
+        state: "failed",
+        pass: false,
+        failure: "corpus_changed",
+      };
+      publish(rows);
+      throw new Error(
+        "Corpus verification failed; remaining trials are unattempted",
+      );
+    }
+    publish(rows);
+  }
+  return rows;
 }
 
 async function main() {
@@ -375,17 +524,32 @@ async function main() {
         env,
       ),
     );
+    const hostVersion = (host: Host) => {
+      try {
+        return command(host, ["--version"]);
+      } catch {
+        return null;
+      } // Each attempted invocation records its own failure.
+    };
     const versions = {
       graph: command(graphPath, ["--version"], graphEnv),
       graphDigest: backends.graph.artifact.digest,
-      codex: command("codex", ["--version"]),
-      claude: command("claude", ["--version"]),
+      codex: hostVersion("codex"),
+      claude: hostVersion("claude"),
       node: process.version,
       reprogate: command("git", ["-C", repo, "rev-parse", "HEAD"]),
     };
-    const runs: ReturnType<typeof measure>[] = [];
-    const report = { benchmarkVersion: 1, source, versions, runs };
-    const publish = () => {
+    const definitions = new Map(
+      tasks.map((task) => [task.symbol, pinnedDefinition(corpus, task)]),
+    );
+    const publish = (runs: TrialRow[]) => {
+      const report = {
+        benchmarkVersion: 2,
+        rubric: "exact-function-v2",
+        source,
+        versions,
+        runs,
+      };
       const next = outputPath + ".tmp";
       writeFileSync(next, JSON.stringify(report, null, 2) + "\n", {
         mode: 0o600,
@@ -393,72 +557,67 @@ async function main() {
       });
       renameSync(next, outputPath);
     };
-    publish();
-    for (const [index, task] of tasks.slice(0, Number(count)).entries()) {
-      for (const [host, model] of [
-        ["codex", codexModel],
-        ["claude", claudeModel],
-      ] as const) {
-        const order: Surface[] =
-          (index + Number(host === "claude")) % 2 === 0
-            ? ["direct", "facade"]
-            : ["facade", "direct"];
-        for (const surface of order) {
-          const cwd = join(scratch, task.symbol + "-" + host + "-" + surface);
-          mkdirSync(cwd);
-          const config = join(cwd, "runtime.json");
-          saveJson(config, {
-            configVersion: 1,
-            databasePath: join(cwd, "ledger.sqlite"),
-            catalog,
-            backends,
-            policy: {
-              version: 1,
-              defaults: {
-                local_read: "allow",
-                local_write: "deny",
-                process_exec: "deny",
-                network_read: "deny",
-                network_write: "deny",
-                credential_use: "deny",
-                destructive: "deny",
-              },
-              rules: [],
+    const runs = runTrials(
+      trialSchedule(Number(count), codexModel, claudeModel),
+      (trial) => {
+        const { task, host, surface } = trial;
+        const cwd = join(scratch, task.symbol + "-" + host + "-" + surface);
+        mkdirSync(cwd);
+        const config = join(cwd, "runtime.json");
+        saveJson(config, {
+          configVersion: 1,
+          databasePath: join(cwd, "ledger.sqlite"),
+          catalog,
+          backends,
+          policy: {
+            version: 1,
+            defaults: {
+              local_read: "allow",
+              local_write: "deny",
+              process_exec: "deny",
+              network_read: "deny",
+              network_write: "deny",
+              credential_use: "deny",
+              destructive: "deny",
             },
-            observer: {
-              kind: "filesystem_manifest",
-              roots: [observer],
-              maxEntries: 16,
-              maxBytes: 1024,
-            },
-            mediation: { effects: ["local_read"] },
-            secrets: {
-              capabilitySecretEnv: "REPROGATE_BENCH_CAPABILITY",
-              receiptSecretEnv: "REPROGATE_BENCH_RECEIPT",
-              receiptKeyId: "bench-v1",
-            },
-          });
-          const target =
-            surface === "direct"
-              ? [graphPath, "--ui=false"]
-              : [process.execPath, cli, "serve", "--config", config];
-          const run = measure(host, model, surface, task, cwd, target, env);
-          checkCorpus(corpus, manifest);
-          runs.push(run);
-          publish();
-          process.stderr.write(
-            `${host} ${task.symbol} ${surface}: ${run.pass ? "pass" : "failed"}; ${String(run.toolCallResponses)} calls, ${String(run.toolResultBytes)} bytes\n`,
-          );
-          if (!run.completed)
-            throw new Error(
-              `${host} did not complete the turn (status ${String(run.status)})`,
-            );
-        }
-      }
-    }
+            rules: [],
+          },
+          observer: {
+            kind: "filesystem_manifest",
+            roots: [observer],
+            maxEntries: 16,
+            maxBytes: 1024,
+          },
+          mediation: { effects: ["local_read"] },
+          secrets: {
+            capabilitySecretEnv: "REPROGATE_BENCH_CAPABILITY",
+            receiptSecretEnv: "REPROGATE_BENCH_RECEIPT",
+            receiptKeyId: "bench-v1",
+          },
+        });
+        const target =
+          surface === "direct"
+            ? [graphPath, "--ui=false"]
+            : [process.execPath, cli, "serve", "--config", config];
+        const expected = definitions.get(task.symbol);
+        if (!expected) throw new Error("Missing scoring fixture");
+        const run = measure(trial, expected, cwd, target, env);
+        process.stderr.write(
+          `${host} ${task.symbol} ${surface}: ${run.pass ? "pass" : "failed"}; ${String(run.toolCallResponses)} calls, ${String(run.toolResultBytes)} bytes\n`,
+        );
+        return run;
+      },
+      () => {
+        checkCorpus(corpus, manifest);
+      },
+      publish,
+    );
+    if (runs.some((run) => !("completed" in run) || !run.completed))
+      process.exitCode = 1;
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
 }
 
-await main();
+if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url)
+  await main();

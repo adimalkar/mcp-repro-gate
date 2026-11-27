@@ -1,3 +1,4 @@
+import { z } from "zod/v4";
 import { spawn } from "node:child_process";
 import { appendFileSync } from "node:fs";
 import { isAbsolute } from "node:path";
@@ -7,15 +8,24 @@ import { getDefaultEnvironment } from "@modelcontextprotocol/client/stdio";
 
 // A stdio relay for the benchmark. Store sizes and tool names only, never
 // arguments, source, credentials, or raw tool responses.
-export interface WireSample {
-  method: string;
-  tool?: string;
-  bytes: number;
-  error: boolean;
-  graphTool?: string;
-}
-
-export const GRAPH_TOOLS = ["search_graph", "get_code_snippet"];
+export const GRAPH_TOOLS = ["search_graph", "get_code_snippet"] as const;
+const FACADE_TOOLS = [
+  "catalog.search",
+  "catalog.describe",
+  "action.plan",
+  "action.inspect",
+  "policy.explain",
+  "action.execute",
+  "action.run",
+] as const;
+export const wireSampleSchema = z.strictObject({
+  method: z.enum(["tools/list", "tools/call"]),
+  tool: z.enum([...GRAPH_TOOLS, ...FACADE_TOOLS, "unlisted"]).optional(),
+  bytes: z.number().int().nonnegative(),
+  error: z.boolean(),
+  graphTool: z.enum(GRAPH_TOOLS).optional(),
+});
+export type WireSample = z.infer<typeof wireSampleSchema>;
 export const GRAPH_ENV = [
   "CBM_CACHE_DIR",
   "XDG_CONFIG_HOME",
@@ -34,9 +44,10 @@ function main() {
   const [log, surface, command, ...args] = process.argv.slice(2);
   if (!log || (surface !== "direct" && surface !== "facade") || !command)
     throw new Error("Missing relay arguments");
-  const allowed = surface === "direct" ? new Set(GRAPH_TOOLS) : undefined;
+  const allowed =
+    surface === "direct" ? new Set<string>(GRAPH_TOOLS) : undefined;
   const pending = new Map<unknown, Omit<WireSample, "bytes" | "error">>();
-  const plans = new Map<string, string>();
+  const plans = new Map<string, (typeof GRAPH_TOOLS)[number]>();
   const env = allowed
     ? {
         ...getDefaultEnvironment(),
@@ -101,7 +112,14 @@ function main() {
           : undefined;
       pending.set(message.id, {
         method,
-        ...(typeof tool === "string" ? { tool } : {}),
+        ...(typeof tool === "string"
+          ? {
+              tool:
+                [...GRAPH_TOOLS, ...FACADE_TOOLS].find(
+                  (name) => name === tool,
+                ) ?? "unlisted",
+            }
+          : {}),
         ...(graphTool ? { graphTool } : {}),
       });
     }
@@ -118,12 +136,20 @@ function main() {
       const payload = object(result.structuredContent);
       if (
         request.tool === "action.plan" &&
-        typeof payload.actionId === "string"
+        !("error" in message) &&
+        result.isError !== true
       ) {
-        const graphTool = GRAPH_TOOLS.find(
-          (tool) => "graph." + tool === payload.toolRef,
+        const full = payload.detail === "full";
+        const envelope = object(payload.envelope);
+        const identity = object(envelope.tool);
+        const actionId = full ? envelope.actionId : payload.actionId;
+        const graphTool = GRAPH_TOOLS.find((tool) =>
+          full
+            ? identity.serverRef === "graph" && identity.toolName === tool
+            : payload.toolRef === "graph." + tool,
         );
-        if (graphTool) plans.set(payload.actionId, graphTool);
+        if (typeof actionId === "string" && graphTool)
+          plans.set(actionId, graphTool);
       }
       if (
         request.method === "tools/list" &&
