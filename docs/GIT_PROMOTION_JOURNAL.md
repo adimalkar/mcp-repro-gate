@@ -1,6 +1,6 @@
 # Prepared Git promotion journal
 
-This library implements durable prepared-intent reservation (T1), the final promotion gate, and conservative recovery. Reservation consumes one linked signed approval for an already-installed candidate in the private connection owned by `SqliteGitApprovalStore`. A prepared record is not permission to dispatch a Git command or a receipt for a changed ref; only the final gate below dispatches. The host-only [promotion commands](GIT_PROMOTION.md) drive these APIs; portable signed receipts remain future work.
+This library implements durable prepared-intent reservation (T1), the final promotion gate, and conservative recovery. Reservation consumes one linked signed approval for an already-installed candidate in the private connection owned by `SqliteGitApprovalStore`. A prepared record is not permission to dispatch a Git command or a receipt for a changed ref; only the final gate below dispatches. The host-only promotion commands drive these APIs. For a resolved attempt, the host can export a signed bundle that a verifier checks offline. [Promotion commands and portable evidence](GIT_PROMOTION.md#portable-evidence)
 
 ## Reservation and retained evidence
 

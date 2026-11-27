@@ -95,7 +95,7 @@ node dist/src/cli.js git-review verify-evidence --bundle bundle.json --trust tru
 
 - The key is an unencrypted Ed25519 private key with the same file protections as an operator signing key.
 - It must not be an operator key.
-- Only an attempt with an outcome can be exported. An attempt still in flight is refused.
+- Export requires a resolved attempt. If the host clock is behind the recorded outcome time, retry once it reaches that time.
 
 **What the bundle holds:**
 
@@ -129,9 +129,10 @@ The patch itself is not included. `manifestDigest` is the SHA-256 of the manifes
 | `manifest_schema`  | Every record is strict, and the proposal, prepared objects, authority, admission and outcome bind together as the ledger requires.                                                                    |
 | `review_links`     | The review is the one the attempt reserved: an approval for this effect, valid at least until the admission deadline.                                                                                 |
 | `operator_review`  | The review authenticates under `trust.review` (operator and key enabled, audience, permission for this repository and ref) at the recorded reservation time and, if admitted, at the admission time.  |
+| `patch_digest`     | With `--patch`: the patch is the one the proposal names.                                                                                                                                              |
+| `repository`       | With `--repo`, a failure here means the verifier could not open the clone or set up its temporary object reader.                                                                                      |
 | `candidate_commit` | With `--repo`: the candidate commit's bytes hash to its OID and match the recorded digest, its tree is the staged tree and its only parent is the expected old commit.                                |
 | `staged_diff`      | With `--repo`: the diff of the base commit against the candidate tree, computed exactly as staging computes it, hashes to the digest the operator signed. It covers every path, mode and change kind. |
-| `patch_digest`     | With `--patch`: the patch is the one the proposal names.                                                                                                                                              |
 | `patch_applies`    | With `--patch` and `--repo`: applying the patch to the base commit reproduces the staged tree.                                                                                                        |
 
 **Results.** The command exits 0 only for `verified`.

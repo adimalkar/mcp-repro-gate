@@ -21,6 +21,7 @@ import {
   type GitOperatorReviewPayloadV1,
 } from "../src/git-operator-review.js";
 import {
+  exportGitPromotionEvidence,
   verifyGitPromotionEvidence,
   type GitPromotionEvidenceReport,
 } from "../src/git-promotion-evidence.js";
@@ -484,6 +485,44 @@ test("trust decides which operators and hosts count", (t) => {
   );
 });
 
+test("evidence export rejects a clock behind the recorded outcome", (t) => {
+  const s = setup(t);
+  const attemptId = promote(s);
+  const status = s.f.store.getGitPromotionStatus(attemptId);
+  const review = s.f.store.getGitPromotionReview(attemptId);
+  assert.ok(status?.outcome && review);
+  const decidedAt = new Date(status.outcome.decidedAt);
+  const input = { status, review, signingKey: s.host.privateKey };
+  assert.throws(
+    () =>
+      exportGitPromotionEvidence({
+        ...input,
+        exportedAt: new Date(decidedAt.getTime() - 1),
+      }),
+    /on or after the recorded outcome/u,
+  );
+  const bundle = exportGitPromotionEvidence({
+    ...input,
+    exportedAt: decidedAt,
+  });
+  assert.equal(verify(s, bundle).result, "unchecked_effect");
+
+  t.mock.timers.enable({ apis: ["Date"], now: decidedAt.getTime() - 1 });
+  const command = [
+    "export-evidence",
+    "--config",
+    s.configPath,
+    "--attempt-id",
+    attemptId,
+  ];
+  const early = cli(command);
+  assert.equal(early.code, 1);
+  assert.equal(early.stdout, "");
+  assert.match(early.stderr, /on or after the recorded outcome/u);
+  t.mock.timers.setTime(decidedAt.getTime());
+  assert.equal(cli(command).code, 0);
+});
+
 test("the effect check needs the real objects and the right patch", (t) => {
   const s = setup(t);
   const bundle = exportBundle(s, promote(s));
@@ -491,6 +530,24 @@ test("the effect check needs the real objects and the right patch", (t) => {
   t.after(() => {
     rmSync(empty, { recursive: true, force: true });
   });
+  const bundlePath = join(s.f.scratch, "bundle.json");
+  writeFileSync(bundlePath, JSON.stringify(bundle));
+  for (const path of [join(empty, "missing"), empty]) {
+    const report = verify(s, bundle, { repositoryPath: path });
+    assert.equal(failedAt(report), "repository");
+    const result = cli([
+      "verify-evidence",
+      "--bundle",
+      bundlePath,
+      "--trust",
+      s.trustPath,
+      "--repo",
+      path,
+    ]);
+    assert.equal(result.code, 1);
+    assert.equal(result.stderr, "");
+    assert.deepEqual(JSON.parse(result.stdout), report);
+  }
   git(empty, "init", "--quiet");
   assert.equal(
     failedAt(verify(s, bundle, { repositoryPath: empty })),
