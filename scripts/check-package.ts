@@ -7,33 +7,47 @@ import {
   mkdtempSync,
   readdirSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 const npm = process.env.npm_execpath;
 if (!npm) throw new Error("Run the package check with npm run pack:check");
+const archivePath = process.argv[2];
+if (process.argv.length > 3)
+  throw new Error("Usage: npm run pack:check -- [package.tgz]");
 const root = mkdtempSync(join(tmpdir(), "reprogate-package-"));
 try {
   const consumer = join(root, "consumer");
   mkdirSync(consumer);
-  execFileSync(process.execPath, [
-    npm,
-    "pack",
-    "--ignore-scripts",
-    "--silent",
-    "--pack-destination",
-    root,
-  ]);
-  const tarballs = readdirSync(root).filter((name) => name.endsWith(".tgz"));
-  assert.equal(
-    tarballs.length,
-    1,
-    "npm pack must produce one installable tarball",
-  );
-  const [filename] = tarballs;
-  assert.ok(filename);
+  let archive: string;
+  if (archivePath === undefined) {
+    execFileSync(process.execPath, [
+      npm,
+      "pack",
+      "--ignore-scripts",
+      "--silent",
+      "--pack-destination",
+      root,
+    ]);
+    const tarballs = readdirSync(root).filter((name) => name.endsWith(".tgz"));
+    assert.equal(
+      tarballs.length,
+      1,
+      "npm pack must produce one installable tarball",
+    );
+    const [filename] = tarballs;
+    assert.ok(filename);
+    archive = join(root, filename);
+  } else {
+    archive = resolve(archivePath);
+    assert.ok(
+      archive.endsWith(".tgz") && statSync(archive).isFile(),
+      "Expected an npm tarball",
+    );
+  }
   writeFileSync(
     join(consumer, "package.json"),
     JSON.stringify({
@@ -53,7 +67,7 @@ try {
     "--prefer-offline",
     "--no-fund",
     "--no-audit",
-    join(root, filename),
+    archive,
   );
   accessSync(
     join(

@@ -49,6 +49,9 @@ jobs:
       - name: Build package archive
         run: npm pack
 
+      - name: Verify the release archive in a fresh consumer
+        run: npm run pack:check -- mcp-repro-gate-*.tgz
+
       - name: Attest package provenance
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
         with:
