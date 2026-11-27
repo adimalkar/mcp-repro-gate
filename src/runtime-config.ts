@@ -189,9 +189,20 @@ function resolveBackendEnvironment(
   config: RuntimeConfigV1["backends"][string]["environment"],
   source: NodeJS.ProcessEnv,
 ): Record<string, string> {
-  const result = config.inherit === "safe" ? safeEnvironment(source) : {};
+  // Windows process.env folds case, but callers may pass a plain-object copy
+  // (for example { ...process.env } preserves the spelling "SystemRoot").
+  const windows = process.platform === "win32";
+  const available = windows
+    ? Object.fromEntries(
+        Object.entries(source).map(([key, value]) => [
+          key.toUpperCase(),
+          value,
+        ]),
+      )
+    : source;
+  const result = config.inherit === "safe" ? safeEnvironment(available) : {};
   for (const [targetName, sourceName] of Object.entries(config.from)) {
-    const value = source[sourceName];
+    const value = available[windows ? sourceName.toUpperCase() : sourceName];
     if (value === undefined) {
       throw new Error(
         `Backend environment source ${sourceName} for ${targetName} is not set`,
