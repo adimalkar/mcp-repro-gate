@@ -110,6 +110,12 @@ node dist/src/cli.js approve --config /absolute/path/reprogate.json '<action-id>
 node dist/src/cli.js verify-receipt --config /absolute/path/reprogate.json ./receipt.json
 ```
 
+`verify-receipt` checks an HMAC with the receipt secret, so whoever can verify a receipt can also sign one. A valid receipt shows that it has not changed since a holder of that secret signed it. Its `observedEffects` digests cover only the observer's configured roots, before and after the call; they do not prove that the call's effects stayed in scope.
+
+### Several processes on one database
+
+Several `serve` processes, for example one per agent host, can share one `databasePath`. Each capability still runs at most once. A process that begins an execution owns it under a lease that it renews every 10 seconds while the call is running, and which lapses 30 seconds after the last renewal. At startup, `serve` records as `indeterminate` only the executions whose owner's lease has lapsed. Others stay `prepared` and are reported on stderr as owned by another live process. A crashed process's executions are recovered by the first startup after its lease lapses. Keep the database on a local filesystem: SQLite locking is not reliable over network filesystems, and leases compare wall clocks.
+
 ## Host-mediated execution
 
 Most actions need a person to approve them out of band, and the model passes the resulting capability token to `action.execute`. For read-only tools that your policy already decides `allow`, add an optional `mediation` section instead:
