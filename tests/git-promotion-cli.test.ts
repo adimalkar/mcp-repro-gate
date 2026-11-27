@@ -4,6 +4,7 @@ import { execFile, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import test, { type TestContext } from "node:test";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
@@ -129,7 +130,14 @@ test("V2 revocation respects the repository fence before reservation", (t) => {
     "--approval-id",
     s.f.approval.approvalId,
   ];
+  const sql = t.mock.method(DatabaseSync.prototype, "exec");
   const busy = cli(args);
+  assert.equal(
+    sql.mock.callCount(),
+    0,
+    "a busy V2 fence prevents opening the approval store",
+  );
+  sql.mock.restore();
   assert.equal(busy.code, 1);
   assert.match(busy.stderr, /fence is held/u);
   assert.deepEqual(s.f.control.query(), { status: "held", owner: s.f.owner });
