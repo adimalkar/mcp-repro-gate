@@ -212,6 +212,33 @@ test("a deadline passed after admission is not dispatched", (t) => {
   assert.equal(recover(f).fence, "released");
 });
 
+test("an update launched before expiry can complete after the deadline", (t) => {
+  const f = fixture(t);
+  reserve(f);
+  const deadline = Date.parse(f.approval.expiresAt);
+  const spawn = childProcess.spawnSync;
+  childProcess.spawnSync = ((command: string, args: string[], options) => {
+    if (args.includes("update-ref")) {
+      assert.ok(Date.now() < deadline);
+      t.mock.method(Date, "now", () => deadline + 1);
+    }
+    return spawn(command, args, options);
+  }) as typeof childProcess.spawnSync;
+  syncBuiltinESMExports();
+  try {
+    const result = promote(f);
+    assert.equal(result.status.state, "confirmed");
+    assert.equal(
+      Date.parse(result.status.outcome?.decidedAt ?? ""),
+      deadline + 1,
+    );
+    assert.equal(target(f), f.prepared.candidateCommitOid);
+  } finally {
+    childProcess.spawnSync = spawn;
+    syncBuiltinESMExports();
+  }
+});
+
 test("a destination checked out after admission is not dispatched", (t) => {
   const f = fixture(t);
   reserve(f);
