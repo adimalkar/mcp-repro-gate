@@ -143,6 +143,51 @@ test("an outcome recorded while the promoter stalled prevents dispatch", (t) => 
   assert.equal(status(f)?.outcome?.reason, "interrupted");
 });
 
+for (const change of ["policy", "operator trust"] as const) {
+  test(`dispatch reauthenticates changed ${change} after durable admission`, (t) => {
+    const f = fixture(t);
+    reserve(f);
+    hooks(t, {
+      afterAdmission: () => {
+        if (change === "policy")
+          f.context.currentPolicy.defaults.local_write = "deny";
+        else f.trust.operators = [];
+      },
+    });
+    const result = promote(f);
+    assert.equal(result.status.state, "indeterminate");
+    assert.equal(result.status.outcome?.reason, "not_dispatched");
+    assert.ok(result.status.admission);
+    assert.equal(target(f), f.prepared.expectedOldOid);
+    assert.equal(result.fence, "retained");
+    assert.throws(() => promote(f), /admitted or resolved/u);
+  });
+}
+
+test("the SQLite writer excludes a competing writer during the dispatch authorization check", (t) => {
+  const f = fixture(t);
+  reserve(f);
+  let checked = false;
+  const result = promote(f, {
+    context: {
+      ...f.context,
+      plans: observingPlans(f.plans, (n) => {
+        if (n === 3) {
+          raw(f, (db) => {
+            db.exec("PRAGMA busy_timeout = 0");
+            assert.throws(() => {
+              db.exec("BEGIN IMMEDIATE");
+            }, /locked/u);
+          });
+          checked = true;
+        }
+      }),
+    },
+  });
+  assert.ok(checked);
+  assert.equal(result.status.state, "confirmed");
+});
+
 test("a deadline passed after admission is not dispatched", (t) => {
   const f = fixture(t);
   reserve(f);

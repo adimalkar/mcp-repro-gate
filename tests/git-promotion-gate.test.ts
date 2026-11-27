@@ -225,9 +225,9 @@ test("a lost compare-and-swap after admission is indeterminate and keeps the fen
   const result = promote(f, {
     context: {
       ...f.context,
-      // After the locked workspace observation, before update-ref.
+      // The third observation runs inside the writer transaction that also runs update-ref.
       plans: observingPlans(f.plans, (n) => {
-        if (n === 2) git(f.root, "update-ref", "refs/heads/target", moved);
+        if (n === 3) git(f.root, "update-ref", "refs/heads/target", moved);
       }),
     },
   });
@@ -259,7 +259,7 @@ test("a destination already at the candidate without our dispatch is never confi
       // Another writer moves the ref to the candidate first; our expected-old
       // compare-and-swap then fails. Present-ref equality is not evidence.
       plans: observingPlans(f.plans, (n) => {
-        if (n === 2)
+        if (n === 3)
           git(
             f.root,
             "update-ref",

@@ -437,8 +437,7 @@ export const GIT_PROMOTION_FAILED_REASONS = [
 /**
  * An admitted attempt that did not end confirmed: a dispatched or possibly
  * dispatched write whose effect is not proven, or (not_dispatched) one the
- * gate admitted but then declined to write because the deadline passed or
- * the destination was checked out before dispatch.
+ * gate admitted but then declined to write at the final dispatch check.
  */
 export const GIT_PROMOTION_INDETERMINATE_REASONS = [
   "dispatch_uncertain",

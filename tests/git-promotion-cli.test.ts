@@ -120,6 +120,45 @@ test("promote confirms, status reads it back, and a second promote releases its 
   assert.equal(s.f.control.query().status, "available");
 });
 
+test("V2 revocation respects the repository fence before reservation", (t) => {
+  const s = setup(t);
+  const args = [
+    "revoke",
+    "--config",
+    s.configPath,
+    "--approval-id",
+    s.f.approval.approvalId,
+  ];
+  const busy = cli(args);
+  assert.equal(busy.code, 1);
+  assert.match(busy.stderr, /fence is held/u);
+  assert.deepEqual(s.f.control.query(), { status: "held", owner: s.f.owner });
+  releaseFixtureFence(s.f);
+  writeFileSync(join(s.f.root, "value.txt"), "uncommitted work\n");
+  const revoked = cli(args);
+  assert.equal(revoked.code, 0, revoked.stderr);
+  assert.equal(json(revoked.stdout).revoked, true);
+  const again = cli(args);
+  assert.equal(again.code, 1, again.stderr);
+  assert.equal(json(again.stdout).revoked, false);
+  assert.equal(s.f.control.query().status, "available");
+});
+
+test("fenced revocation requires the owner's ledger connection", (t) => {
+  const a = setup(t);
+  const b = setup(t);
+  assert.throws(
+    () =>
+      a.f.store.revokeGitApprovalUnderFence(
+        a.f.approval.approvalId,
+        b.f.hostControl,
+        b.f.owner,
+      ),
+    /bound absolute disk ledger/u,
+  );
+  reserve(a.f);
+});
+
 test("a version 1 config cannot promote or read promotion status", (t) => {
   const s = setup(t, 1);
   releaseFixtureFence(s.f);

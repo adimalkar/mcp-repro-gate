@@ -812,7 +812,7 @@ function runCheck(options: Options, io: GitReviewCliIo): number {
 
 function runRevoke(options: Options, io: GitReviewCliIo): number {
   const approvalId = approvalIdOption(options);
-  // Ledger-only: no patch, proposal, staging, clean worktree or key needed.
+  // Neither version needs patch bytes, staging or a signing key.
   const session = new GitReviewSession(option(options, "config"), {
     requirePlanDatabase: false,
     requireApprovalDatabase: true,
@@ -820,8 +820,33 @@ function runRevoke(options: Options, io: GitReviewCliIo): number {
   let revoked: boolean;
   const approvals = session.openApprovals();
   try {
-    session.assertUnchanged();
-    revoked = approvals.revoke(approvalId);
+    if (session.version === 1) {
+      session.assertUnchanged();
+      revoked = approvals.revoke(approvalId);
+    } else {
+      const config = session.hostControl();
+      const control = createGitPromotionHostControl(config);
+      const attemptId = randomUUID();
+      try {
+        const owner = control.acquire(attemptId);
+        try {
+          session.assertUnchanged();
+          revoked = approvals.revokeGitApprovalUnderFence(
+            approvalId,
+            config,
+            owner,
+          );
+        } finally {
+          // Revocation has no Git write or surviving child to quiesce.
+          control.release(owner, QUIESCENT);
+        }
+      } catch (error) {
+        throw new Error(
+          `Revocation attempt ${attemptId}: ${error instanceof Error ? error.message : "unknown error"}`,
+          { cause: error },
+        );
+      }
+    }
   } finally {
     approvals.close();
   }

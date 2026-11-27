@@ -2,6 +2,8 @@
 
 Status: proposed implementation. This is the second half of Task 3 in the [journaled promotion plan](../plans/journaled-git-promotion.md), tracked by issue #21. Reservation (#23) durably consumes one linked signed approval as a `prepared` attempt. Nothing yet moves the destination ref, records an outcome, or recovers an interrupted attempt. The promotion CLI (Task 4) is a separate later slice.
 
+The current dispatch protocol and expiry decision are recorded in [ADR 0004](../adr/0004-promotion-dispatch.md).
+
 ## Problem
 
 A `prepared` record says that an approval is consumed. It does not say whether a ref update was ever dispatched. If the gate dispatched `update-ref` and its process died, a later call could not tell "never dispatched" from "dispatched, outcome unknown". A retry would then observe the moved ref as drift and record a false `failed` outcome, or update the ref twice. The gate therefore needs a durable admission record that is committed **before** any Git write.
