@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -20,7 +21,10 @@ import {
   trialSchedule,
   type Trial,
 } from "../benchmarks/two-host.js";
-import { wireSampleSchema } from "../benchmarks/two-host-wire.js";
+import {
+  wireCallFailed,
+  wireSampleSchema,
+} from "../benchmarks/two-host-wire.js";
 
 function scratch(t: TestContext) {
   const path = mkdtempSync(join(tmpdir(), "reprogate-two-host-test-"));
@@ -172,7 +176,81 @@ test("a changed corpus invalidates the current trial and leaves later trials una
     (JSON.parse(snapshot) as { state: string }[]).map((r) => r.state),
     ["failed", "unattempted", "unattempted", "unattempted"],
   );
-  assert.match(snapshot, /corpus_changed/u);
+  const [invalid] = JSON.parse(snapshot) as {
+    pass: boolean;
+    failure: string;
+    toolResultBytes: number;
+    usage: { input_tokens: number };
+  }[];
+  assert.equal(invalid?.failure, "corpus_changed");
+  assert.equal(invalid.pass, false);
+  assert.equal(invalid.toolResultBytes, 74);
+  assert.equal(invalid.usage.input_tokens, 7);
+});
+
+test("a timed-out host records a bounded failure", (t) => {
+  const [trial] = trialSchedule(1, "a", "b");
+  assert.ok(trial);
+  const row = measure(
+    trial,
+    source,
+    scratch(t),
+    [],
+    process.env,
+    (_host, _args, options) => {
+      assert.equal(options.killSignal, "SIGKILL");
+      return spawnSync(
+        process.execPath,
+        ["-e", "process.on('SIGTERM', () => {}); setTimeout(() => {}, 2000)"],
+        { ...options, timeout: 200 },
+      );
+    },
+  );
+  assert.equal(row.failure, "host_timeout");
+  assert.equal(row.completed, false);
+  assert.equal(row.pass, false);
+});
+
+test("a graph setup failure leaves the report name available", (t) => {
+  const dir = scratch(t);
+  const report = join(dir, "result.json");
+  const runner = fileURLToPath(
+    new URL("../benchmarks/two-host.js", import.meta.url),
+  );
+  const result = spawnSync(process.execPath, [
+    runner,
+    join(dir, "missing-graph"),
+    report,
+    "a",
+    "b",
+    "1",
+  ]);
+  assert.notEqual(result.status, 0);
+  assert.equal(existsSync(report), false);
+});
+
+test("the wire recorder counts graph application errors on both surfaces", () => {
+  const direct = { tool: "search_graph" } as const;
+  const facade = { tool: "action.run", graphTool: "search_graph" } as const;
+  const issue = { error: "index unavailable" };
+  const text = [{ type: "text", text: JSON.stringify(issue) }];
+  assert.equal(
+    wireCallFailed(direct, { result: { structuredContent: issue } }),
+    true,
+  );
+  assert.equal(wireCallFailed(direct, { result: { content: text } }), true);
+  assert.equal(
+    wireCallFailed(facade, {
+      result: { structuredContent: { outcome: "succeeded", content: text } },
+    }),
+    true,
+  );
+  assert.equal(
+    wireCallFailed(direct, {
+      result: { content: [{ type: "text", text: '{"results":[]}' }] },
+    }),
+    false,
+  );
 });
 
 test(

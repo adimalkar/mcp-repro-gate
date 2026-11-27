@@ -7,6 +7,7 @@ import {
 import { createHash, randomBytes } from "node:crypto";
 import {
   closeSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   openSync,
@@ -211,7 +212,15 @@ export function measure(
     "If a tool returns an absolute path, use its src/ suffix.",
   ].join("\n");
   const start = Date.now();
-  const run = startHost(host, args, { ...budget, cwd, input, env });
+  // spawnSync waits for exit after its timeout signal. A host which handles
+  // SIGTERM can otherwise prevent every remaining row from being recorded.
+  const run = startHost(host, args, {
+    ...budget,
+    killSignal: "SIGKILL",
+    cwd,
+    input,
+    env,
+  });
   const hostOutput = jsonLines(
     typeof run.stdout === "string" ? run.stdout : "",
   );
@@ -365,6 +374,7 @@ export function runTrials(
       verifyCorpus();
     } catch {
       rows[index] = {
+        ...rows[index],
         ...id,
         state: "failed",
         pass: false,
@@ -395,8 +405,8 @@ async function main() {
     );
   }
   const outputPath = resolve(output);
-  // Reserve the report name before starting paid host calls.
-  closeSync(openSync(outputPath, "wx", 0o600));
+  if (existsSync(outputPath))
+    throw new Error("Benchmark report already exists; choose a fresh filename");
   const graphPath = realpathSync(graph);
   const scratch = realpathSync(
     mkdtempSync(join(tmpdir(), "reprogate-two-host-")),
@@ -557,6 +567,8 @@ async function main() {
       });
       renameSync(next, outputPath);
     };
+    // Reserve only after setup succeeds, before the first paid invocation.
+    closeSync(openSync(outputPath, "wx", 0o600));
     const runs = runTrials(
       trialSchedule(Number(count), codexModel, claudeModel),
       (trial) => {

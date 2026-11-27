@@ -40,6 +40,38 @@ export function object(value: unknown): Record<string, unknown> {
     : {};
 }
 
+/** The pinned graph can return an application error in a successful MCP envelope. */
+export function wireCallFailed(
+  request: Pick<WireSample, "tool" | "graphTool">,
+  message: Record<string, unknown>,
+): boolean {
+  const result = object(message.result);
+  const payload = object(result.structuredContent);
+  if ("error" in message || result.isError === true) return true;
+  if (request.tool === "action.run" && payload.outcome !== "succeeded")
+    return true;
+  const mediated =
+    request.tool === "action.run" && request.graphTool !== undefined;
+  if (!mediated && !GRAPH_TOOLS.some((tool) => tool === request.tool))
+    return false;
+  if ("error" in payload) return true;
+  // Direct replies may be text-only. action.run puts the bounded downstream
+  // text inside structuredContent.content, after its own successful receipt.
+  const content = mediated ? payload.content : result.content;
+  return (
+    Array.isArray(content) &&
+    content.some((item: unknown) => {
+      const block = object(item);
+      if (block.type !== "text" || typeof block.text !== "string") return false;
+      try {
+        return "error" in object(JSON.parse(block.text));
+      } catch {
+        return false;
+      }
+    })
+  );
+}
+
 function main() {
   const [log, surface, command, ...args] = process.argv.slice(2);
   if (!log || (surface !== "direct" && surface !== "facade") || !command)
@@ -174,10 +206,7 @@ function main() {
         bytes: Buffer.byteLength(
           JSON.stringify(message.result ?? message.error ?? null),
         ),
-        error:
-          "error" in message ||
-          result.isError === true ||
-          (request.tool === "action.run" && payload.outcome !== "succeeded"),
+        error: wireCallFailed(request, message),
       };
       record(sample);
     }

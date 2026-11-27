@@ -54,7 +54,7 @@ node dist/src/cli.js bench facade          # table
 node dist/src/cli.js bench facade --json   # machine-readable report
 ```
 
-The harness runs fixed operations through a real in-memory MCP client against a ReproGate server, using a published synthetic catalog of 14 code-graph-shaped tools (`src/benchmark.ts`, fixture v3). It counts UTF-8 bytes of what a host receives. For tool calls, that is the text content, `structuredContent` and `isError`, on both the measured and the baseline side. Every call must succeed; a failed call stops the run instead of being measured.
+The harness runs fixed operations through a real in-memory MCP client against a ReproGate server, using a published synthetic catalog of 14 code-graph-shaped tools (`src/benchmark.ts`, fixture v4). It counts UTF-8 bytes of what a host receives. For tool calls, that is the text content, `structuredContent` and `isError`, on both the measured and the baseline side. Every call must succeed; a failed call stops the run instead of being measured.
 
 ### Context cost
 
@@ -62,7 +62,7 @@ A host first loads tool definitions, then spends calls finding a tool:
 
 | Item                               | Bytes |
 | ---------------------------------- | ----: |
-| façade tool list                   |  9990 |
+| façade tool list                   | 10059 |
 | direct tool list                   |  4964 |
 | finding a tool (search + describe) |  2122 |
 | average downstream tool definition |   355 |
@@ -78,7 +78,7 @@ The façade's own tool list is about twice the 14 downstream definitions it repl
 
 | Tool result             | Measured                               | Baseline                            | Measured B | Baseline B | Reduction | Truncated |
 | ----------------------- | -------------------------------------- | ----------------------------------- | ---------: | ---------: | --------: | --------- |
-| planning                | `action.plan`, compact default         | `action.plan` with `detail: "full"` |        800 |       2752 |     70.9% | no        |
+| planning                | `action.plan`, compact default         | `action.plan` with `detail: "full"` |        774 |       2726 |     71.6% | no        |
 | execution, large result | `action.run`, default 16384-byte limit | the unredacted downstream result    |      35420 |      51660 |     31.4% | yes       |
 | execution, small result | `action.run`, default limit            | the unredacted downstream result    |        568 |        100 |   -468.0% | no        |
 
@@ -95,6 +95,8 @@ The façade's own tool list is about twice the 14 downstream definitions it repl
 - **Not measured here:** multi-call workflows, call counts, completion rate, and the roadmap's code-discovery-versus-grep and research-versus-HTML comparisons.
 
 ### History
+
+- **v3 to v4:** the live mediation route gives this read-only plan the next step `run`. Compact planning measures 774 bytes and full planning measures 2726 bytes. The façade tool list measures 10059 bytes with the current tool definitions.
 
 - **v2 to v3:** compact `action.run` summaries (digests opt-in), downstream text sent unescaped instead of inside a JSON-escaped mirror, and compact JSON text mirrors.
   - Small result: from 1032 to 568 bytes.
@@ -114,9 +116,9 @@ npm run bench:two-host -- \
   .agent/benchmark-runs/two-host.json gpt-6.2-sol sonnet
 ```
 
-The command requires authenticated local host CLIs and makes 12 live model calls, one per task, host, and connection. Append `1` for a four-call smoke run. Pick a fresh output filename. After graph setup, the runner writes the planned rows to the report, checkpoints each one as `started` before invoking a host and records its final `passed` or `failed` state. If interrupted, subsequent rows remain `unattempted`. Host exits, malformed streams and timeouts are recorded as failed trials with a bounded diagnostic code. The matrix continues through the other trials. An incomplete turn makes the final command exit nonzero. A changed corpus stops the matrix immediately. The report contains host versions, model selectors, the graph binary digest, the pinned source identity, and per-call measurements. Tool arguments, transcripts, and credentials are omitted.
+The command requires authenticated local host CLIs and launches 12 live host sessions, one per task, host, and connection. Each session can make several model requests. Append `1` for a four-session smoke run. Pick a fresh output filename. After graph setup, the runner writes the planned rows to the report, checkpoints each one as `started` before invoking a host and records its final `passed` or `failed` state. If interrupted, subsequent rows remain `unattempted`. Host exits, malformed streams and timeouts are recorded as failed trials with a bounded diagnostic code. The matrix continues through the other trials. An incomplete turn makes the final command exit nonzero. A changed corpus invalidates the current score and stops the matrix. The report retains the wire measurements and usage already observed for that trial. The report contains host versions, model selectors, the graph binary digest, the pinned source identity, and per-call measurements. Tool arguments, transcripts, and credentials are omitted.
 
-- **Task pass** in benchmark version 2 requires a completed turn, the exact repository-relative path, the complete exported function declaration from the pinned TypeScript source, successful calls to both graph tools, and no shell use. The `exact-function-v2` rubric normalizes CRLF and surrounding whitespace. An omitted line, changed statement or appended definition fails. Compact and full-detail plans both link their action ID to the graph tool used by each execution.
+- **Task pass** in benchmark version 2 requires a completed turn, the exact repository-relative path, the complete exported function declaration from the pinned TypeScript source, successful calls to both graph tools, and no shell use. The `exact-function-v2` rubric normalizes CRLF and surrounding whitespace. An omitted line, changed statement or appended definition fails. Compact and full-detail plans both link their action ID to the graph tool used by each execution. A graph error returned inside an MCP result counts as a failed call on either connection.
 - **MCP bytes** count the JSON result payload of each completed call. The report also counts tool listing bytes separately. A host can request the list more than once. The wire measurement includes both text and structured fields when present.
 - **Host usage** shows the whole-turn input, output and cache counts that each CLI reports. The pilot reports `null` for tool-result tokens because it has no per-result tokenizer or accounting from either host. Use successful pairs for byte comparisons and retain failed runs in completion counts.
 - The baseline exposes only the same two read-only graph tools. Its relay adds the missing `readOnlyHint` to those two tools for both hosts. Codex otherwise asks for approval before direct calls in a noninteractive trial. The relay enforces the two-tool allowlist, and the hint contributes to the measured tool-list bytes. Write approval, injected failures and session transfer are covered by the broader protocol below.
