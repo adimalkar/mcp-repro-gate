@@ -921,22 +921,27 @@ export class SqliteExecutionStore implements PlanStore, TokenUseStore {
     actionId: Digest;
     envelopeDigest: Digest;
     capabilityId: string;
-    startedAt: string;
+    startedAt: string | (() => string);
     executionId?: string;
   }): ExecutionRecord {
-    if (!Number.isFinite(Date.parse(input.startedAt))) {
-      throw new Error("Execution start time is invalid");
-    }
+    let startedAt: string;
     const executionId = input.executionId ?? randomUUID();
     this.#database.exec("BEGIN IMMEDIATE");
     try {
+      // Sample authorization after any SQLite writer-lock wait.
+      startedAt =
+        typeof input.startedAt === "function"
+          ? input.startedAt()
+          : input.startedAt;
+      if (!Number.isFinite(Date.parse(startedAt)))
+        throw new Error("Execution start time is invalid");
       const ownerId = this.#claimOwnership();
       try {
         this.#database
           .prepare(
             "INSERT INTO token_uses (capability_id, consumed_at) VALUES (?, ?)",
           )
-          .run(input.capabilityId, input.startedAt);
+          .run(input.capabilityId, startedAt);
       } catch (error) {
         if (this.#isConstraintError(error)) {
           throw new Error("Capability token has already been consumed", {
@@ -958,7 +963,7 @@ export class SqliteExecutionStore implements PlanStore, TokenUseStore {
         .run(
           executionId,
           input.capabilityId,
-          input.startedAt,
+          startedAt,
           ownerId,
           input.actionId,
           input.envelopeDigest,
@@ -981,7 +986,7 @@ export class SqliteExecutionStore implements PlanStore, TokenUseStore {
       envelopeDigest: input.envelopeDigest,
       capabilityId: input.capabilityId,
       state: "prepared",
-      startedAt: input.startedAt,
+      startedAt,
     };
   }
 

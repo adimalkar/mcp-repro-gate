@@ -1,5 +1,8 @@
 import { Client } from "@modelcontextprotocol/client";
-import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
+import {
+  DEFAULT_INHERITED_ENV_VARS,
+  StdioClientTransport,
+} from "@modelcontextprotocol/client/stdio";
 
 import { sha256File } from "./file-digest.js";
 import type { Digest } from "./types.js";
@@ -154,7 +157,24 @@ export class StdioMcpConnector implements DownstreamConnector {
       name: "mcp-repro-gate-downstream",
       version: "0.0.0",
     });
-    const transport = new StdioClientTransport(config);
+    // The SDK overlays env onto its own process-wide defaults. Node's spawn
+    // skips keys whose value is undefined. Shadow every implicit default
+    // when the caller gave an explicit environment, including the empty one.
+    const transportConfig = { ...config };
+    if (config.env !== undefined) {
+      const env: NodeJS.ProcessEnv = Object.fromEntries(
+        [...DEFAULT_INHERITED_ENV_VARS, "NODE_V8_COVERAGE"].map((key) => [
+          key,
+          undefined,
+        ]),
+      );
+      for (const [key, value] of Object.entries(config.env))
+        env[process.platform === "win32" ? key.toUpperCase() : key] = value;
+      // StdioServerParameters types the spread as strings only. The optional
+      // keys above are consumed by Node and never reach the child environment.
+      transportConfig.env = env as Record<string, string>;
+    }
+    const transport = new StdioClientTransport(transportConfig);
     try {
       await client.connect(transport);
       return new McpDownstreamSession(client);

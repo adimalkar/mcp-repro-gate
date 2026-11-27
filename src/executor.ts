@@ -1,4 +1,4 @@
-import { Ajv2020 } from "ajv/dist/2020.js";
+import { Ajv2020, type ValidateFunction } from "ajv/dist/2020.js";
 
 import { verifyCapabilityToken } from "./capability-token.js";
 import { digestCanonical } from "./digest.js";
@@ -35,7 +35,12 @@ export class ExecutionIndeterminateError extends Error {
 }
 
 export class ReproGateExecutor {
-  readonly #validator = new Ajv2020({ allErrors: true, strict: true });
+  readonly #validator = new Ajv2020({
+    allErrors: true,
+    strict: true,
+    addUsedSchema: false,
+  });
+  readonly #validators = new Map<Digest, ValidateFunction>();
 
   constructor(
     readonly store: SqliteExecutionStore,
@@ -47,7 +52,10 @@ export class ReproGateExecutor {
     readonly clock: () => Date = () => new Date(),
   ) {}
 
-  async execute(input: ExecuteInput): Promise<ExecuteResult> {
+  async execute(
+    input: ExecuteInput,
+    checkAdmission?: (at: Date) => void,
+  ): Promise<ExecuteResult> {
     const plan = this.store.get(input.actionId);
     if (plan === undefined) {
       throw new Error(`Unknown actionId: ${input.actionId}`);
@@ -62,15 +70,17 @@ export class ReproGateExecutor {
       throw new Error("Stored envelope digest does not match the action plan");
     }
 
-    const now = input.now ?? this.clock();
+    const entryClock = this.clock().getTime();
+    const now = input.now ?? new Date(entryClock);
     if (!Number.isFinite(now.getTime())) {
       throw new Error("Execution time is invalid");
     }
     if (Date.parse(plan.envelope.expiresAt) <= now.getTime()) {
       throw new Error("Action plan has expired");
     }
+    const callArguments = structuredClone(input.arguments);
     if (
-      digestCanonical(input.arguments) !== plan.envelope.input.argumentsDigest
+      digestCanonical(callArguments) !== plan.envelope.input.argumentsDigest
     ) {
       throw new Error("Execution arguments do not match the approved action");
     }
@@ -104,10 +114,20 @@ export class ReproGateExecutor {
         throw new Error("Downstream tool schema changed after approval");
       }
 
-      const validate = this.#validator.compile(
-        liveTool.inputSchema as object | boolean,
-      );
-      if (!validate(input.arguments)) {
+      let validate = this.#validators.get(plan.envelope.tool.schemaDigest);
+      if (validate === undefined) {
+        // Sessions return fresh JSON objects. Cache by the verified digest and
+        // bound both this map and Ajv's internal object-identity cache.
+        if (this.#validators.size >= 256) {
+          this.#validators.clear();
+          this.#validator.removeSchema();
+        }
+        validate = this.#validator.compile(
+          liveTool.inputSchema as object | boolean,
+        );
+        this.#validators.set(plan.envelope.tool.schemaDigest, validate);
+      }
+      if (!validate(callArguments)) {
         throw new Error(
           `Execution arguments fail the pinned schema: ${this.#validator.errorsText(
             validate.errors,
@@ -122,84 +142,77 @@ export class ReproGateExecutor {
         actionId: plan.envelope.actionId,
         envelopeDigest: plan.envelopeDigest,
         capabilityId: claims.jti,
-        startedAt: now.toISOString(),
+        startedAt: () => {
+          // An explicit time anchors a replay or injected mediator clock. Still
+          // charge time spent waiting on the connector, observer and writer.
+          const clock = this.clock().getTime();
+          const at = new Date(
+            input.now === undefined
+              ? clock
+              : now.getTime() + clock - entryClock,
+          );
+          if (!Number.isFinite(at.getTime()))
+            throw new Error("Execution time is invalid");
+          if (at.getTime() >= Date.parse(plan.envelope.expiresAt))
+            throw new Error("Action plan has expired");
+          if (at.getTime() >= Date.parse(claims.expiresAt))
+            throw new Error("Capability token has expired");
+          if (at.getTime() < Date.parse(claims.issuedAt))
+            throw new Error("Capability token was issued in the future");
+          checkAdmission?.(at);
+          return at.toISOString();
+        },
       });
 
-      let downstreamResult: unknown;
       try {
-        downstreamResult = await session.callTool(
+        const downstreamResult = await session.callTool(
           plan.envelope.tool.toolName,
-          input.arguments,
+          callArguments,
         );
-      } catch (error) {
-        this.store.markIndeterminate(
-          prepared.executionId,
-          this.clock().toISOString(),
-        );
-        throw new ExecutionIndeterminateError(prepared.executionId, {
-          cause: error,
-        });
-      }
-
-      let afterDigest: Digest;
-      try {
-        afterDigest = digestCanonical(
+        const afterDigest = digestCanonical(
           await this.observer.snapshot(plan.envelope),
         );
-      } catch (error) {
-        this.store.markIndeterminate(
-          prepared.executionId,
-          this.clock().toISOString(),
+        const completedAt = this.clock().toISOString();
+        const failed =
+          downstreamResult !== null &&
+          typeof downstreamResult === "object" &&
+          "isError" in downstreamResult &&
+          downstreamResult.isError === true;
+        const resultDigest = digestCanonical(downstreamResult);
+        const receipt = signExecutionReceipt(
+          {
+            receiptVersion: 1,
+            executionId: prepared.executionId,
+            actionId: plan.envelope.actionId,
+            envelopeDigest: plan.envelopeDigest,
+            capabilityId: claims.jti,
+            startedAt: prepared.startedAt,
+            completedAt,
+            outcome: failed ? "failed" : "succeeded",
+            resultDigest,
+            observedEffects: { beforeDigest, afterDigest },
+            ...(failed ? { errorDigest: resultDigest } : {}),
+            signingKeyId: this.receiptKeyId,
+          },
+          this.receiptSecret,
         );
-        throw new ExecutionIndeterminateError(prepared.executionId, {
-          cause: error,
-        });
-      }
-
-      const completedAt = this.clock().toISOString();
-      const failed =
-        downstreamResult !== null &&
-        typeof downstreamResult === "object" &&
-        "isError" in downstreamResult &&
-        downstreamResult.isError === true;
-      const resultDigest = digestCanonical(downstreamResult);
-      const receipt = signExecutionReceipt(
-        {
-          receiptVersion: 1,
-          executionId: prepared.executionId,
-          actionId: plan.envelope.actionId,
-          envelopeDigest: plan.envelopeDigest,
-          capabilityId: claims.jti,
-          startedAt: prepared.startedAt,
-          completedAt,
-          outcome: failed ? "failed" : "succeeded",
-          resultDigest,
-          observedEffects: { beforeDigest, afterDigest },
-          ...(failed ? { errorDigest: resultDigest } : {}),
-          signingKeyId: this.receiptKeyId,
-        },
-        this.receiptSecret,
-      );
-      try {
         this.store.completeExecution(receipt);
+        return { receipt, downstreamResult };
       } catch (error) {
-        // The downstream call ran, but the store did not record its outcome:
-        // another process's recovery may already have recorded it
-        // indeterminate after this process's lease lapsed. Never report
-        // success the ledger does not show.
+        // Completion may have committed before its readback threw. The store
+        // changes only a prepared row, preserving every durable outcome.
         try {
           this.store.markIndeterminate(
             prepared.executionId,
             this.clock().toISOString(),
           );
         } catch {
-          // Already indeterminate, or the store is unavailable.
+          // Already resolved or unavailable. Startup can settle a prepared row.
         }
         throw new ExecutionIndeterminateError(prepared.executionId, {
           cause: error,
         });
       }
-      return { receipt, downstreamResult };
     } finally {
       await session.close().catch(() => undefined);
     }

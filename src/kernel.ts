@@ -66,7 +66,11 @@ export class ReproGateKernel {
 
   // Same validator settings as the executor, so a plan that passes here
   // cannot be refused at execution for its arguments' shape alone.
-  readonly #validator = new Ajv2020({ allErrors: true, strict: true });
+  readonly #validator = new Ajv2020({
+    allErrors: true,
+    strict: true,
+    addUsedSchema: false,
+  });
   readonly #validators = new Map<string, ValidateFunction>();
 
   #validate(tool: CatalogTool): ValidateFunction {
@@ -179,27 +183,38 @@ export class ReproGateKernel {
    * or undefined if its tool, schema, authority or policy has changed.
    */
   currentDecision(envelope: ActionEnvelopeV1): Decision | undefined {
-    const tool = [...this.#catalog.values()].find(
-      (entry) =>
-        entry.serverRef === envelope.tool.serverRef &&
-        entry.toolName === envelope.tool.toolName,
-    );
-    if (
-      tool === undefined ||
-      digestCanonical(tool.inputSchema) !== envelope.tool.schemaDigest
-    )
-      return undefined;
-    const sorted = (values: string[] | undefined) =>
-      JSON.stringify([...new Set(values ?? [])].sort());
-    if (
-      sorted(tool.effects) !== sorted(envelope.authority.effects) ||
-      sorted(tool.scopes) !== sorted(envelope.authority.scopes)
-    )
-      return undefined;
-    const policy = evaluatePolicy(this.#policy, tool.toolRef, tool.effects);
-    return policy.policyDigest === envelope.authority.policyDigest
-      ? policy.decision
-      : undefined;
+    const sameSet = (catalog: string[] | undefined, bound: string[]) =>
+      JSON.stringify([...new Set(catalog ?? [])].sort()) ===
+      JSON.stringify([...new Set(bound)].sort());
+    let decision: Decision | undefined;
+    for (const tool of this.#catalog.values()) {
+      if (
+        tool.serverRef !== envelope.tool.serverRef ||
+        tool.toolName !== envelope.tool.toolName ||
+        tool.artifactDigest !== envelope.tool.artifactDigest ||
+        digestCanonical(tool.inputSchema) !== envelope.tool.schemaDigest ||
+        !sameSet(tool.effects, envelope.authority.effects) ||
+        !sameSet(tool.scopes, envelope.authority.scopes) ||
+        !sameSet(tool.filesystemRoots, envelope.authority.filesystemRoots) ||
+        !sameSet(
+          tool.networkDestinations,
+          envelope.authority.networkDestinations,
+        ) ||
+        !sameSet(tool.secretHandles, envelope.authority.secretHandles) ||
+        !sameSet(tool.sensitivityLabels, envelope.input.sensitivityLabels)
+      )
+        continue;
+      const policy = evaluatePolicy(this.#policy, tool.toolRef, tool.effects);
+      // V1 envelopes omit the catalog alias. Conflicting decisions for the
+      // same bound identity cannot be attributed to the original plan.
+      if (
+        policy.policyDigest !== envelope.authority.policyDigest ||
+        (decision !== undefined && policy.decision !== decision)
+      )
+        return undefined;
+      decision = policy.decision;
+    }
+    return decision;
   }
 
   explain(actionId: string): PlannedAction | undefined {

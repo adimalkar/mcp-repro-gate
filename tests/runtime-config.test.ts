@@ -353,3 +353,51 @@ test("runtime configuration rejects raw secrets and incomplete backends", async 
   writeFileSync(fixture.configPath, JSON.stringify(missingBackend));
   assert.throws(() => loadRuntimeConfig(fixture.configPath), /missing backend/);
 });
+
+test("configured child environment has exactly the selected inheritance and mappings", async (t) => {
+  const fixture = await createFixture(t);
+  const state = join(fixture.artifactPath, "..");
+  const observation = join(state, "observed-env.json");
+  const safe = process.platform === "win32" ? "USERNAME" : "USER";
+  const sdkOnly = process.platform === "win32" ? "APPDATA" : "TERM";
+  const previous = process.env[sdkOnly];
+  process.env[sdkOnly] = "sdk-ambient-sentinel";
+  t.after(() => {
+    if (previous === undefined) Reflect.deleteProperty(process.env, sdkOnly);
+    else process.env[sdkOnly] = previous;
+  });
+  const wrapper = readFileSync(fixture.artifactPath, "utf8");
+  writeFileSync(
+    fixture.artifactPath,
+    `import { writeFileSync } from 'node:fs';\nwriteFileSync(${JSON.stringify(observation)},JSON.stringify([process.env[${JSON.stringify(safe)}] ?? null,process.env[${JSON.stringify(sdkOnly)}] ?? null,process.env.EXPLICIT]));\n${wrapper}`,
+  );
+  const digest = await sha256File(fixture.artifactPath);
+  const backend = fixture.config.backends.configured;
+  backend.artifact.digest = digest;
+  const catalog = fixture.config.catalog[0];
+  assert.ok(catalog);
+  catalog.artifactDigest = digest;
+  for (const inherit of ["none", "safe"]) {
+    backend.environment = { inherit, from: { EXPLICIT: "RG_SENTINEL" } };
+    writeFileSync(fixture.configPath, JSON.stringify(fixture.config));
+    const runtime = await createConfiguredRuntime(fixture.configPath, {
+      ...environment(),
+      [safe]: "supplied-safe",
+      RG_SENTINEL: "mapped",
+    });
+    try {
+      const session = await runtime.executor.connector.connect(
+        "configured",
+        digest,
+      );
+      await session.close();
+      assert.deepEqual(JSON.parse(readFileSync(observation, "utf8")), [
+        inherit === "safe" ? "supplied-safe" : null,
+        null,
+        "mapped",
+      ]);
+    } finally {
+      runtime.close();
+    }
+  }
+});

@@ -421,13 +421,20 @@ export class HostMediator {
         this.capabilitySecret,
       );
       try {
-        executed = await this.executor.execute({
-          actionId: input.actionId,
-          arguments: input.arguments,
-          capabilityToken,
-          now,
-        });
+        executed = await this.executor.execute(
+          {
+            actionId: input.actionId,
+            arguments: input.arguments,
+            capabilityToken,
+            now,
+          },
+          (at) => {
+            if (this.#route(plan, at) !== undefined)
+              throw new MediationError("stale_plan");
+          },
+        );
       } catch (error) {
+        if (error instanceof MediationError) throw error;
         if (!(
           error instanceof Error &&
           error.message === "Capability token has already been consumed"
@@ -479,12 +486,22 @@ export class HostMediator {
     );
     let executed: Awaited<ReturnType<ReproGateExecutor["execute"]>>;
     try {
-      executed = await this.executor.execute({
-        actionId: input.actionId,
-        arguments: input.arguments,
-        capabilityToken,
-        now,
-      });
+      executed = await this.executor.execute(
+        {
+          actionId: input.actionId,
+          arguments: input.arguments,
+          capabilityToken,
+          now,
+        },
+        (at) => {
+          if (
+            this.executor.store.hasCapabilityUse(`host-held:${held.approvalId}`)
+          )
+            throw new MediationError("approval_consumed");
+          if (this.#route(plan, at)?.approvalId !== held.approvalId)
+            throw new MediationError("invalid_approval");
+        },
+      );
     } catch (error) {
       if (
         error instanceof Error &&
