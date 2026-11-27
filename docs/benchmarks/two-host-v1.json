@@ -1,0 +1,714 @@
+{
+  "benchmarkVersion": 1,
+  "source": {
+    "revision": "6eabc20f04f1a0fe9edede5ab36a4338000bd155",
+    "gitSourceTree": "9f8a4384e512993cd9781f54e643baf19dd28733",
+    "manifestDigest": "sha256:051a4eb4afcf75e3e0495f4216e887f7691129ec5d7fbbcba283f5d4d55eba53"
+  },
+  "versions": {
+    "graph": "codebase-memory-mcp 0.9.0",
+    "graphDigest": "sha256:9f5a306d54a8248f736939a42cd19678273731d735f6a1c9a92659b5e2585e32",
+    "codex": "codex-cli 0.172.0",
+    "claude": "2.1.332 (Claude Code)",
+    "node": "v22.23.5",
+    "reprogate": "0248dd465cc09da5ea3e61574b9d293e8397d302"
+  },
+  "runs": [
+    {
+      "host": "codex",
+      "model": "gpt-6.2-sol",
+      "surface": "direct",
+      "task": "canonicalJson",
+      "completed": true,
+      "status": 0,
+      "processError": null,
+      "pass": true,
+      "answerCorrect": true,
+      "executed": true,
+      "shellUsed": false,
+      "durationMs": 18733,
+      "toolListResponses": 2,
+      "toolListBytes": 3570,
+      "toolCallResponses": 2,
+      "toolResultBytes": 9728,
+      "toolErrors": 0,
+      "toolResultTokens": null,
+      "usage": {
+        "input_tokens": 84833,
+        "cached_input_tokens": 65792,
+        "output_tokens": 603
+      },
+      "calls": [
+        {
+          "method": "tools/call",
+          "tool": "search_graph",
+          "bytes": 2932,
+          "error": false
+        },
+        {
+          "method": "tools/call",
+          "tool": "get_code_snippet",
+          "bytes": 6796,
+          "error": false
+        }
+      ]
+    },
+    {
+      "host": "codex",
+      "model": "gpt-6.2-sol",
+      "surface": "facade",
+      "task": "canonicalJson",
+      "completed": true,
+      "status": 0,
+      "processError": null,
+      "pass": true,
+      "answerCorrect": true,
+      "executed": true,
+      "shellUsed": false,
+      "durationMs": 29975,
+      "toolListResponses": 1,
+      "toolListBytes": 9990,
+      "toolCallResponses": 8,
+      "toolResultBytes": 23816,
+      "toolErrors": 0,
+      "toolResultTokens": null,
+      "usage": {
+        "input_tokens": 133069,
+        "cached_input_tokens": 120320,
+        "output_tokens": 801
+      },
+      "calls": [
+        {
+          "method": "tools/call",
+          "tool": "catalog.search",
+          "bytes": 802,
+          "error": false
+        },
+        {
+          "method": "tools/call",
+          "tool": "catalog.search",
+          "bytes": 2976,
+          "error": false
+        },
+        {
+          "method": "tools/call",
+          "tool": "catalog.describe",
+          "bytes": 5990,
+          "error": false
+        },
+        {
+          "method": "tools/call",
+          "tool": "catalog.describe",
+          "bytes": 1732,
+          "error": false
+        },
+        {
+          "method": "tools/call",
+          "tool": "action.plan",
+          "bytes": 796,
+          "error": false
+        },
+        {
+          "method": "tools/call",
+          "tool": "action.run",
+          "graphTool": "search_graph",
+          "bytes": 3368,
+          "error": false
+        },
+        {
+          "method": "tools/call",
+          "tool": "action.plan",
+          "bytes": 804,
+          "error": false
+        },
+        {
+          "method": "tools/call",
+          "tool": "action.run",
+          "graphTool": "get_code_snippet",
+          "bytes": 7348,
+          "error": false
+        }
+      ]
+    },
+    {
+      "host": "claude",
+      "model": "sonnet",
+      "surface": "facade",
+      "task": "canonicalJson",
+      "completed": true,
+      "status": 0,
+      "processError": null,
+      "pass": true,
+      "answerCorrect": true,
+      "executed": true,
+      "shellUsed": false,
+      "durationMs": 15693,
+      "toolListResponses": 1,
+      "toolListBytes": 10138,
+      "toolCallResponses": 7,
+      "toolResultBytes": 23819,
+      "toolErrors": 0,
+      "toolResultTokens": null,
+      "usage": {
+        "input_tokens": 14,
+        "cache_creation_input_tokens": 8246,
+        "cache_read_input_tokens": 43863,
+        "output_tokens": 1505
+      },
+      "calls": [
+        {
+          "method": "tools/call",
+          "tool": "catalog.search",
+          "bytes": 3091,
+          "error": false
+        },
+        {
+          "method": "tools/call",
+          "tool": "catalog.describe",
+          "bytes": 6105,
+          "error": false
+        },
+        {
+          "method": "tools/call",
+          "tool": "catalog.describe",
+          "bytes": 1847,
+          "error": false
+        },
+        {
+          "method": "tools/call",
+          "tool": "action.plan",
+          "bytes": 911,
+          "error": false
+        },
+        {
+          "method": "tools/call",
+          "tool": "action.run",
+          "graphTool": "search_graph",
+          "bytes": 3483,
+          "error": false
+        },
+        {
+          "method": "tools/call",
+          "tool": "action.plan",
+          "bytes": 919,
+          "error": false
+        },
+        {
+          "method": "tools/call",
+          "tool": "action.run",
+          "graphTool": "get_code_snippet",
+          "bytes": 7463,
+          "error": false
+        }
+      ]
+    },
+    {
+      "host": "claude",
+      "model": "sonnet",
+      "surface": "direct",
+      "task": "canonicalJson",
+      "completed": true,
+      "status": 0,
+      "processError": null,
+      "pass": true,
+      "answerCorrect": true,
+      "executed": true,
+      "shellUsed": false,
+      "durationMs": 7136,
+      "toolListResponses": 2,
+      "toolListBytes": 3570,
+      "toolCallResponses": 2,
+      "toolResultBytes": 9728,
+      "toolErrors": 0,
+      "toolResultTokens": null,
+      "usage": {
+        "input_tokens": 6,
+        "cache_creation_input_tokens": 4809,
+        "cache_read_input_tokens": 12358,
+        "output_tokens": 936
+      },
+      "calls": [
+        {
+          "method": "tools/call",
+          "tool": "search_graph",
+          "bytes": 2932,
+          "error": false
+        },
+        {
+          "method": "tools/call",
+          "tool": "get_code_snippet",
+          "bytes": 6796,
+          "error": false
+        }
+      ]
+    },
+    {
+      "host": "codex",
+      "model": "gpt-6.2-sol",
+      "surface": "facade",
+      "task": "evaluatePolicy",
+      "completed": true,
+      "status": 0,
+      "processError": null,
+      "pass": true,
+      "answerCorrect": true,
+      "executed": true,
+      "shellUsed": false,
+      "durationMs": 24589,
+      "toolListResponses": 1,
+      "toolListBytes": 9990,
+      "toolCallResponses": 8,
+      "toolResultBytes": 22072,
+      "toolErrors": 0,
+      "toolResultTokens": null,
+      "usage": {
+        "input_tokens": 133024,
+        "cached_input_tokens": 120576,
+        "output_tokens": 637
+      },
+      "calls": [
+        {
+          "method": "tools/call",
+          "tool": "catalog.search",
+          "bytes": 2976,
+          "error": false
+        },
+        {
+          "method": "tools/call",
+          "tool": "catalog.search",
+          "bytes": 802,
+          "error": false
+        },
+        {
+          "method": "tools/call",
+          "tool": "catalog.describe",
+          "bytes": 5990,
+          "error": false
+        },
+        {
+          "method": "tools/call",
+          "tool": "catalog.describe",
+          "bytes": 1732,
+          "error": false
+        },
+        {
+          "method": "tools/call",
+          "tool": "action.plan",
+          "bytes": 796,
+          "error": false
+        },
+        {
+          "method": "tools/call",
+          "tool": "action.run",
+          "graphTool": "search_graph",
+          "bytes": 3426,
+          "error": false
+        },
+        {
+          "method": "tools/call",
+          "tool": "action.plan",
+          "bytes": 804,
+          "error": false
+        },
+        {
+          "method": "tools/call",
+          "tool": "action.run",
+          "graphTool": "get_code_snippet",
+          "bytes": 5546,
+          "error": false
+        }
+      ]
+    },
+    {
+      "host": "codex",
+      "model": "gpt-6.2-sol",
+      "surface": "direct",
+      "task": "evaluatePolicy",
+      "completed": true,
+      "status": 0,
+      "processError": null,
+      "pass": true,
+      "answerCorrect": true,
+      "executed": true,
+      "shellUsed": false,
+      "durationMs": 16392,
+      "toolListResponses": 2,
+      "toolListBytes": 3570,
+      "toolCallResponses": 2,
+      "toolResultBytes": 8047,
+      "toolErrors": 0,
+      "toolResultTokens": null,
+      "usage": {
+        "input_tokens": 84825,
+        "cached_input_tokens": 74752,
+        "output_tokens": 450
+      },
+      "calls": [
+        {
+          "method": "tools/call",
+          "tool": "search_graph",
+          "bytes": 2986,
+          "error": false
+        },
+        {
+          "method": "tools/call",
+          "tool": "get_code_snippet",
+          "bytes": 5061,
+          "error": false
+        }
+      ]
+    },
+    {
+      "host": "claude",
+      "model": "sonnet",
+      "surface": "direct",
+      "task": "evaluatePolicy",
+      "completed": true,
+      "status": 0,
+      "processError": null,
+      "pass": true,
+      "answerCorrect": true,
+      "executed": true,
+      "shellUsed": false,
+      "durationMs": 6140,
+      "toolListResponses": 2,
+      "toolListBytes": 3570,
+      "toolCallResponses": 2,
+      "toolResultBytes": 8047,
+      "toolErrors": 0,
+      "toolResultTokens": null,
+      "usage": {
+        "input_tokens": 6,
+        "cache_creation_input_tokens": 4621,
+        "cache_read_input_tokens": 12417,
+        "output_tokens": 653
+      },
+      "calls": [
+        {
+          "method": "tools/call",
+          "tool": "search_graph",
+          "bytes": 2986,
+          "error": false
+        },
+        {
+          "method": "tools/call",
+          "tool": "get_code_snippet",
+          "bytes": 5061,
+          "error": false
+        }
+      ]
+    },
+    {
+      "host": "claude",
+      "model": "sonnet",
+      "surface": "facade",
+      "task": "evaluatePolicy",
+      "completed": true,
+      "status": 0,
+      "processError": null,
+      "pass": true,
+      "answerCorrect": true,
+      "executed": true,
+      "shellUsed": false,
+      "durationMs": 15310,
+      "toolListResponses": 1,
+      "toolListBytes": 10138,
+      "toolCallResponses": 8,
+      "toolResultBytes": 22992,
+      "toolErrors": 0,
+      "toolResultTokens": null,
+      "usage": {
+        "input_tokens": 14,
+        "cache_creation_input_tokens": 8239,
+        "cache_read_input_tokens": 45306,
+        "output_tokens": 1273
+      },
+      "calls": [
+        {
+          "method": "tools/call",
+          "tool": "catalog.search",
+          "bytes": 3091,
+          "error": false
+        },
+        {
+          "method": "tools/call",
+          "tool": "catalog.search",
+          "bytes": 917,
+          "error": false
+        },
+        {
+          "method": "tools/call",
+          "tool": "catalog.describe",
+          "bytes": 6105,
+          "error": false
+        },
+        {
+          "method": "tools/call",
+          "tool": "catalog.describe",
+          "bytes": 1847,
+          "error": false
+        },
+        {
+          "method": "tools/call",
+          "tool": "action.plan",
+          "bytes": 911,
+          "error": false
+        },
+        {
+          "method": "tools/call",
+          "tool": "action.run",
+          "graphTool": "search_graph",
+          "bytes": 3541,
+          "error": false
+        },
+        {
+          "method": "tools/call",
+          "tool": "action.plan",
+          "bytes": 919,
+          "error": false
+        },
+        {
+          "method": "tools/call",
+          "tool": "action.run",
+          "graphTool": "get_code_snippet",
+          "bytes": 5661,
+          "error": false
+        }
+      ]
+    },
+    {
+      "host": "codex",
+      "model": "gpt-6.2-sol",
+      "surface": "direct",
+      "task": "verifyExecutionReceipt",
+      "completed": true,
+      "status": 0,
+      "processError": null,
+      "pass": true,
+      "answerCorrect": true,
+      "executed": true,
+      "shellUsed": false,
+      "durationMs": 19247,
+      "toolListResponses": 2,
+      "toolListBytes": 3570,
+      "toolCallResponses": 2,
+      "toolResultBytes": 8241,
+      "toolErrors": 0,
+      "toolResultTokens": null,
+      "usage": {
+        "input_tokens": 84827,
+        "cached_input_tokens": 65792,
+        "output_tokens": 439
+      },
+      "calls": [
+        {
+          "method": "tools/call",
+          "tool": "search_graph",
+          "bytes": 2997,
+          "error": false
+        },
+        {
+          "method": "tools/call",
+          "tool": "get_code_snippet",
+          "bytes": 5244,
+          "error": false
+        }
+      ]
+    },
+    {
+      "host": "codex",
+      "model": "gpt-6.2-sol",
+      "surface": "facade",
+      "task": "verifyExecutionReceipt",
+      "completed": true,
+      "status": 0,
+      "processError": null,
+      "pass": true,
+      "answerCorrect": true,
+      "executed": true,
+      "shellUsed": false,
+      "durationMs": 27827,
+      "toolListResponses": 1,
+      "toolListBytes": 9990,
+      "toolCallResponses": 8,
+      "toolResultBytes": 22282,
+      "toolErrors": 0,
+      "toolResultTokens": null,
+      "usage": {
+        "input_tokens": 132925,
+        "cached_input_tokens": 125696,
+        "output_tokens": 646
+      },
+      "calls": [
+        {
+          "method": "tools/call",
+          "tool": "catalog.search",
+          "bytes": 2976,
+          "error": false
+        },
+        {
+          "method": "tools/call",
+          "tool": "catalog.search",
+          "bytes": 802,
+          "error": false
+        },
+        {
+          "method": "tools/call",
+          "tool": "catalog.describe",
+          "bytes": 1732,
+          "error": false
+        },
+        {
+          "method": "tools/call",
+          "tool": "catalog.describe",
+          "bytes": 5990,
+          "error": false
+        },
+        {
+          "method": "tools/call",
+          "tool": "action.plan",
+          "bytes": 796,
+          "error": false
+        },
+        {
+          "method": "tools/call",
+          "tool": "action.run",
+          "graphTool": "search_graph",
+          "bytes": 3436,
+          "error": false
+        },
+        {
+          "method": "tools/call",
+          "tool": "action.plan",
+          "bytes": 804,
+          "error": false
+        },
+        {
+          "method": "tools/call",
+          "tool": "action.run",
+          "graphTool": "get_code_snippet",
+          "bytes": 5746,
+          "error": false
+        }
+      ]
+    },
+    {
+      "host": "claude",
+      "model": "sonnet",
+      "surface": "facade",
+      "task": "verifyExecutionReceipt",
+      "completed": true,
+      "status": 0,
+      "processError": null,
+      "pass": true,
+      "answerCorrect": true,
+      "executed": true,
+      "shellUsed": false,
+      "durationMs": 16793,
+      "toolListResponses": 1,
+      "toolListBytes": 10138,
+      "toolCallResponses": 8,
+      "toolResultBytes": 23202,
+      "toolErrors": 0,
+      "toolResultTokens": null,
+      "usage": {
+        "input_tokens": 14,
+        "cache_creation_input_tokens": 8341,
+        "cache_read_input_tokens": 45405,
+        "output_tokens": 1316
+      },
+      "calls": [
+        {
+          "method": "tools/call",
+          "tool": "catalog.search",
+          "bytes": 3091,
+          "error": false
+        },
+        {
+          "method": "tools/call",
+          "tool": "catalog.search",
+          "bytes": 917,
+          "error": false
+        },
+        {
+          "method": "tools/call",
+          "tool": "catalog.describe",
+          "bytes": 6105,
+          "error": false
+        },
+        {
+          "method": "tools/call",
+          "tool": "catalog.describe",
+          "bytes": 1847,
+          "error": false
+        },
+        {
+          "method": "tools/call",
+          "tool": "action.plan",
+          "bytes": 911,
+          "error": false
+        },
+        {
+          "method": "tools/call",
+          "tool": "action.run",
+          "graphTool": "search_graph",
+          "bytes": 3551,
+          "error": false
+        },
+        {
+          "method": "tools/call",
+          "tool": "action.plan",
+          "bytes": 919,
+          "error": false
+        },
+        {
+          "method": "tools/call",
+          "tool": "action.run",
+          "graphTool": "get_code_snippet",
+          "bytes": 5861,
+          "error": false
+        }
+      ]
+    },
+    {
+      "host": "claude",
+      "model": "sonnet",
+      "surface": "direct",
+      "task": "verifyExecutionReceipt",
+      "completed": true,
+      "status": 0,
+      "processError": null,
+      "pass": true,
+      "answerCorrect": true,
+      "executed": true,
+      "shellUsed": false,
+      "durationMs": 6852,
+      "toolListResponses": 2,
+      "toolListBytes": 3570,
+      "toolCallResponses": 2,
+      "toolResultBytes": 8241,
+      "toolErrors": 0,
+      "toolResultTokens": null,
+      "usage": {
+        "input_tokens": 6,
+        "cache_creation_input_tokens": 4687,
+        "cache_read_input_tokens": 12451,
+        "output_tokens": 681
+      },
+      "calls": [
+        {
+          "method": "tools/call",
+          "tool": "search_graph",
+          "bytes": 2997,
+          "error": false
+        },
+        {
+          "method": "tools/call",
+          "tool": "get_code_snippet",
+          "bytes": 5244,
+          "error": false
+        }
+      ]
+    }
+  ]
+}

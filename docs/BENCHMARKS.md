@@ -103,6 +103,48 @@ The façade's own tool list is about twice the 14 downstream definitions it repl
   - Planning: from 852 to 800 bytes. Its reduction fell from 72.6% to 70.9%, because the full baseline also shrank with compact JSON.
   - Façade tool list: grew from 9856 to 9990 bytes. The `detail` input, the optional digest fields and the bounded text in the `action.run` output schema account for the increase. Tool list plus finding a tool fell from 12354 to 12112 bytes per session, and break-even stayed at 35 tools.
 
+## Two-host code discovery pilot
+
+The runner launches Codex CLI and Claude Code against the same two graph tools, through ReproGate and through a direct MCP connection. It uses the public source revision pinned by the [discovery benchmark](CODE_DISCOVERY_BENCHMARK.md). The current fixtures find the definitions of `canonicalJson`, `evaluatePolicy`, and `verifyExecutionReceipt`. Each run starts in a fresh session with an empty workspace, and the graph server uses a private index and settings.
+
+```sh
+mkdir -p .agent/benchmark-runs
+npm run bench:two-host -- \
+  /absolute/path/to/codebase-memory-mcp \
+  .agent/benchmark-runs/two-host.json gpt-6.2-sol sonnet
+```
+
+The command requires authenticated local host CLIs and makes 12 live model calls, one per task, host, and connection. Append `1` for a four-call smoke run. Pick a fresh output filename. The runner writes a report after each finished run, so completed observations survive an interruption. The report contains host versions, model selectors, the graph binary digest, the pinned source identity, and per-call measurements. Tool arguments, transcripts, and credentials are omitted.
+
+- **Task pass** requires the relative path, the function name and a known source fragment, plus successful calls to both graph tools. The façade runner links plans to executions to verify which graph tool actually ran.
+- **MCP bytes** count the JSON result payload of each completed call. The report also counts tool listing bytes separately. A host can request the list more than once. The wire measurement includes both text and structured fields when present.
+- **Host usage** shows the whole-turn input, output and cache counts that each CLI reports. The pilot reports `null` for tool-result tokens because it has no per-result tokenizer or accounting from either host. Use successful pairs for byte comparisons and retain failed runs in completion counts.
+- The baseline exposes only the same two read-only graph tools. Its relay adds the missing `readOnlyHint` to those two tools for both hosts. Codex otherwise asks for approval before direct calls in a noninteractive trial. The relay enforces the two-tool allowlist, and the hint contributes to the measured tool-list bytes. Write approval, injected failures and session transfer are covered by the broader protocol below.
+
+### Pilot result
+
+All 12 runs passed on November 24, 2026. See [the run report](benchmarks/two-host-v1.json) for the pinned commit, binary digest, version information, and measurements for each call.
+
+| Host        | Direct pass | Façade pass | Direct calls per task | Façade calls per task | Median direct result bytes | Median façade result bytes | Median paired size ratio |
+| ----------- | ----------: | ----------: | --------------------: | --------------------: | -------------------------: | -------------------------: | -----------------------: |
+| Codex CLI   |         3/3 |         3/3 |                     2 |                     8 |                      8,241 |                     22,282 |                    2.70× |
+| Claude Code |         3/3 |         3/3 |                     2 |                   7–8 |                      8,241 |                     23,202 |                    2.82× |
+
+The paired ratio divides façade bytes by direct bytes for each task in the same host, then takes the median. It excludes tool listings. Across list requests in one run, direct mode returned 3,570 bytes in both hosts. The façade returned 9,990 bytes in Codex CLI and 10,138 in Claude Code.
+
+Whole-turn cost from the same runs, as medians over the three tasks (ratios are the median of each task's paired ratio):
+
+| Host        | Time, direct | Time, façade | Ratio | Input tokens, direct | Input tokens, façade | Ratio | Output tokens, direct | Output tokens, façade | Ratio |
+| ----------- | -----------: | -----------: | ----: | -------------------: | -------------------: | ----: | --------------------: | --------------------: | ----: |
+| Codex CLI   |       18.7 s |       27.8 s | 1.50× |               84,827 |              133,024 | 1.57× |                   450 |                   646 | 1.42× |
+| Claude Code |        6.9 s |       15.7 s | 2.45× |               17,144 |               53,559 | 3.14× |                   681 |                 1,316 | 1.93× |
+
+Input tokens count cached input and are summed over every model request in the turn, so they include each host's own prompt again for every extra call. Most are cache reads. Compare them within a host, not between hosts.
+
+**In this pilot the façade cost more on every measure.** With two downstream tools, catalog discovery, describe and plan calls were 54–60% of the façade's result bytes. The graph results themselves were 1.10–1.14× direct. The Phase 4 target is a 25% reduction in tool-result tokens, which this harness can't count; the bytes it can count moved the other way. The façade ran without the opt-in compact graph views (`mediation.result.graphViews`). A larger catalog, reuse within a session, or those views could change the comparison, and none of them is measured here. The façade surface also includes ReproGate's policy and receipt flow, which the direct surface does not provide.
+
+Limits of this pilot: one run per task, host and surface, so there is no variance estimate. All three tasks are the same kind of lookup, and the prompt names the calls to make. The `sonnet` alias was recorded, not the model it resolved to. Two earlier diagnostic reports (nine runs) are excluded: in both, the direct Codex run was refused approval because the graph tools lacked `readOnlyHint`, which the relay then added. Their other seven runs all passed.
+
 ## Two-host protocol (manual)
 
 This protocol measures the Phase 4 exit criteria in real hosts. Run it in at least two MCP hosts, such as Claude Code and Codex CLI, with each host's own model settings fixed for the whole run.
