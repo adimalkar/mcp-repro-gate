@@ -27,6 +27,7 @@ import {
   type GitPromotionHostControlConfig,
 } from "./git-promotion-host-control.js";
 import { releaseCandidateKeep } from "./git-promotion-keep.js";
+import { gitDestinationInUse } from "./git-worktree-occupancy.js";
 import { GitRunnerUnavailableError, runGit } from "./git-runner.js";
 import type { PreparedGitPromotionObjectsV1 } from "./git-promotion-objects.js";
 import { DatabaseSync } from "node:sqlite";
@@ -37,7 +38,6 @@ import {
   oidSchema,
   ownGitChangeProposal,
   parseGitChangeProposalStructure,
-  parseGitWorktreeList,
   type GitChangeProposalVersions,
 } from "./git-change-contract.js";
 import {
@@ -318,13 +318,7 @@ function promotionSourceUnchanged(
         undefined,
         4096,
       ).toString("utf8") === `${headCommit}\n` &&
-      !parseGitWorktreeList(
-        runGit(
-          ["-C", root, "worktree", "list", "--porcelain", "-z"],
-          undefined,
-          1024 * 1024,
-        ),
-      ).some((worktree) => worktree.branch === destinationRef)
+      !gitDestinationInUse(root, destinationRef)
     );
   } catch {
     return false;
@@ -433,16 +427,6 @@ function transientFailure(error: unknown): boolean {
     cause = cause instanceof Error ? cause.cause : undefined;
   }
   return false;
-}
-
-/** Whether any registered worktree has the branch checked out. */
-function destinationCheckedOut(
-  repositoryPath: string,
-  destinationRef: string,
-): boolean {
-  return parseGitWorktreeList(
-    runGit(["-C", repositoryPath, "worktree", "list", "--porcelain", "-z"]),
-  ).some((worktree) => worktree.branch === destinationRef);
 }
 
 export class SqliteGitApprovalStore {
@@ -1325,7 +1309,7 @@ export class SqliteGitApprovalStore {
         this.#assertFenceOwner(control, owner);
         if (
           rejection !== undefined ||
-          destinationCheckedOut(repositoryPath, destinationRef) ||
+          gitDestinationInUse(repositoryPath, destinationRef) ||
           !(Date.now() < deadline)
         ) {
           this.#insertOutcome({
@@ -1346,6 +1330,7 @@ export class SqliteGitApprovalStore {
             repositoryPath,
             "update-ref",
             "--no-deref",
+            "--create-reflog",
             "-m",
             `reprogate promotion ${attemptId}`,
             destinationRef,

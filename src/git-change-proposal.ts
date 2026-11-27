@@ -5,6 +5,7 @@ import {
   ownGitChangeProposal,
   parseGitWorktreeList,
 } from "./git-change-contract.js";
+import { gitDestinationInUse } from "./git-worktree-occupancy.js";
 import { runGit } from "./git-runner.js";
 import type { Digest } from "./types.js";
 
@@ -302,8 +303,10 @@ export function observeGitPromotionWorkspace(
     const worktrees = parseGitWorktreeList(
       gitBytes(root, "worktree", "list", "--porcelain", "-z"),
     );
-    if (worktrees.some((worktree) => worktree.branch === destinationRef)) {
-      throw new Error("Destination branch is checked out in a worktree");
+    if (gitDestinationInUse(root, destinationRef, { commonDir, worktrees })) {
+      throw new Error(
+        "Destination branch is checked out in a worktree or reserved by a worktree operation",
+      );
     }
     const sources = worktrees.filter((worktree) => {
       try {
@@ -317,6 +320,21 @@ export function observeGitPromotionWorkspace(
       throw new Error("Source worktree is not registered on its branch");
     }
 
+    // -v exposes assume-unchanged (lowercase) and skip-worktree (S). A
+    // clean V2 witness requires every cached entry to be an ordinary H entry.
+    const tracked = runGit(["-C", root, "ls-files", "-v", "-z"]);
+    if (
+      tracked.length &&
+      (tracked.at(-1) !== 0 ||
+        tracked
+          .subarray(0, -1)
+          .toString("latin1")
+          .split("\0")
+          .some((entry) => !entry.startsWith("H ")))
+    )
+      throw new Error(
+        "Clean Git workspace requires fully observed tracked entries (clear assume-unchanged and skip-worktree flags)",
+      );
     if (
       git(
         root,

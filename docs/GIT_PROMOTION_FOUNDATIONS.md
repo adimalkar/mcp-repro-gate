@@ -29,7 +29,9 @@ V2 requires an actual clean worktree root with symbolic source HEAD. Its destina
 
 - be a different, existing direct local `refs/heads/` branch;
 - point to the same base commit as source HEAD;
-- not be checked out in any registered worktree, including linked worktrees.
+- be available in every registered worktree. An attached checkout, a rebase of the destination, a pending `rebase --update-refs` entry or a bisect started on the destination reserves that branch, even while HEAD is detached.
+
+V2 rejects source index entries marked `assume-unchanged` or `skip-worktree`, because Git status can omit changes to those paths. Use a fully populated source checkout with normal index flags. An unreadable worktree registry or operation state prevents the gate from verifying branch availability.
 
 The witness binds canonical root/common-directory digests, source ref/commit/tree and destination ref/OID. Observations are repeated for consistency. Unknown/mixed contract versions and malformed record/input shapes fail closed. Worktree enumeration preserves path bytes and decodes branch identities strictly; the host ownership layer rejects physical paths it cannot represent losslessly.
 

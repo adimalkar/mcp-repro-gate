@@ -233,6 +233,50 @@ test("a destination checked out after admission is not dispatched", (t) => {
   assert.equal(target(f), f.prepared.expectedOldOid);
 });
 
+for (const phase of ["dispatch", "readback"]) {
+  test(`a linked rebase holding the destination at ${phase} prevents confirmation`, (t) => {
+    const f = fixture(t);
+    reserve(f);
+    const linked = join(f.scratch, "rebase");
+    const pause = () => {
+      git(f.root, "worktree", "add", "--quiet", linked, "target");
+      assert.throws(() =>
+        git(linked, "rebase", "--root", "--force-rebase", "--exec", "false"),
+      );
+      assert.throws(() => git(linked, "symbolic-ref", "-q", "HEAD"));
+    };
+    let reads = 0;
+    hooks(
+      t,
+      phase === "dispatch"
+        ? { afterAdmission: pause }
+        : {
+            prepare: (sql) => {
+              if (
+                sql.includes("LEFT JOIN git_promotion_admissions") &&
+                ++reads === 2
+              )
+                pause();
+            },
+          },
+    );
+    const result = promote(f);
+    t.mock.restoreAll();
+    assert.equal(result.status.state, "indeterminate");
+    assert.equal(
+      result.status.outcome?.reason,
+      phase === "dispatch" ? "not_dispatched" : "readback_mismatch",
+    );
+    assert.equal(
+      target(f),
+      phase === "dispatch"
+        ? f.prepared.expectedOldOid
+        : f.prepared.candidateCommitOid,
+    );
+    assert.equal(result.fence, "retained");
+  });
+}
+
 test("a fence lost after admission stops the dispatch", (t) => {
   const f = fixture(t);
   reserve(f);

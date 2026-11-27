@@ -69,6 +69,11 @@ function deadlineClock(t: TestContext, f: Fixture) {
 
 test("an exact admitted promotion moves only the destination and confirms", (t) => {
   const f = fixture(t);
+  // A destination created with automatic reflogs disabled starts without one.
+  git(f.root, "config", "core.logAllRefUpdates", "false");
+  git(f.root, "branch", "-D", "target");
+  git(f.root, "branch", "target", f.prepared.expectedOldOid);
+  assert.throws(() => git(f.root, "reflog", "exists", "refs/heads/target"));
   reserve(f);
   const before = source(f);
   const result = promote(f);
