@@ -90,7 +90,7 @@ Residual limits:
 - If SQLite stays busy beyond its timeout after admission, the attempt is left admitted without an outcome and recovery records `indeterminate` although nothing was written.
 - Writers that ignore the fence, a same-user attacker, and a raw writer of the trusted ledger, which could insert a consistent but false outcome, are outside the claim.
 - Reflog entries and unreachable candidate objects are retained effects. Each newly prepared candidate gets a keep file that protects its pack from Git garbage collection. Removing the pack can spend the approval. See the [upgrade guidance for previously prepared attempts](GIT_PROMOTION.md#effects-and-limits).
-- The host-only `git-review` promotion commands add no authority of their own: `--confirm-quiescent` is an operator assertion, and a version 2 configuration is trusted host input. No portable signed promotion receipt exists yet.
+- The host-only `git-review` promotion commands add no authority of their own: `--confirm-quiescent` is an operator assertion, and a version 2 configuration is trusted host input. A resolved attempt can be exported as a signed evidence bundle. [Portable evidence](GIT_PROMOTION.md#portable-evidence)
 
 ## Native handoff context boundary
 
