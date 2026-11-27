@@ -284,6 +284,18 @@ test("a confirmed promotion exports, and verifies offline with public keys only"
     "--repo",
     s.f.root,
   ]);
+  const duplicatePath = join(s.f.scratch, "ambiguous-bundle.json");
+  const wire = JSON.stringify(bundle);
+  writeFileSync(duplicatePath, '{"manifest":null,' + wire.slice(1));
+  const ambiguous = cli([
+    "verify-evidence",
+    "--bundle",
+    duplicatePath,
+    "--trust",
+    s.trustPath,
+  ]);
+  assert.equal(ambiguous.code, 1);
+  assert.match(ambiguous.stderr, /Evidence bundle is not valid UTF-8 JSON/u);
   assert.equal(ok.code, 0, ok.stderr);
   assert.equal((JSON.parse(ok.stdout) as Json).result, "verified");
   const notOk = cli([

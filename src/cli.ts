@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { parseUniqueJson } from "./unique-json.js";
 import { readFileSync } from "node:fs";
 
 import { serveStdio } from "@modelcontextprotocol/server/stdio";
@@ -79,7 +80,9 @@ function verifyReceiptFile(
   secretEnvironmentName: string,
   expectedKeyId?: string,
 ): void {
-  const receipt: unknown = JSON.parse(readFileSync(receiptPath, "utf8"));
+  const receipt: unknown = parseUniqueJson(
+    new TextDecoder("utf-8", { fatal: true }).decode(readFileSync(receiptPath)),
+  );
   const signingKeyId =
     receipt !== null &&
     typeof receipt === "object" &&

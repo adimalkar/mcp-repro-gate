@@ -1,3 +1,4 @@
+import { parseUniqueJson } from "./unique-json.js";
 import {
   createPrivateKey,
   createPublicKey,
@@ -286,7 +287,9 @@ function approvalIdOption(options: Options): string {
 function readJsonFile(path: string, maxBytes: number, label: string): unknown {
   const bytes = readBoundedRegularFile(resolve(path), maxBytes, label);
   try {
-    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+    return parseUniqueJson(
+      new TextDecoder("utf-8", { fatal: true }).decode(bytes),
+    );
   } catch {
     // Parser diagnostics quote input; report only the failure class.
     throw new Error(`${label} is not valid UTF-8 JSON`);

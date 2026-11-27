@@ -150,3 +150,5 @@ What a `verified` result does not cover:
 - **Trust at the time.** Operator keys and permissions are checked against your current `trust.json`, not the trust in force at promotion.
 - **Revocation.** The bundle holds no revocation list; that the approval was unrevoked at admission is the host's attestation.
 - **Path privacy.** The proposal's workspace digests are unsalted SHA-256 hashes of absolute host paths, so they can confirm a guessed path.
+
+Review and evidence file readers require valid UTF-8 JSON with unique member names within each object. Names are compared after JSON escape decoding. Integrations passing decoded objects to library verification must enforce this rule when reading the original bytes.
