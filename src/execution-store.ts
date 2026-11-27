@@ -20,6 +20,7 @@ import {
   canonicalHandoffPath,
   type HandoffDatabaseBinding,
 } from "./handoff-filesystem.js";
+import { HandoffSearchIndex } from "./handoff-search.js";
 import {
   HANDOFF_SESSION_SCHEMA,
   HandoffSessionLedger,
@@ -341,7 +342,20 @@ export class SqliteExecutionStore implements PlanStore, TokenUseStore {
       .get(
         ...(updateId === undefined ? [workspaceId] : [workspaceId, updateId]),
       );
-    if (row === undefined) return undefined;
+    return row === undefined
+      ? undefined
+      : this.#parseHandoffRow(workspaceId, row);
+  }
+
+  #parseHandoffRow(
+    workspaceId: string,
+    row: Record<string, unknown>,
+  ): {
+    record: HandoffRecordV1;
+    snapshotDigest: string;
+    projectedDigest: string;
+    projected: boolean;
+  } {
     if (
       typeof row.snapshot_json !== "string" ||
       typeof row.snapshot_digest !== "string" ||
@@ -394,6 +408,41 @@ export class SqliteExecutionStore implements PlanStore, TokenUseStore {
     }
     if (!verified) throw new HandoffError("unknown_plan");
     return row.envelope_digest;
+  }
+
+  /** The newest revisions, newest first, each verified like the latest. */
+  recentHandoffs(workspaceId: string, limit: number): HandoffRecordV1[] {
+    this.#verifyHandoff();
+    return this.#database
+      .prepare(
+        `SELECT revision, update_id, snapshot_digest, projected_digest,
+      CASE WHEN length(CAST(snapshot_json AS BLOB)) <= 65536 THEN snapshot_json ELSE NULL END AS snapshot_json,
+      0 AS projected
+      FROM handoff_snapshots s WHERE workspace_id = ? ORDER BY revision DESC LIMIT ?`,
+      )
+      .all(workspaceId, limit)
+      .map((row) => this.#parseHandoffRow(workspaceId, row).record);
+  }
+
+  /** The newest revision number, or 0; cheap enough to fingerprint. */
+  handoffRevision(workspaceId: string): number {
+    this.#verifyHandoff();
+    const row = this.#database
+      .prepare(
+        "SELECT coalesce(max(revision), 0) AS revision FROM handoff_snapshots WHERE workspace_id = ?",
+      )
+      .get(workspaceId);
+    if (typeof row?.revision !== "number")
+      throw new HandoffError("unavailable");
+    return row.revision;
+  }
+
+  /** Full-text search over this workspace's handoff context. */
+  handoffSearch(): HandoffSearchIndex {
+    this.#verifyHandoff();
+    return new HandoffSearchIndex(this.#database, () => {
+      this.#verifyHandoff();
+    });
   }
 
   latestHandoff(workspaceId: string):

@@ -17,6 +17,7 @@ import {
   HOOK_CONTEXT_CHARS,
   MAX_BRIEF_BYTES,
   MIN_BRIEF_BYTES,
+  type HandoffSearchResultV1,
 } from "./handoff-session-contract.js";
 
 /** Hook payloads larger than this are ignored rather than parsed. */
@@ -34,7 +35,8 @@ export interface HandoffCliIo {
 const USAGE =
   "Usage: reprogate handoff hook --config <absolute-path> [--client claude-code|codex] [<codex-notification-json>]\n" +
   "       reprogate handoff brief --config <absolute-path> [--json] [--bytes <n>]\n" +
-  "       reprogate handoff adopt --config <absolute-path> [--digest <sha256:...>] [--agent <name>] [--repair-permissions]\n";
+  "       reprogate handoff adopt --config <absolute-path> [--digest <sha256:...>] [--agent <name>] [--repair-permissions]\n" +
+  "       reprogate handoff search --config <absolute-path> [--json] [--path <path>] [--worktree <name>] [--limit <n>] [--bytes <n>] <query...>\n";
 
 // A workspace that kept plain files is refused until .agent is private, and
 // "unavailable" alone gives no way forward.
@@ -331,6 +333,96 @@ export function runHandoffCli(
     }
   }
   if (command === "adopt") return runAdopt(rest, io);
+  if (command === "search") return runSearch(rest, io);
   io.stderr(USAGE);
   return 1;
+}
+
+/** One line per hit, then its text; the ambiguity, if any, first. */
+export function renderSearchText(result: HandoffSearchResultV1): string {
+  const lines: string[] = [];
+  if (result.ambiguous !== null) {
+    lines.push(
+      `"${result.ambiguous.term}" matches several files; ask again with --path or --worktree:`,
+    );
+    for (const candidate of result.ambiguous.candidates)
+      lines.push(
+        `  ${candidate.path}${candidate.worktree === null ? "" : ` (${candidate.worktree})`}: ${String(candidate.hits)} hit(s), last ${candidate.lastSeenAt}`,
+      );
+    if (result.ambiguous.omittedCandidates > 0)
+      lines.push(`  and ${String(result.ambiguous.omittedCandidates)} more`);
+    lines.push("");
+  }
+  for (const hit of result.hits) {
+    const where = [
+      hit.agent,
+      hit.sessionState,
+      hit.worktree,
+      hit.revision === null ? null : `revision ${String(hit.revision)}`,
+    ].filter((part) => part !== null);
+    lines.push(
+      `[${hit.source}${hit.kind === null ? "" : ` ${hit.kind}`}] ${where.join(", ")} ${hit.createdAt}`,
+    );
+    lines.push(`  ${hit.text.replace(/\r\n|\r|\n/gu, "\n  ")}`);
+  }
+  if (result.hits.length === 0) lines.push("No matches.");
+  if (result.omittedHits > 0)
+    lines.push(`${String(result.omittedHits)} more match(es) not shown.`);
+  return `${lines.join("\n")}\n`;
+}
+
+function runSearch(rest: readonly string[], io: HandoffCliIo): number {
+  const parsed = parseOptions(
+    rest,
+    new Set(["--json"]),
+    new Set(["--config", "--path", "--worktree", "--limit", "--bytes"]),
+  );
+  const configPath = parsed?.options.get("--config");
+  const number = (name: string) => {
+    const text = parsed?.options.get(name);
+    return text === undefined ? undefined : Number(text);
+  };
+  if (
+    parsed === undefined ||
+    configPath === undefined ||
+    parsed.positional.length === 0
+  ) {
+    io.stderr(USAGE);
+    return 1;
+  }
+  const path = parsed.options.get("--path");
+  const worktree = parsed.options.get("--worktree");
+  const limit = number("--limit");
+  const resultBytes = number("--bytes");
+  let service: HandoffService | undefined;
+  let workspaceRoot: string | undefined;
+  try {
+    const config = loadHandoffConfig(configPath);
+    workspaceRoot = config.workspaceRoot;
+    service = createHandoffService(config, {
+      deferProjection: false,
+      ...(io.now === undefined ? {} : { now: io.now }),
+    });
+    const result = service.search({
+      handoffVersion: 1,
+      query: parsed.positional.join(" "),
+      ...(path === undefined ? {} : { path }),
+      ...(worktree === undefined ? {} : { worktree }),
+      ...(limit === undefined ? {} : { limit }),
+      ...(resultBytes === undefined ? {} : { resultBytes }),
+    });
+    io.stdout(
+      parsed.options.has("--json")
+        ? `${JSON.stringify(result)}\n`
+        : renderSearchText(result),
+    );
+    return 0;
+  } catch (error) {
+    io.stderr(
+      `reprogate handoff search: ${failureText(error, workspaceRoot)}\n`,
+    );
+    return 1;
+  } finally {
+    service?.close();
+  }
 }

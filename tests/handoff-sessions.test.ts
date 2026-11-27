@@ -993,7 +993,7 @@ test("MCP clients get session tools, server instructions and a brief from status
     (await viewer.listTools()).tools
       .map((tool) => tool.name)
       .filter((name) => name.startsWith("handoff")),
-    ["handoff_status"],
+    ["handoff_status", "handoff_search"],
   );
   assert.equal(viewer.getInstructions(), undefined);
 });
@@ -1084,6 +1084,16 @@ test("published schemas accept session values", (t) => {
   const end = { handoffVersion: 1, sessionId: joined.sessionId, summary: "ok" };
   check("handoff.schema.json#/$defs/end", end);
   check("handoff.schema.json#/$defs/sessionResult", service.end(end));
+  const search = {
+    handoffVersion: 1,
+    query: "stuck",
+    kinds: ["blocker", "task"],
+    limit: 3,
+  };
+  check("handoff.schema.json#/$defs/search", search);
+  const found = service.search(search);
+  assert.equal(found.hits.length, 1);
+  check("handoff.schema.json#/$defs/searchResult", found);
 });
 
 test("briefs keep every budget, even with long escaped notes, and flag what was cut", (t) => {

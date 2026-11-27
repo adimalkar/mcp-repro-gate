@@ -168,11 +168,25 @@ When `allowUpdates` is true, three more tools are registered, and the server's M
 
 - `handoff_join { handoffVersion, agent, kind?, parentSessionId?, task?, briefBytes? }` starts a session and returns its `sessionId` with a resume brief.
 - `handoff_note { handoffVersion, sessionId, kind, text }` appends one note: `progress`, `blocker`, `decision`, `next` or `result`. Notes go to the agent's own session, so concurrent agents never conflict, unlike whole-document updates.
-- `handoff_end { handoffVersion, sessionId, summary? }` ends the session; the summary is stored as a `result` note.
+- `handoff_end { handoffVersion, sessionId, summary? }` ends the session; the summary is stored as a `result` note. It returns `sharedUpdate`: `expected` only when this was the last top-level agent still `active`, otherwise `skip`.
+
+**One writer for the shared summary.** `handoff_update` replaces one shared revision, so agents that all call it when they finish race for it: in a load test, 19 of 20 simultaneous updates failed with `revision_conflict`. The MCP instructions therefore ask every agent to finish with `handoff_end` and a summary, and only the agent told `expected` to merge the `result` notes into a `handoff_update`. That answer is decided inside the transaction that ends the session, so two agents ending at once are never both told `expected`. Subagents are always told `skip`, and an idle or quiet session does not hold the update back. This is guidance, not a lock: `handoff_update` accepts any caller as before, and on `revision_conflict` an agent is asked to re-read once, retry once, then stop, since its summary is already recorded.
 
 `handoff_status { handoffVersion: 1, brief: true, briefBytes? }` adds a brief to the status. A brief lists the sessions that need attention first (failed, interrupted, quiet), recent blocker and decision notes, the goal and next steps from the latest handoff revision, and the Git state observed now. It always fits `briefBytes` (default 8 KiB; at least 1 KiB). Dropped sessions, notes and paths are counted, and `truncated` is true when anything else was removed or cut short. Under extreme pressure only the skeleton remains: counts and the Git summary, with no free text.
 
 When the MCP connection closes, the server ends the sessions joined through it as `disconnected`.
+
+### Searching earlier work
+
+`handoff_search { handoffVersion: 1, query, sessionId?, kinds?, worktree?, path?, limit?, resultBytes? }` searches the notes, session tasks and the items of the latest 32 revisions (goal, completed work, touched files, blockers, next steps) for one workspace. It is registered whenever handoff is configured, read-only configurations included. `reprogate handoff search --config <handoff.json> [--json] [--path <path>] [--worktree <name>] [--limit <n>] [--bytes <n>] <query...>` runs the same search from a shell.
+
+- **Query.** Free text: identifiers, paths, error codes or words. It is never passed to the index as query syntax; each word is matched as a phrase, so `src/cli.ts`, `EPERM` and `"NEAR(a b)"` are all just text. `parseHandoffConfig` and `handoff_search` are also found from their parts (`HandoffConfig`, `search`). Words are combined with OR and ranked by BM25, so hits matching more of them come first.
+- **Ranking in context.** Hits from the caller's own session, its parent and its subagents (`sessionId`) count 1.5 times; hits from its worktree, in repository scope, 1.25 times; a hit 30 days old counts half. Hits with the same text are returned once.
+- **Disambiguation.** Each hit lists the path-like words in it (`paths`). When the query names a file and the hits mention it under more than one path or worktree, such as `cli.ts` matching `src/cli.ts` and `src/handoff-cli.ts`, `ambiguous` lists the candidates with their hit counts and when each was last mentioned. Ask again with `path` (an exact path, or a path ending with it) or `worktree` (by name, as briefs show it). Mentions are matched by name; file contents are not compared.
+- **Bounds.** At most `limit` hits (default 8, up to 20) within `resultBytes` (default 4 KiB, 1 to 16 KiB). A note longer than 512 bytes is returned as a window around the match, with `cut: true`. `omittedHits` counts the rest of the 200 best matches; a query matching more than that is ranked within those 200.
+- **Filters.** `kinds` takes note kinds, `task` and `revision`.
+- **Index.** An SQLite FTS5 table in the handoff database, used as a cache. Before each search it is brought up to date with the notes, tasks and revisions, so pruned notes never return and notes written by another process are found. Each note hit is checked against the stored note, and a hit whose note changed or was removed is dropped. Its size follows the bounded sources. With the most a workspace keeps, 256 sessions of 64 notes each, the first search built the index in 0.7 seconds and later searches took about 45 ms on a laptop.
+- Every hit is caller-asserted text, returned as data.
 
 ### Client hooks: recording without a model call
 

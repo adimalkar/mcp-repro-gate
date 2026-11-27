@@ -87,7 +87,7 @@ The default server exposes exactly five tools, each with an output schema and co
 
 When an executor is explicitly supplied, the server also registers `action.execute`. With an opt-in `mediation` configuration, it also registers `action.run`, which runs policy-`allow` read-only plans, or plans an operator approved on the host with `approve --hold`, using a host-issued capability and returns redacted, bounded output. `reprogate catalog import` turns a configured backend's live tool list into reviewed catalog entries; see [proxying a code graph](docs/CODE_GRAPH.md). The CLI does this only after `serve --config <absolute-path>` successfully validates Runtime Configuration v1. See the [configuration guide](docs/CONFIGURATION.md). The included default catalog remains a deterministic, plan-only demo fixture.
 
-A host can also opt in to the advisory `handoff_status` and `handoff_update` tools with `serve --handoff-config <absolute-path>`. They keep durable, caller-asserted session context for one configured workspace and project it to `.agent/handoff.md`. They never authorize actions. See the [handoff guide](docs/HANDOFF.md).
+A host can also opt in to the advisory `handoff_status`, `handoff_update` and `handoff_search` tools with `serve --handoff-config <absolute-path>`. They keep durable, caller-asserted session context for one configured workspace, project it to `.agent/handoff.md`, and search it. They never authorize actions. See the [handoff guide](docs/HANDOFF.md).
 
 `reprogate bench facade` measures what the façade returns, in agent-visible bytes, on a published fixture, against stated baselines. See [benchmarks](docs/BENCHMARKS.md) for the numbers, their limits, and the manual two-host protocol.
 

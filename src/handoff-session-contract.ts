@@ -250,7 +250,106 @@ export const handoffSessionResultSchema = z.strictObject({
   handoffVersion: z.literal(1),
   session: handoffSessionViewSchema,
   redactions: z.number().int().min(0),
+  /**
+   * On handoff_end only: "expected" when this was the last top-level agent
+   * still running, so it should record the shared summary; "skip" otherwise.
+   */
+  sharedUpdate: z.enum(["expected", "skip"]).optional(),
 });
+
+export const HANDOFF_REVISION_FIELDS = [
+  "goal",
+  "completed",
+  "touchedFile",
+  "blocker",
+  "nextStep",
+] as const;
+export type HandoffRevisionField = (typeof HANDOFF_REVISION_FIELDS)[number];
+export const HANDOFF_SEARCH_KINDS = [
+  ...HANDOFF_NOTE_KINDS,
+  "task",
+  "revision",
+] as const;
+export type HandoffSearchKind = (typeof HANDOFF_SEARCH_KINDS)[number];
+export const DEFAULT_SEARCH_LIMIT = 8;
+export const MAX_SEARCH_LIMIT = 20;
+export const DEFAULT_SEARCH_BYTES = 4 * 1024;
+export const MIN_SEARCH_BYTES = 1024;
+export const MAX_SEARCH_BYTES = 16 * 1024;
+export const MAX_SEARCH_QUERY_BYTES = 512;
+export const MAX_SEARCH_HIT_BYTES = 512;
+export const MAX_SEARCH_CANDIDATES = 8;
+
+export const handoffSearchInputSchema = z.strictObject({
+  handoffVersion: z.literal(1),
+  /** Free text: words, identifiers, paths or error text. Not FTS syntax. */
+  query: text(MAX_SEARCH_QUERY_BYTES).min(1),
+  /** The caller's session: its lane and worktree rank first. */
+  sessionId: handoffUuidSchema.optional(),
+  kinds: z
+    .array(z.enum(HANDOFF_SEARCH_KINDS))
+    .min(1)
+    .max(HANDOFF_SEARCH_KINDS.length)
+    .optional(),
+  /** A worktree by name, as briefs show it. */
+  worktree: text(128).min(1).optional(),
+  /** Only hits that mention this path, or a path ending with it. */
+  path: text(512).min(1).optional(),
+  limit: z.number().int().min(1).max(MAX_SEARCH_LIMIT).optional(),
+  resultBytes: z
+    .number()
+    .int()
+    .min(MIN_SEARCH_BYTES)
+    .max(MAX_SEARCH_BYTES)
+    .optional(),
+});
+export type HandoffSearchInputV1 = z.infer<typeof handoffSearchInputSchema>;
+
+export const handoffSearchHitSchema = z.strictObject({
+  source: z.enum(["note", "task", "revision"]),
+  /** The note kind, or the revision field; null for a task. */
+  kind: z.enum([...HANDOFF_NOTE_KINDS, ...HANDOFF_REVISION_FIELDS]).nullable(),
+  text: z.string(),
+  /** True when text is a window of a longer original. */
+  cut: z.boolean(),
+  createdAt: isoSchema,
+  sessionId: handoffUuidSchema.nullable(),
+  agent: z.string().nullable(),
+  sessionKind: z.enum(["agent", "subagent"]).nullable(),
+  sessionState: z.enum(HANDOFF_SESSION_STATES).nullable(),
+  worktree: z.string().nullable(),
+  revision: z.number().int().min(1).nullable(),
+  /** Path-like words in the full text. */
+  paths: z.array(z.string()),
+});
+export type HandoffSearchHit = z.infer<typeof handoffSearchHitSchema>;
+export const handoffSearchCandidateSchema = z.strictObject({
+  path: z.string(),
+  worktree: z.string().nullable(),
+  hits: z.number().int().min(1),
+  lastSeenAt: isoSchema,
+});
+export const handoffSearchResultSchema = z.strictObject({
+  handoffVersion: z.literal(1),
+  hits: z.array(handoffSearchHitSchema),
+  /** Hits left out by limit or resultBytes, among the 200 best matches. */
+  omittedHits: z.number().int().min(0),
+  /**
+   * Set when a file named in the query matches more than one path or
+   * worktree in the hits: ask again with path or worktree.
+   */
+  ambiguous: z
+    .strictObject({
+      term: z.string(),
+      candidates: z.array(handoffSearchCandidateSchema),
+      omittedCandidates: z.number().int().min(0),
+    })
+    .nullable(),
+  /** Set when anything beyond the counted omissions was removed. */
+  truncated: z.boolean(),
+  provenance: z.literal("caller_asserted"),
+});
+export type HandoffSearchResultV1 = z.infer<typeof handoffSearchResultSchema>;
 
 function parseWith<T>(schema: z.ZodType<T>, value: unknown): T {
   const parsed = schema.safeParse(ownHandoffValue(value));
@@ -263,6 +362,15 @@ export const parseHandoffNote = (value: unknown): HandoffNoteV1 =>
   parseWith(handoffNoteSchema, value);
 export const parseHandoffEnd = (value: unknown): HandoffEndV1 =>
   parseWith(handoffEndSchema, value);
+export function parseHandoffSearch(value: unknown): HandoffSearchInputV1 {
+  const input = parseWith(handoffSearchInputSchema, value);
+  if (
+    input.kinds !== undefined &&
+    new Set(input.kinds).size !== input.kinds.length
+  )
+    throw new HandoffError("invalid_input");
+  return input;
+}
 
 /** Make observed text printable: replace unsafe characters, bound bytes. */
 export function printableText(value: string, maxBytes: number): string {
