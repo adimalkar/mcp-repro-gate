@@ -309,13 +309,16 @@ export class HostMediator {
 
   // Inspect and run share the same read-only route selection. The executor
   // still atomically consumes the capability when the caller actually runs it.
+  #assertCurrent(plan: PlannedAction, now: Date): void {
+    if (this.kernel.currentDecision(plan.envelope) !== plan.policy.decision)
+      throw new MediationError("stale_plan");
+    if (Date.parse(plan.envelope.expiresAt) <= now.getTime())
+      throw new MediationError("expired");
+  }
+
   #route(plan: PlannedAction, now: Date): HeldApprovalV1 | undefined {
     if (plan.policy.decision === "deny")
       throw new MediationError("not_allowed");
-    if (Date.parse(plan.envelope.expiresAt) <= now.getTime())
-      throw new MediationError("expired");
-    if (this.kernel.currentDecision(plan.envelope) !== plan.policy.decision)
-      throw new MediationError("stale_plan");
     if (this.runsApprovedPlans) {
       let held: HeldApprovalV1 | undefined;
       try {
@@ -324,6 +327,7 @@ export class HostMediator {
         throw new MediationError("invalid_approval");
       }
       if (held !== undefined) {
+        this.#assertCurrent(plan, now);
         if (!heldApprovalMatches(held, plan, this.capabilitySecret, now))
           throw new MediationError("invalid_approval");
         return held;
@@ -339,6 +343,7 @@ export class HostMediator {
       !effects.every((effect) => this.#effects.has(effect))
     )
       throw new MediationError("effect_not_mediated");
+    this.#assertCurrent(plan, now);
     const strikes = this.#strikes(toolKey(plan.envelope.tool));
     if (strikes !== undefined && strikes.failures >= strikes.limit)
       throw new MediationError("resolve_required", strikes);
@@ -346,8 +351,9 @@ export class HostMediator {
   }
 
   nextStep(plan: PlannedAction): NextStep {
+    const now = this.clock();
     try {
-      const held = this.#route(plan, this.clock());
+      const held = this.#route(plan, now);
       if (held !== undefined)
         return this.executor.store.hasCapabilityUse(
           `host-held:${held.approvalId}`,
@@ -360,16 +366,15 @@ export class HostMediator {
         : "stop";
     } catch (error) {
       if (error instanceof MediationError) {
-        if (
-          error.code === "awaiting_approval" ||
-          (error.code === "effect_not_mediated" && this.runsApprovedPlans)
-        )
-          return "await_approval";
-        if (
-          error.code === "effect_not_mediated" ||
-          (error.code === "not_allowed" && plan.policy.decision !== "deny")
-        )
-          return "await_capability";
+        if (error.code === "awaiting_approval" || error.code === "effect_not_mediated" ||
+            (error.code === "not_allowed" && plan.policy.decision !== "deny")) {
+          try {
+            this.#assertCurrent(plan, now);
+          } catch {
+            return "stop";
+          }
+          return this.runsApprovedPlans ? "await_approval" : "await_capability";
+        }
       }
       return "stop";
     }
