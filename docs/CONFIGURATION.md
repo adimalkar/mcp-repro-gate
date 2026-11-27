@@ -114,7 +114,7 @@ node dist/src/cli.js verify-receipt --config /absolute/path/reprogate.json ./rec
 
 ### Several processes on one database
 
-Several `serve` processes, for example one per agent host, can share one `databasePath`. Each capability still runs at most once. A process that begins an execution owns it under a lease that it renews every 10 seconds while the call is running, and which lapses 30 seconds after the last renewal. At startup, `serve` records as `indeterminate` only the executions whose owner's lease has lapsed. Others stay `prepared` and are reported on stderr as owned by another live process. A crashed process's executions are recovered by the first startup after its lease lapses. Keep the database on a local filesystem: SQLite locking is not reliable over network filesystems, and leases compare wall clocks.
+Several `serve` processes, for example one per agent host, can share one `databasePath`. Each capability still runs at most once. A process that begins an execution owns it under a lease that it renews every 10 seconds while the call is running, and which lapses 30 seconds after the last renewal. At startup, `serve` records as `indeterminate` only the executions whose owner's lease has lapsed. The CLI reports how many executions remain `prepared` after recovery. A worker that just exited can hold an unexpired lease. A crashed process's executions are recovered by the first startup after its lease lapses. Keep the database on a local filesystem: SQLite locking is not reliable over network filesystems, and leases compare wall clocks.
 
 ## Host-mediated execution
 

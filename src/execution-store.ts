@@ -147,6 +147,10 @@ export class SqliteExecutionStore implements PlanStore, TokenUseStore {
     const leaseMs = options.leaseMs ?? DEFAULT_EXECUTION_LEASE_MS;
     if (!Number.isSafeInteger(leaseMs) || leaseMs < 30)
       throw new Error("Execution lease must be an integer of at least 30 ms");
+    // Node clamps an overflowing timer delay to 1 ms. The heartbeat runs
+    // once per third of a lease, so bound that interval before opening SQLite.
+    if (Math.floor(leaseMs / 3) > 2_147_483_647)
+      throw new Error("Execution lease exceeds the supported timer interval");
     this.#leaseMs = leaseMs;
     this.#openedPath = physicalOpenPath(path);
     createPrivateDatabaseFile(this.#openedPath);

@@ -336,6 +336,10 @@ test("leases: a closed owner's and a legacy execution are recovered, the store's
   assert.equal(fixture.store.getExecution("legacy")?.state, "indeterminate");
   assert.equal(fixture.store.countIncomplete(), 1);
   assert.throws(() => fixture.open({ leaseMs: 1 }), /at least 30 ms/u);
+  assert.throws(
+    () => fixture.open({ leaseMs: Number.MAX_SAFE_INTEGER }),
+    /supported timer interval/u,
+  );
 });
 
 test("a database from before execution ownership opens and recovers as before", (context) => {

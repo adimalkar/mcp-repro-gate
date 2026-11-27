@@ -139,7 +139,7 @@ export interface ConfiguredRuntime {
   mediator?: HostMediator;
   store: SqliteExecutionStore;
   recoveredExecutions: number;
-  /** Prepared executions another live process still owns, left as they are. */
+  /** Number of prepared executions observed after lease recovery. */
   ownedExecutions: number;
   close(): void;
 }

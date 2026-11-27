@@ -167,7 +167,7 @@ async function main(): Promise<void> {
     }
     if (runtime !== undefined && runtime.ownedExecutions > 0) {
       process.stderr.write(
-        `Left ${String(runtime.ownedExecutions)} incomplete execution(s) owned by another live process\n`,
+        `Left ${String(runtime.ownedExecutions)} prepared execution(s) pending after lease recovery\n`,
       );
     }
     const handle = serveStdio(
