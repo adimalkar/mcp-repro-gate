@@ -377,13 +377,22 @@ test("configured child environment has exactly the selected inheritance and mapp
   const catalog = fixture.config.catalog[0];
   assert.ok(catalog);
   catalog.artifactDigest = digest;
-  for (const inherit of ["none", "safe"]) {
-    backend.environment = { inherit, from: { EXPLICIT: "RG_SENTINEL" } };
+  const windows = process.platform === "win32";
+  for (const [inherit, override] of [
+    ["none", false],
+    ["safe", false],
+    ["none", true],
+  ] as const) {
+    const from: Record<string, string> = { EXPLICIT: "RG_SENTINEL" };
+    if (windows) from.SYSTEMROOT = "SYSTEMROOT";
+    if (override) from[windows ? "UserName" : safe] = "RG_OVERRIDE";
+    backend.environment = { inherit, from };
     writeFileSync(fixture.configPath, JSON.stringify(fixture.config));
     const runtime = await createConfiguredRuntime(fixture.configPath, {
       ...environment(),
       [safe]: "supplied-safe",
       RG_SENTINEL: "mapped",
+      RG_OVERRIDE: "explicit-safe",
     });
     try {
       const session = await runtime.executor.connector.connect(
@@ -392,7 +401,13 @@ test("configured child environment has exactly the selected inheritance and mapp
       );
       await session.close();
       assert.deepEqual(JSON.parse(readFileSync(observation, "utf8")), [
-        inherit === "safe" ? "supplied-safe" : null,
+        override
+          ? "explicit-safe"
+          : inherit === "safe"
+            ? "supplied-safe"
+            : windows
+              ? ""
+              : null,
         null,
         "mapped",
       ]);

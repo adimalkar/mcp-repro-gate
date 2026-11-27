@@ -22,6 +22,22 @@ export interface DownstreamToolDescription extends DownstreamTool {
 }
 
 const MAX_LISTED_TOOLS = 1024;
+// Node's Windows libuv inserts the parent's value for each missing name in
+// required_vars (deps/uv/src/win/process.c). Explicit empty entries prevent
+// that fallback while allowing the caller to supply the real values below.
+const windowsRequiredEnvironment = [
+  "HOMEDRIVE",
+  "HOMEPATH",
+  "LOGONSERVER",
+  "PATH",
+  "SYSTEMDRIVE",
+  "SYSTEMROOT",
+  "TEMP",
+  "USERDOMAIN",
+  "USERNAME",
+  "USERPROFILE",
+  "WINDIR",
+];
 
 export interface DownstreamSession {
   getTool(name: string): Promise<DownstreamTool | undefined>;
@@ -168,6 +184,9 @@ export class StdioMcpConnector implements DownstreamConnector {
           undefined,
         ]),
       );
+      if (process.platform === "win32") {
+        for (const key of windowsRequiredEnvironment) env[key] = "";
+      }
       for (const [key, value] of Object.entries(config.env))
         env[process.platform === "win32" ? key.toUpperCase() : key] = value;
       // StdioServerParameters types the spread as strings only. The optional
