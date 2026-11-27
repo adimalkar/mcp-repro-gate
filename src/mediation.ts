@@ -366,8 +366,11 @@ export class HostMediator {
         : "stop";
     } catch (error) {
       if (error instanceof MediationError) {
-        if (error.code === "awaiting_approval" || error.code === "effect_not_mediated" ||
-            (error.code === "not_allowed" && plan.policy.decision !== "deny")) {
+        if (
+          error.code === "awaiting_approval" ||
+          error.code === "effect_not_mediated" ||
+          (error.code === "not_allowed" && plan.policy.decision !== "deny")
+        ) {
           try {
             this.#assertCurrent(plan, now);
           } catch {
