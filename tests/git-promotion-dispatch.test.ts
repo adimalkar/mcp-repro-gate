@@ -414,3 +414,72 @@ test("a Git timeout at the locked gate records nothing", (t) => {
   assert.equal(current.outcome, undefined);
   assert.equal(promote(f).status.state, "confirmed");
 });
+
+for (const observation of [
+  "read error",
+  "missing",
+  "different bytes",
+] as const) {
+  test(`locked candidate verification handles ${observation}`, (t) => {
+    const f = fixture(t);
+    reserve(f);
+    const original = childProcess.spawnSync;
+    const oid = f.prepared.candidateCommitOid;
+    let commitReads = 0;
+    childProcess.spawnSync = ((command: string, args: string[], options) => {
+      const result = original(command, args, options);
+      if (
+        args.includes("cat-file") &&
+        args.at(-1) === oid &&
+        ++commitReads === 2
+      ) {
+        if (observation === "different bytes")
+          return {
+            ...result,
+            stdout: Buffer.from("invalid candidate bytes\n"),
+          };
+        return {
+          ...result,
+          status: 128,
+          stdout: Buffer.alloc(0),
+          stderr: Buffer.alloc(0),
+        };
+      }
+      if (observation === "missing" && args.at(-1) === "--batch-check")
+        return {
+          ...result,
+          stdout: Buffer.from(
+            `${oid} missing\n${f.prepared.candidateTreeOid} tree 123\n`,
+          ),
+        };
+      return result;
+    }) as typeof childProcess.spawnSync;
+    syncBuiltinESMExports();
+    try {
+      if (observation === "different bytes") {
+        const result = promote(f);
+        assert.equal(result.status.outcome?.reason, "candidate_rejected");
+        assert.equal(result.status.state, "failed");
+      } else {
+        assert.throws(
+          () => promote(f),
+          observation === "missing"
+            ? /is missing from the repository/u
+            : /nonzero command result/u,
+        );
+      }
+      assert.equal(commitReads, 2);
+    } finally {
+      childProcess.spawnSync = original;
+      syncBuiltinESMExports();
+    }
+    assert.equal(target(f), f.prepared.expectedOldOid);
+    if (observation !== "different bytes") {
+      assert.equal(status(f)?.state, "prepared");
+      assert.equal(status(f)?.admission, undefined);
+      assert.equal(status(f)?.outcome, undefined);
+      assert.deepEqual(f.control.query(), { status: "held", owner: f.owner });
+      assert.equal(promote(f).status.state, "confirmed");
+    }
+  });
+}

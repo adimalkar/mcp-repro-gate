@@ -38,6 +38,9 @@ export interface StagedGitChangeV1 {
   stagedPatchDigest: Digest;
 }
 
+/** A completed observation disagrees with the reviewed candidate. */
+export class GitCandidateMismatchError extends Error {}
+
 function changedPathsFromRawDiff(
   raw: Buffer,
   allowedPaths: string[],
@@ -68,13 +71,13 @@ function changedPathsFromRawDiff(
       !REGULAR_MODES.has(change[1] ?? "") ||
       !REGULAR_MODES.has(change[2] ?? "")
     ) {
-      throw new Error(
+      throw new GitCandidateMismatchError(
         "Git staged diff contains a symlink, submodule, or unsupported file mode",
       );
     }
     const path = allowedByBytes.get(pathBytes.toString("hex"));
     if (path === undefined) {
-      throw new Error(
+      throw new GitCandidateMismatchError(
         "Git staged diff changes a path outside the proposal scope",
       );
     }
@@ -258,7 +261,11 @@ export function verifyInstalledGitPromotionObjects(
   try {
     verifyInstalledObjects(proposal, repositoryPath, prepared);
   } catch (error) {
-    if (error instanceof GitRunnerUnavailableError) throw error;
+    if (
+      error instanceof GitRunnerUnavailableError ||
+      error instanceof GitCandidateMismatchError
+    )
+      throw error;
     // Diagnose only after a failure; the check itself is unchanged.
     const missing = missingCandidate(repositoryPath, prepared);
     if (missing === undefined) throw error;
@@ -304,7 +311,15 @@ function verifyInstalledObjects(
     p.expectedOldOid !== proposal.workspace.destinationOid ||
     p.candidateTreeOid === proposal.workspace.headTree
   )
-    throw new Error("Candidate does not bind the exact proposal base/tree");
+    throw new GitCandidateMismatchError(
+      "Candidate does not bind the exact proposal base/tree",
+    );
+  const requireMatch = (matches: boolean) => {
+    if (!matches)
+      throw new GitCandidateMismatchError(
+        "Installed candidate differs from exact host commit/tree/effect",
+      );
+  };
   const inRepository = (...args: string[]) => ["-C", repositoryPath, ...args];
   const expected = fixedGitPromotionCommitBytes(
     p.candidateTreeOid,
@@ -318,18 +333,25 @@ function verifyInstalledObjects(
     undefined,
     MAX_COMMIT_BYTES,
   );
+  requireMatch(
+    rawCommit.equals(expected) &&
+      sha256(rawCommit) === p.hostCommitMetadataDigest,
+  );
   const commitOid = gitLine(
     inRepository("hash-object", "-t", "commit", "--stdin"),
     rawCommit,
   );
+  requireMatch(commitOid === p.candidateCommitOid);
   const rawTree = git(inRepository("cat-file", "tree", p.candidateTreeOid));
   const treeOid = gitLine(
     inRepository("hash-object", "-t", "tree", "--stdin"),
     rawTree,
   );
+  requireMatch(treeOid === p.candidateTreeOid);
   const referencedTree = gitLine(
     inRepository("rev-parse", "--verify", `${p.candidateCommitOid}^{tree}`),
   );
+  requireMatch(referencedTree === treeOid);
   const raw = git(
     inRepository(
       "diff",
@@ -343,6 +365,10 @@ function verifyInstalledObjects(
       p.candidateCommitOid,
       "--",
     ),
+  );
+  const changedPaths = changedPathsFromRawDiff(raw, proposal.allowedPaths);
+  requireMatch(
+    digestCanonical(changedPaths) === digestCanonical(p.staged.changedPaths),
   );
   const patch = git(
     inRepository(
@@ -360,21 +386,14 @@ function verifyInstalledObjects(
     proposalId: proposal.proposalId,
     baseCommit: proposal.workspace.headCommit,
     candidateTreeOid: treeOid,
-    changedPaths: changedPathsFromRawDiff(raw, proposal.allowedPaths),
+    changedPaths,
     stagedPatchDigest: sha256(patch),
   };
-  if (
-    !rawCommit.equals(expected) ||
-    commitOid !== p.candidateCommitOid ||
-    treeOid !== p.candidateTreeOid ||
-    referencedTree !== treeOid ||
-    sha256(rawCommit) !== p.hostCommitMetadataDigest ||
-    digestCanonical(actual) !== p.effectDigest ||
-    digestCanonical(actual) !== digestCanonical(p.staged)
-  )
-    throw new Error(
-      "Installed candidate differs from exact host commit/tree/effect",
-    );
+  const actualDigest = digestCanonical(actual);
+  requireMatch(
+    actualDigest === p.effectDigest &&
+      actualDigest === digestCanonical(p.staged),
+  );
 }
 
 /** Internal staging continuation, concrete only; never a caller-supplied callback. */
