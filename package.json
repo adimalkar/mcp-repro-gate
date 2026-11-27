@@ -42,7 +42,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint": "eslint . --max-warnings 0",
-    "pack:check": "npm pack --dry-run --json",
+    "pack:check": "node dist/scripts/check-package.js",
     "start": "node dist/src/cli.js serve",
     "test": "npm run build --silent && node --test \"dist/tests/*.test.js\"",
     "typecheck": "tsc -p tsconfig.json --noEmit"
