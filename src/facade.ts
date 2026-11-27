@@ -51,7 +51,13 @@ export const catalogDescribeOutputSchema = z.object({
 
 export const actionIdInputSchema = z.string().regex(/^sha256:[0-9a-f]{64}$/u);
 export const toolRefInputSchema = z.string().min(1).max(256);
-export const nextStepSchema = z.enum(["stop", "await_capability", "plan_only"]);
+export const nextStepSchema = z.enum([
+  "stop",
+  "await_capability",
+  "plan_only",
+  "run",
+  "await_approval",
+]);
 export type NextStep = z.infer<typeof nextStepSchema>;
 
 const compactPlanSchema = z.object({
@@ -140,7 +146,7 @@ export function nextStepFor(
 export function compactPlan(
   plan: PlannedAction,
   toolRef: string,
-  executorConfigured: boolean,
+  nextStep: NextStep,
 ) {
   return {
     detail: "compact" as const,
@@ -150,16 +156,16 @@ export function compactPlan(
     decision: plan.policy.decision,
     reasonCodes: [...new Set(plan.policy.reasons.map(({ ruleId }) => ruleId))],
     expiresAt: plan.envelope.expiresAt,
-    nextStep: nextStepFor(plan, executorConfigured),
+    nextStep,
   };
 }
 
-export function fullPlan(plan: PlannedAction, executorConfigured: boolean) {
+export function fullPlan(plan: PlannedAction, nextStep: NextStep) {
   return {
     detail: "full" as const,
     envelope: plan.envelope,
     envelopeDigest: plan.envelopeDigest,
     policy: plan.policy,
-    nextStep: nextStepFor(plan, executorConfigured),
+    nextStep,
   };
 }

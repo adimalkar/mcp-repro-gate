@@ -243,3 +243,5 @@ their limits.
 The observer hashes regular-file contents and records file type, mode, and size. It does not retain file contents, and it records but never follows symlinks inside an observed root. Entry and byte limits fail closed.
 
 The current observer does not observe network, process, or credential effects. Configured mode remains a reference enforcement path, not a sandbox. Run one ReproGate process per SQLite database; multi-process leases and asymmetric receipt signing remain future work.
+
+With host mediation enabled, `action.plan` and `action.inspect` report `nextStep: "run"` when `action.run` can use a configured read or a valid unused held approval. `await_approval` asks the operator to approve the action. `await_capability` indicates a token is required for direct execution. A denied, expired, stale or exhausted mediated route returns `stop`. Guidance is a point-in-time observation. Dispatch checks authorization again.

@@ -750,6 +750,14 @@ export class SqliteExecutionStore implements PlanStore, TokenUseStore {
     }
   }
 
+  hasCapabilityUse(id: string): boolean {
+    return (
+      this.#database
+        .prepare("SELECT 1 FROM token_uses WHERE capability_id = ?")
+        .get(id) !== undefined
+    );
+  }
+
   /** Consumed capabilities whose ID starts with this non-empty prefix. */
   countCapabilityUses(prefix: string): number {
     // A key range keeps the lookup on the primary-key index.

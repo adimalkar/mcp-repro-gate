@@ -20,6 +20,7 @@ import { demoPolicy } from "../src/demo-config.js";
 import type { ReproGateExecutor } from "../src/executor.js";
 import { sha256File } from "../src/file-digest.js";
 import { runHeldApproval } from "../src/held-approval-cli.js";
+import { actionInspectOutputSchema } from "../src/facade.js";
 import { createHeldApproval } from "../src/held-approval.js";
 import { ReproGateKernel } from "../src/kernel.js";
 import {
@@ -175,13 +176,23 @@ test("an operator-held approval runs an approval_required write exactly once", a
 
   const args = { content: "approved" };
   const actionId = s.plan("configured.publish", args);
+  const nextStep = async () => {
+    const result = await s.client.callTool({
+      name: "action.inspect",
+      arguments: { actionId },
+    });
+    return actionInspectOutputSchema.parse(result.structuredContent).nextStep;
+  };
+  assert.equal(await nextStep(), "await_approval");
   assert.equal(s.code(await s.call(actionId, args)), "awaiting_approval");
   assert.deepEqual(s.counts(), { executions: 0, tokenUses: 0 });
 
   const held = s.cli(["--config", s.configPath, actionId, "--hold"]);
   assert.ok(held.approvalId);
+  assert.equal(await nextStep(), "run");
   const result = await s.call(actionId, args);
   assert.equal(s.code(result), "succeeded", JSON.stringify(result.content));
+  assert.equal(await nextStep(), "stop");
   const record = s.runtime.store.getExecution(
     result.structuredContent?.executionId ?? "",
   );

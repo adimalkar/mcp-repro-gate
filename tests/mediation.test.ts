@@ -448,7 +448,7 @@ async function configuredRuntime(
 }
 
 test("action.run executes an allowed read with a host-issued capability and a bounded view", async (context) => {
-  const { runtime, client, call, plan } = await configuredRuntime(context, {
+  const { runtime, client, call } = await configuredRuntime(context, {
     effects: ["local_read"],
     result: {
       maxTextBytes: 256,
@@ -464,7 +464,20 @@ test("action.run executes an allowed read with a host-issued capability and a bo
     false,
   );
   const text = `rg1.aaa.bbb ${capabilitySecret} Bearer xyz.123 ${"é".repeat(300)}`;
-  const actionId = await plan("configured.echo", { text });
+  const planned = await call("action.plan", {
+    toolRef: "configured.echo",
+    arguments: { text },
+  });
+  const { actionId, nextStep } = planned.structuredContent as {
+    actionId: string;
+    nextStep: string;
+  };
+  assert.equal(nextStep, "run");
+  const inspected = await call("action.inspect", { actionId });
+  assert.equal(
+    (inspected.structuredContent as { nextStep: string }).nextStep,
+    "run",
+  );
   const result = await call("action.run", {
     actionId,
     arguments: { text },
@@ -521,6 +534,11 @@ test("action.run refuses plans outside mediation without executing", async (cont
     arguments: { text: "old" },
     now: new Date(Date.now() - 60 * 60 * 1000),
   }).envelope.actionId;
+  const inspectedExpired = await call("action.inspect", { actionId: expired });
+  assert.equal(
+    (inspectedExpired.structuredContent as { nextStep: string }).nextStep,
+    "stop",
+  );
   const echo = await plan("configured.echo", { text: "exact" });
   const cases: [string, Record<string, unknown>, string][] = [
     [approval, { content: "x" }, "not_allowed"],

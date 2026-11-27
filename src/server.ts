@@ -14,6 +14,7 @@ import {
   compactPlan,
   describeCatalogTool,
   fullPlan,
+  nextStepFor,
   policyExplainOutputSchema,
   toolRefInputSchema,
 } from "./facade.js";
@@ -94,7 +95,10 @@ export function createReproGateServer(
       : {},
   );
 
-  const executorConfigured = executor !== undefined;
+  const nextStep = (plan: ReturnType<ReproGateKernel["plan"]>) =>
+    executor && mediator
+      ? mediator.nextStep(plan)
+      : nextStepFor(plan, executor !== undefined);
   const readOnly = {
     readOnlyHint: true,
     idempotentHint: true,
@@ -164,8 +168,8 @@ export function createReproGateServer(
         const plan = kernel.plan({ toolRef, arguments: toolArguments });
         return result(
           detail === "full"
-            ? fullPlan(plan, executorConfigured)
-            : compactPlan(plan, toolRef, executorConfigured),
+            ? fullPlan(plan, nextStep(plan))
+            : compactPlan(plan, toolRef, nextStep(plan)),
         );
       } catch (planError) {
         return error(
@@ -189,7 +193,7 @@ export function createReproGateServer(
     ({ actionId }) => {
       const plan = kernel.explain(actionId);
       if (plan === undefined) return error(`Unknown actionId: ${actionId}`);
-      return result(fullPlan(plan, executorConfigured));
+      return result(fullPlan(plan, nextStep(plan)));
     },
   );
 
