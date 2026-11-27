@@ -14,5 +14,10 @@
     "types": ["node"],
     "skipLibCheck": true
   },
-  "include": ["src/**/*.ts", "tests/**/*.ts", "benchmarks/**/*.ts"]
+  "include": [
+    "src/**/*.ts",
+    "tests/**/*.ts",
+    "benchmarks/**/*.ts",
+    "scripts/**/*.ts"
+  ]
 }
