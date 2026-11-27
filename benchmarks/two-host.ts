@@ -6,11 +6,8 @@ import {
 } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import {
-  closeSync,
-  existsSync,
   mkdirSync,
   mkdtempSync,
-  openSync,
   readFileSync,
   realpathSync,
   renameSync,
@@ -390,6 +387,27 @@ export function runTrials(
   return rows;
 }
 
+/** The first checkpoint claims the caller's path before any host invocation. */
+export function createReportWriter(outputPath: string) {
+  let created = false;
+  return (report: unknown): void => {
+    const contents = JSON.stringify(report, null, 2) + "\n";
+    if (!created) {
+      writeFileSync(outputPath, contents, { flag: "wx", mode: 0o600 });
+      created = true;
+      return;
+    }
+    const next = outputPath + "." + randomBytes(16).toString("hex") + ".tmp";
+    writeFileSync(next, contents, { flag: "wx", mode: 0o600 });
+    try {
+      renameSync(next, outputPath);
+    } catch (error) {
+      rmSync(next, { force: true });
+      throw error;
+    }
+  };
+}
+
 async function main() {
   const [graph, output, codexModel, claudeModel, count = "3"] =
     process.argv.slice(2);
@@ -405,8 +423,6 @@ async function main() {
     );
   }
   const outputPath = resolve(output);
-  if (existsSync(outputPath))
-    throw new Error("Benchmark report already exists; choose a fresh filename");
   const graphPath = realpathSync(graph);
   const scratch = realpathSync(
     mkdtempSync(join(tmpdir(), "reprogate-two-host-")),
@@ -552,23 +568,15 @@ async function main() {
     const definitions = new Map(
       tasks.map((task) => [task.symbol, pinnedDefinition(corpus, task)]),
     );
-    const publish = (runs: TrialRow[]) => {
-      const report = {
+    const writeReport = createReportWriter(outputPath);
+    const publish = (runs: TrialRow[]) =>
+      writeReport({
         benchmarkVersion: 2,
         rubric: "exact-function-v2",
         source,
         versions,
         runs,
-      };
-      const next = outputPath + ".tmp";
-      writeFileSync(next, JSON.stringify(report, null, 2) + "\n", {
-        mode: 0o600,
-        flag: "wx",
       });
-      renameSync(next, outputPath);
-    };
-    // Reserve only after setup succeeds, before the first paid invocation.
-    closeSync(openSync(outputPath, "wx", 0o600));
     const runs = runTrials(
       trialSchedule(Number(count), codexModel, claudeModel),
       (trial) => {

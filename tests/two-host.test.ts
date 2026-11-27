@@ -15,6 +15,7 @@ import { createInterface } from "node:readline";
 import { test, type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import {
+  createReportWriter,
   measure,
   pinnedDefinition,
   runTrials,
@@ -209,6 +210,21 @@ test("a timed-out host records a bounded failure", (t) => {
   assert.equal(row.failure, "host_timeout");
   assert.equal(row.completed, false);
   assert.equal(row.pass, false);
+});
+
+test("the first benchmark checkpoint claims a fresh report and keeps concurrent writers out", (t) => {
+  const path = join(scratch(t), "report.json");
+  const owner = createReportWriter(path);
+  const other = createReportWriter(path);
+  owner({ state: "unattempted" });
+  assert.throws(() => other({ state: "started" }), { code: "EEXIST" });
+  assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), {
+    state: "unattempted",
+  });
+  writeFileSync(path + ".tmp", "unrelated");
+  owner({ state: "passed" });
+  assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), { state: "passed" });
+  assert.equal(readFileSync(path + ".tmp", "utf8"), "unrelated");
 });
 
 test("a graph setup failure leaves the report name available", (t) => {
