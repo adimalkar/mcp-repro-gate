@@ -569,7 +569,7 @@ async function main() {
       tasks.map((task) => [task.symbol, pinnedDefinition(corpus, task)]),
     );
     const writeReport = createReportWriter(outputPath);
-    const publish = (runs: TrialRow[]) =>
+    const publish = (runs: TrialRow[]) => {
       writeReport({
         benchmarkVersion: 2,
         rubric: "exact-function-v2",
@@ -577,6 +577,7 @@ async function main() {
         versions,
         runs,
       });
+    };
     const runs = runTrials(
       trialSchedule(Number(count), codexModel, claudeModel),
       (trial) => {

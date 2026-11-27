@@ -217,7 +217,12 @@ test("the first benchmark checkpoint claims a fresh report and keeps concurrent 
   const owner = createReportWriter(path);
   const other = createReportWriter(path);
   owner({ state: "unattempted" });
-  assert.throws(() => other({ state: "started" }), { code: "EEXIST" });
+  assert.throws(
+    () => {
+      other({ state: "started" });
+    },
+    { code: "EEXIST" },
+  );
   assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), {
     state: "unattempted",
   });
