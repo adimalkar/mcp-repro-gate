@@ -56,7 +56,10 @@ export interface StdioBackendConfig {
   command: string;
   args?: string[];
   cwd?: string;
+  /** Overrides the SDK's default stdio environment unless envMode is exact. */
   env?: Record<string, string>;
+  /** Runtime configuration resolves its own inheritance policy before connecting. */
+  envMode?: "overlay" | "exact";
   /** Where the backend's own stderr goes; the SDK default is "inherit". */
   stderr?: "inherit" | "ignore";
   artifact?: {
@@ -175,9 +178,9 @@ export class StdioMcpConnector implements DownstreamConnector {
     });
     // The SDK overlays env onto its own process-wide defaults. Node's spawn
     // skips keys whose value is undefined. Shadow every implicit default
-    // when the caller gave an explicit environment, including the empty one.
+    // when the caller selected exact inheritance, including an empty environment.
     const transportConfig = { ...config };
-    if (config.env !== undefined) {
+    if (config.envMode === "exact") {
       const env: NodeJS.ProcessEnv = Object.fromEntries(
         [...DEFAULT_INHERITED_ENV_VARS, "NODE_V8_COVERAGE"].map((key) => [
           key,
@@ -187,7 +190,7 @@ export class StdioMcpConnector implements DownstreamConnector {
       if (process.platform === "win32") {
         for (const key of windowsRequiredEnvironment) env[key] = "";
       }
-      for (const [key, value] of Object.entries(config.env))
+      for (const [key, value] of Object.entries(config.env ?? {}))
         env[process.platform === "win32" ? key.toUpperCase() : key] = value;
       // StdioServerParameters types the spread as strings only. The optional
       // keys above are consumed by Node and never reach the child environment.

@@ -353,6 +353,7 @@ async function stdioBackend(
     args: [...backend.args],
     ...(backend.cwd === undefined ? {} : { cwd: backend.cwd }),
     env: resolveBackendEnvironment(backend.environment, environment),
+    envMode: "exact",
     artifact: { path: backend.artifact.path, digest: backend.artifact.digest },
   };
 }

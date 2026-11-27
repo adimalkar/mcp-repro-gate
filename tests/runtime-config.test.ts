@@ -18,6 +18,7 @@ import { Ajv2020 } from "ajv/dist/2020.js";
 
 import { issueCapabilityToken } from "../src/capability-token.js";
 import { demoPolicy } from "../src/demo-config.js";
+import { StdioMcpConnector } from "../src/downstream.js";
 import { sha256File } from "../src/file-digest.js";
 import {
   createConfiguredRuntime,
@@ -377,6 +378,19 @@ test("configured child environment has exactly the selected inheritance and mapp
   const catalog = fixture.config.catalog[0];
   assert.ok(catalog);
   catalog.artifactDigest = digest;
+  // Standalone library callers historically passed env as overrides on the
+  // SDK defaults. The runtime's resolved safe/none modes below are exact.
+  const standalone = new StdioMcpConnector({
+    fixture: {
+      command: process.execPath,
+      args: [fixture.artifactPath],
+      env: { EXPLICIT: "overlay" },
+    },
+  });
+  const inherited = await standalone.connect("fixture");
+  await inherited.close();
+  const overlay = JSON.parse(readFileSync(observation, "utf8")) as unknown[];
+  assert.deepEqual(overlay.slice(1), ["sdk-ambient-sentinel", "overlay"]);
   const windows = process.platform === "win32";
   for (const [inherit, override] of [
     ["none", false],

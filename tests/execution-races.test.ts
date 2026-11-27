@@ -181,6 +181,7 @@ test("processes racing one capability run the downstream call once", async (cont
   assert.deepEqual(
     results.filter((result) => result.outcome === "succeeded").length,
     1,
+    JSON.stringify(results),
   );
   const refused = results.filter((result) => result.outcome === undefined);
   assert.equal(refused.length, 5);
@@ -282,7 +283,10 @@ test("a downstream that exits after its effect leaves the run indeterminate", as
     () => undefined,
     (thrown: unknown) => thrown,
   );
-  assert.ok(error instanceof ExecutionIndeterminateError);
+  assert.ok(
+    error instanceof ExecutionIndeterminateError,
+    error instanceof Error ? `${error.name}: ${error.message}` : String(error),
+  );
   assert.equal(
     fixture.store.getExecution(error.executionId)?.state,
     "indeterminate",
