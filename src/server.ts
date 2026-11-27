@@ -101,6 +101,7 @@ export function createReproGateServer(
       : nextStepFor(plan, executor !== undefined);
   const readOnly = {
     readOnlyHint: true,
+    destructiveHint: false,
     idempotentHint: true,
     openWorldHint: false,
   };
@@ -357,11 +358,7 @@ export function createReproGateServer(
           "Report the host-configured workspace handoff state with revision, digests and counts; set includeContext for the caller-asserted context, brief for a bounded resume brief with session states and observed Git state, or sessionId for that session's lane: its notes and subagents. Advisory only: it never authorizes actions",
         inputSchema: handoffStatusInputSchema,
         outputSchema: handoffStatusSchema,
-        annotations: {
-          readOnlyHint: true,
-          idempotentHint: true,
-          openWorldHint: false,
-        },
+        annotations: readOnly,
       },
       (input) => handoffResult(() => handoff.status(input)),
     );

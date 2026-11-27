@@ -69,6 +69,8 @@ test("every facade tool declares an output schema and truthful annotations", asy
     "policy.explain",
   ]) {
     assert.equal(tools.get(name)?.annotations?.readOnlyHint, true, name);
+    assert.equal(tools.get(name)?.annotations?.destructiveHint, false, name);
+    assert.equal(tools.get(name)?.annotations?.idempotentHint, true, name);
     assert.equal(tools.get(name)?.annotations?.openWorldHint, false, name);
   }
   const plan = tools.get("action.plan")?.annotations;
