@@ -62,7 +62,7 @@ A host first loads tool definitions, then spends calls finding a tool:
 
 | Item                               | Bytes |
 | ---------------------------------- | ----: |
-| façade tool list                   | 10059 |
+| façade tool list                   | 10155 |
 | direct tool list                   |  4964 |
 | finding a tool (search + describe) |  2122 |
 | average downstream tool definition |   355 |
@@ -96,7 +96,7 @@ The façade's own tool list is about twice the 14 downstream definitions it repl
 
 ### History
 
-- **v3 to v4:** the live mediation route gives this read-only plan the next step `run`. Compact planning measures 774 bytes and full planning measures 2726 bytes. The façade tool list measures 10059 bytes with the current tool definitions.
+- **v3 to v4:** the live mediation route gives this read-only plan the next step `run`. Compact planning measures 774 bytes and full planning measures 2726 bytes. The façade tool list measures 10155 bytes with the current tool definitions.
 
 - **v2 to v3:** compact `action.run` summaries (digests opt-in), downstream text sent unescaped instead of inside a JSON-escaped mirror, and compact JSON text mirrors.
   - Small result: from 1032 to 568 bytes.
